@@ -76,23 +76,46 @@ forkしたリポジトリなどを、Cloudflareのダッシュボードの「Wor
 
 表示されたURLを開くと初期設定画面になり、**最初に登録した人が管理者になります**。URLを知った他人に先に登録されないように、デプロイしたらすぐ登録してください。アカウントはドメインに紐付かないので、あとで独自ドメインを設定しても、同じアカウントでログインし直すだけで使えます。
 
-#### D1の場所
+#### D1とR2の場所
 
-D1データベースは、最初に `wrangler deploy` を実行した場所の近くに作られます。ボタンやWorkers Buildsでは、ビルド環境の場所で決まるので、使う人から遠い地域（例えば日本から使うのにヨーロッパ西部）になることがあります。APIは1回のリクエストでD1に何度か順に問い合わせるので、D1が遠いと画面の表示が1秒以上かかります。
+D1データベースとR2バケットは、何も指定しないと最初に `wrangler deploy` を実行した場所の近くに作られます。ボタンやWorkers Buildsでは、ビルド環境の場所で決まるので、使う人から遠い地域（例えば日本から使うのにヨーロッパ西部）になることがあります。APIは1回のリクエストでD1に何度か順に問い合わせるので、D1が遠いと画面の表示が1秒以上かかります。
 
-`wrangler.jsonc` でSmart Placementを有効にしているので、WorkerはD1の近くで動き、D1への問い合わせの往復は短くなります。それでも使う人とWorkerの間の往復は1回残ります。D1の場所は `npx wrangler d1 info DB` の `running_in_region` で確認できます。
+D1とR2を使う人の近くに置きたい場合は、最初のデプロイの前に、Workerの「設定」→「ビルド」→「変数とシークレット」（ビルド変数）に `LOCATION_HINT` を追加してください。値は次のいずれかです。
 
-D1を使う人の近くに置きたい場合は、最初のデプロイの前に、場所を指定してD1を作ってください（`apac` はアジア太平洋。ほかに `weur`、`eeur`、`oc`、`wnam`、`enam`）。名前は `wrangler.jsonc` の `database_name` と同じにします。
+| 値 | 地域 |
+| --- | --- |
+| `apac` | アジア太平洋 |
+| `weur` | ヨーロッパ西部 |
+| `eeur` | ヨーロッパ東部 |
+| `oc` | オセアニア |
+| `wnam` | 北アメリカ西部 |
+| `enam` | 北アメリカ東部 |
 
-```sh
-npx wrangler d1 create pinglune --location apac
-```
+`pnpm run deploy` は、まだないD1とR2を指定した場所に作ってからデプロイします。手元から実行する場合は、環境変数で指定します（例: `LOCATION_HINT=apac pnpm run deploy`）。
+
+- 作成済みのD1とR2の場所は変えられません。既にあるものは、`LOCATION_HINT` と場所が違っても作り直さずにそのまま使います。
+- 作った場所はビルドログに出ます。あとからは `npx wrangler d1 info DB` の `running_in_region` と、`npx wrangler r2 bucket info pinglune-events` の `location` で確認できます。
+- R2の場所の指定が効くのは、そのバケット名で初めてバケットを作ったときだけです。以前に同じ名前のバケットがあった場合は、指定と違う場所になることがあり、そのときはビルドログに警告が出ます。
+
+`wrangler.jsonc` でSmart Placementを有効にしているので、`LOCATION_HINT` を設定せずにD1が遠い場所に作られた場合も、WorkerはD1の近くで動き、D1への問い合わせの往復は短くなります。それでも使う人とWorkerの間の往復は1回残ります。
+
+#### D1とR2の名前
+
+D1データベースとR2バケットの名前は `wrangler.jsonc` の `database_name`（`pinglune`）と `bucket_name`（`pinglune-events`）で決まっていて、同じ名前のものがアカウントにあれば、`wrangler deploy` はそれにつなぎます。
+
+- 同じアカウントに2つ目のPingluneを作る場合は、`database_name` と `bucket_name`、Queuesのキュー名（`pinglune-deliveries` と `pinglune-deliveries-dlq`）を別の名前に変えてください。変えないと、1つ目のD1・R2・キューを黙って共有します。
+- `bucket_name` を指定する前のバージョンで導入していた場合、R2バケットは別の名前（例: `pinglune-event-data`）で作られています。そのまま取り込むと `EVENT_DATA` が新しい空のバケットにつながり、受け取ったイベントの本文と添付が読めなくなります。取り込む前に、`wrangler.jsonc` の `bucket_name` を今のバケットの名前に書き換えてください。バケットの名前はダッシュボードの「R2」か `npx wrangler r2 bucket list` で確認できます。
 
 #### デプロイの仕組み
 
-ボタンもWorkers Buildsも、デプロイには `pnpm run deploy`（`scripts/deploy.mjs`）を使います。D1のマイグレーション（`drizzle/migrations`）を本番に適用してから `wrangler deploy` を実行します。新しいコードが動く前にテーブルができているよう、この順にしています（マイグレーションだけなら `pnpm db:migrate:remote`）。
+ボタンもWorkers Buildsも、デプロイには `pnpm run deploy`（`scripts/deploy.mjs`）を使います。スクリプトは `wrangler.jsonc` のD1とR2の設定を読み、次の順に実行します。
 
-初回のデプロイでD1がまだないときは、順番を入れ替えて `wrangler deploy` を先に実行します。D1・KV・R2・Queuesのキューを自動で作るのは `wrangler deploy` で、`wrangler d1 migrations apply` は既存のD1を探すだけだからです。テーブルができるまでの数秒間、Workerはテーブルのない状態で動きますが、まだ誰も使っていないので影響はありません。
+1. D1データベースが既にあるかを確かめます。
+2. `LOCATION_HINT` が設定されていれば、まだないD1とR2をその場所に作ります。作れなかった場合は、別の場所に作られないようにデプロイを止めます。
+3. D1のマイグレーション（`drizzle/migrations`）を本番に適用します（マイグレーションだけなら `pnpm db:migrate:remote`）。
+4. `wrangler deploy` を実行します。新しいコードが動く前にテーブルができているよう、マイグレーションの後にしています。
+
+`LOCATION_HINT` を設定していない初回のデプロイでD1がまだないときは、3と4を入れ替えて `wrangler deploy` を先に実行します。D1・KV・R2・Queuesのキューを自動で作るのは `wrangler deploy` で、`wrangler d1 migrations apply` は既存のD1を探すだけだからです。テーブルができるまでの数秒間、Workerはテーブルのない状態で動きますが、まだ誰も使っていないので影響はありません。
 
 手元から `pnpm run deploy` を実行する場合、Cloudflareのアカウントが複数あると、wranglerがアカウントを選べずに失敗します。`CLOUDFLARE_ACCOUNT_ID` にデプロイ先のアカウントIDを指定してください。
 

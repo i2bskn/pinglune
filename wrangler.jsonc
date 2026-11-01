@@ -14,9 +14,10 @@
   // Preview URLs would serve unmigrated code against the production D1 database.
   "preview_urls": false,
   "observability": { "enabled": true },
-  // The D1 database is created near whoever runs the first `wrangler deploy` (for the Deploy to Cloudflare button
-  // and Workers Builds, the build environment), which can be far from the users. An API request makes several
-  // sequential D1 queries, so Smart Placement runs the Worker near the database instead of near the user.
+  // Without the LOCATION_HINT build variable (see scripts/deploy.mjs), the D1 database is created near whoever runs
+  // the first `wrangler deploy` (for the Deploy to Cloudflare button and Workers Builds, the build environment),
+  // which can be far from the users. An API request makes several sequential D1 queries, so Smart Placement runs
+  // the Worker near the database instead of near the user.
   // Static assets are still served from the nearest location, since they do not invoke the Worker.
   "placement": { "mode": "smart" },
   // Builds the React client into dist/client before `wrangler deploy` and `wrangler dev`, so that
@@ -61,10 +62,12 @@
   ],
   "r2_buckets": [
     {
-      // The bodies and attachments of received events (src/intake). No bucket_name: like the D1 database
-      // and the KV namespace, `wrangler deploy` provisions the bucket automatically.
+      // The bodies and attachments of received events (src/intake). Like the D1 database, `wrangler deploy`
+      // provisions the bucket automatically, or connects to an existing R2 bucket with this name in the account.
+      // The name is fixed so that scripts/deploy.mjs can create the bucket in the location given by LOCATION_HINT.
       // R2 must be enabled in the Cloudflare dashboard first.
-      "binding": "EVENT_DATA"
+      "binding": "EVENT_DATA",
+      "bucket_name": "pinglune-events"
     }
   ],
   // Webhook deliveries of MCP Events (src/deliveries). `wrangler deploy` creates missing queues only for producer
