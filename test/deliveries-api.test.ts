@@ -88,6 +88,8 @@ describe("GET /api/v1/subscriptions", () => {
     const first = body.subscriptions.find((s) => s.id === active.id);
     expect(first).toEqual({
       id: active.id,
+      kind: "mcp",
+      name: null,
       callback_host: "hooks.example.com",
       arguments: { types: ["alert.observed"] },
       status: "active",

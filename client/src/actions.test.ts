@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ApiKey, EmailAddress, Source, User } from "../../src/api/types";
+import type { ApiKey, EmailAddress, Source, Subscription, User } from "../../src/api/types";
 import {
   changeUserRole,
   createSource,
   createUser,
+  createWebhookDestination,
   deleteUser,
+  deleteWebhookDestination,
   issueApiKey,
   issueEmailAddress,
   resetUserPassword,
@@ -371,4 +373,85 @@ it("revokeEmailAddress does not send an invalid local part", async () => {
   const { client, fetch } = setup(() => Response.json({}), 401, "/unused");
   expect(await revokeEmailAddress(client, SOURCE_ID, "../x")).toEqual({ kind: "error", message: "送信元が見つかりません" });
   expect(fetch).not.toHaveBeenCalled();
+});
+
+const DESTINATION: Subscription = {
+  id: "sub_0123456789abcdef0123456789abcdef",
+  kind: "webhook",
+  name: "Grok Bot",
+  callback_host: "api2.example.com",
+  arguments: {},
+  status: "active",
+  refresh_before: null,
+  expires_at: null,
+  created_at: 1,
+  updated_at: 1,
+};
+
+describe("createWebhookDestination", () => {
+  const url = "/api/v1/subscriptions/webhooks";
+  const input = { name: "Grok Bot", url: "https://api2.example.com/hook", token: "crsr_x", types: ["alert.observed"] };
+
+  it("sends the input and is ok with the destination on 201", async () => {
+    const { client, fetch } = setup(() => Response.json(DESTINATION, { status: 201 }), 401, url);
+    expect(await createWebhookDestination(client, input)).toEqual({ kind: "ok", subscription: DESTINATION });
+    const init = fetch.mock.calls[0]?.[1];
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(String(init?.body))).toEqual(input);
+  });
+
+  it.each([
+    [400, "URL が正しくありません（https のみ）"],
+    [409, "Webhook 配信先は 20 件までです"],
+  ])("is an error with the API message on %i", async (code, message) => {
+    const { client } = setup(apiError(code, message), 401, url);
+    expect(await createWebhookDestination(client, input)).toEqual({ kind: "error", message });
+  });
+
+  it("is an error when the created destination is not JSON", async () => {
+    const { client } = setup(() => new Response("created", { status: 201 }), 401, url);
+    expect(await createWebhookDestination(client, input)).toEqual({
+      kind: "error",
+      message: "サーバーから予期しない応答がありました（HTTP 201）",
+    });
+  });
+
+  it("is unknown when fetch rejects", async () => {
+    const { client } = setup(() => Promise.reject(new TypeError("Failed to fetch")), 401, url);
+    expect(await createWebhookDestination(client, input)).toEqual({ kind: "unknown" });
+  });
+
+  it("is redirecting when login is required", async () => {
+    const { client } = setup(apiError(401, "ログインしてください"), 401, url);
+    expect(await createWebhookDestination(client, input)).toEqual({ kind: "redirecting" });
+  });
+});
+
+describe("deleteWebhookDestination", () => {
+  const url = `/api/v1/subscriptions/${DESTINATION.id}/delete`;
+
+  it("sends the request and is ok", async () => {
+    const { client, fetch } = setup(() => Response.json({ ...DESTINATION, status: "unsubscribed" }), 401, url);
+    expect(await deleteWebhookDestination(client, DESTINATION.id)).toEqual({ kind: "ok" });
+    expect(fetch.mock.calls[0]?.[1]?.method).toBe("POST");
+  });
+
+  it("is not found on 404", async () => {
+    const { client } = setup(apiError(404, "Webhook 配信先が見つかりません"), 401, url);
+    expect(await deleteWebhookDestination(client, DESTINATION.id)).toEqual({ kind: "notFound" });
+  });
+
+  it("is unknown when fetch rejects", async () => {
+    const { client } = setup(() => Promise.reject(new TypeError("Failed to fetch")), 401, url);
+    expect(await deleteWebhookDestination(client, DESTINATION.id)).toEqual({ kind: "unknown" });
+  });
+
+  it("is an error without sending for an invalid ID", async () => {
+    const { client, fetch } = setup(() => Response.json(DESTINATION), 401, url);
+    expect(await deleteWebhookDestination(client, "../sources")).toEqual({
+      kind: "error",
+      message: "Webhook 配信先が見つかりません",
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
 });

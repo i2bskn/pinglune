@@ -186,7 +186,7 @@ describe("sendWebhook", () => {
       msgId: "msg_1",
       timestampSec: 1_700_000_000,
       body: new TextEncoder().encode('{"a":1}'),
-      secrets: [secret],
+      auth: { kind: "signature", secrets: [secret] },
       ...overrides,
     };
   }
@@ -235,6 +235,64 @@ describe("sendWebhook", () => {
   ])("fails with the status %s", async (status, reason) => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status }));
     expect(await sendWebhook(message(), deps)).toEqual({ ok: false, reason, status });
+  });
+});
+
+describe("sendWebhook with a Bearer key", () => {
+  const TOKEN = "crsr_0123456789abcdefghijklmnopqrstuvwxyz-._~+/=";
+
+  function message(): WebhookMessage {
+    return {
+      url: new URL("https://hooks.example.com/cb"),
+      subscriptionId: SUBSCRIPTION_ID,
+      msgId: "evt_1",
+      timestampSec: 1_700_000_000,
+      body: new TextEncoder().encode('{"a":1}'),
+      auth: { kind: "bearer", token: TOKEN },
+    };
+  }
+
+  const deps = { selfHosts: [], resolve: async () => ({ ok: true as const, addresses: ["93.184.216.34"] }) };
+
+  it("sends Authorization and webhook-id, without the signature headers", async () => {
+    let sent: Request | undefined;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      sent = new Request(input, init);
+      return Response.json({ success: true });
+    });
+    const result = await sendWebhook(message(), deps);
+    expect(result).toEqual({ ok: true, status: 200, body: '{"success":true}' });
+    expect(sent?.method).toBe("POST");
+    expect(await sent?.text()).toBe('{"a":1}');
+    const headers = Object.fromEntries(sent?.headers ?? []);
+    expect(headers).toEqual({
+      "content-type": "application/json",
+      "webhook-id": "evt_1",
+      authorization: `Bearer ${TOKEN}`,
+      "user-agent": "Pinglune-Webhooks/1",
+    });
+  });
+
+  it("does not follow redirects, so the key is not sent to the new location", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(null, { status: 307, headers: { Location: "https://other.example.com/" } }));
+    expect(await sendWebhook(message(), deps)).toEqual({ ok: false, reason: "redirect", status: 307 });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [input, init] = fetchSpy.mock.calls[0] ?? [];
+    const request = new Request(input as RequestInfo, init);
+    expect(request.url).toBe("https://hooks.example.com/cb");
+    expect(request.redirect).toBe("manual");
+  });
+
+  it("checks the destination before sending the key", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const result = await sendWebhook(message(), {
+      selfHosts: ["hooks.example.com"],
+      resolve: async () => ({ ok: true, addresses: ["93.184.216.34"] }),
+    });
+    expect(result).toEqual({ ok: false, reason: "blocked_destination" });
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
 

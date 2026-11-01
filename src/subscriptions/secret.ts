@@ -1,8 +1,10 @@
-// The signing secrets of subscriptions: parsing the whsec_ form, and encryption at rest.
+// The secrets of subscriptions: parsing the whsec_ form of MCP Events signing secrets, and encryption at rest of
+// those and of the Bearer keys of webhook destinations.
 //
 // The key is derived from JWT_SECRET with HKDF, so that no new setting is needed and the key is separate from
-// the one that signs JWTs. Changing JWT_SECRET makes the stored secrets undecryptable; ChatGPT subscribes again
-// with the secret before the subscription expires, which repairs it.
+// the one that signs JWTs. Changing JWT_SECRET makes the stored secrets undecryptable. ChatGPT subscribes again
+// with the secret before the subscription expires, which repairs it; webhook destinations have to be registered
+// again.
 
 import { base64UrlDecode, base64UrlEncode } from "../auth/tokens";
 

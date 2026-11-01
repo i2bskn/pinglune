@@ -1,4 +1,5 @@
-// Sends a signed webhook to a callback URL. Used by the callback verification and by deliveries.
+// Sends a webhook to a callback URL, signed (Standard Webhooks, for MCP Events) or with a Bearer key (for webhook
+// destinations). Used by the callback verification and by deliveries.
 
 import { checkDestination, type DestinationDeps, type DestinationFailure } from "./destination";
 import { signWebhook } from "./sign";
@@ -8,6 +9,12 @@ export type SendFailure = DestinationFailure | "timeout" | "connection_failed" |
 // status is set for HTTP failures, so that deliveries can tell 410 and 413 apart.
 export type SendResult = { ok: true; status: number; body: string } | { ok: false; reason: SendFailure; status?: number };
 
+export type WebhookAuth =
+  // Every secret signs the message (more than one while a secret is being rotated).
+  | { kind: "signature"; secrets: Uint8Array<ArrayBuffer>[] }
+  // Sent as Authorization: Bearer <token>. Never logged.
+  | { kind: "bearer"; token: string };
+
 export type WebhookMessage = {
   url: URL;
   subscriptionId: string;
@@ -15,8 +22,7 @@ export type WebhookMessage = {
   timestampSec: number;
   // Serialized once: the signature covers these exact bytes.
   body: Uint8Array;
-  // Every secret signs the message (more than one while a secret is being rotated).
-  secrets: Uint8Array<ArrayBuffer>[];
+  auth: WebhookAuth;
 };
 
 const SEND_TIMEOUT_MS = 10_000;
@@ -56,29 +62,44 @@ function fetchFailure(error: unknown): SendResult {
   return { ok: false, reason: timedOut ? "timeout" : "connection_failed" };
 }
 
+// The headers of a message. A Bearer message also has webhook-id, for receivers that deduplicate with it, but no
+// signature, timestamp or subscription ID.
+async function headersOf(message: WebhookMessage): Promise<Record<string, string>> {
+  const { auth, msgId } = message;
+  if (auth.kind === "bearer") {
+    return {
+      "Content-Type": "application/json",
+      "webhook-id": msgId,
+      Authorization: `Bearer ${auth.token}`,
+      "User-Agent": USER_AGENT,
+    };
+  }
+  const signature = await signWebhook(auth.secrets, msgId, message.timestampSec, message.body);
+  return {
+    "Content-Type": "application/json",
+    "webhook-id": msgId,
+    "webhook-timestamp": String(message.timestampSec),
+    "webhook-signature": signature,
+    "X-MCP-Subscription-Id": message.subscriptionId,
+    "User-Agent": USER_AGENT,
+  };
+}
+
 // Checks the destination, then POSTs the message without following redirects. Never throws. The whole send
 // takes at most about 20 seconds (DNS over HTTPS 5 seconds, then the request 10 seconds).
 export async function sendWebhook(message: WebhookMessage, deps: DestinationDeps): Promise<SendResult> {
   const destination = await checkDestination(message.url, deps);
   if (!destination.ok) return { ok: false, reason: destination.reason };
 
-  const { url, subscriptionId, msgId, timestampSec, body, secrets } = message;
+  const { url, body } = message;
   let res: Response;
   try {
-    const signature = await signWebhook(secrets, msgId, timestampSec, body);
     res = await fetch(url, {
       method: "POST",
       redirect: "manual",
       // Workers have no SharedArrayBuffer, so every view is backed by an ArrayBuffer.
       body: body as Uint8Array<ArrayBuffer>,
-      headers: {
-        "Content-Type": "application/json",
-        "webhook-id": msgId,
-        "webhook-timestamp": String(timestampSec),
-        "webhook-signature": signature,
-        "X-MCP-Subscription-Id": subscriptionId,
-        "User-Agent": USER_AGENT,
-      },
+      headers: await headersOf(message),
       signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
     });
   } catch (error) {

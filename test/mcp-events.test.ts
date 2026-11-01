@@ -9,11 +9,12 @@ import { clock } from "../src/clock";
 import { subscriptions, type SubscriptionRow, type UserRow } from "../src/db/schema";
 import { acceptEvent } from "../src/intake/service";
 import { mcpHandler } from "../src/mcp/handler";
-import { endSubscription } from "../src/subscriptions/queries";
+import { endSubscription, NO_EXPIRY } from "../src/subscriptions/queries";
 import { decryptSecret, subscriptionSecretKey } from "../src/subscriptions/secret";
 import {
   countTable,
   createSource,
+  createSubscription,
   createUser,
   d1With,
   fakeQueue,
@@ -285,6 +286,8 @@ describe("events/subscribe", () => {
     expect(row).toMatchObject({
       userId: alice.id,
       workspaceId: (await personalWorkspaceOf(alice)).id,
+      kind: "mcp",
+      name: null,
       eventName: "pinglune.event",
       arguments: '{"types":["alert.observed"]}',
       callbackUrl: CALLBACK,
@@ -779,9 +782,22 @@ describe("losing access", () => {
     expect((await readSubscription(id))?.unsubscribedAt).not.toBeNull();
   }
 
-  it("ends the subscriptions when the user changes the password", async () => {
+  // A webhook destination of the user, registered on the management screen.
+  async function webhookDestination(user: UserRow): Promise<string> {
+    const row = await createSubscription({
+      user,
+      kind: "webhook",
+      name: "bot",
+      secret: new TextEncoder().encode("crsr_key"),
+      expiresAt: NO_EXPIRY,
+    });
+    return row.id;
+  }
+
+  it("ends the subscriptions but keeps the webhook destinations when the user changes the password", async () => {
     const id = await subscribed(alice);
     const other = await subscribed(bob);
+    const webhook = await webhookDestination(alice);
     const cookies = await login(alice.email);
     const res = await send("/api/v1/me/password", {
       cookies,
@@ -790,6 +806,7 @@ describe("losing access", () => {
     expect(res.status).toBe(204);
     await expectEnded(id);
     expect((await readSubscription(other))?.unsubscribedAt).toBeNull();
+    expect((await readSubscription(webhook))?.unsubscribedAt).toBeNull();
   });
 
   describe("by an admin", () => {
@@ -798,20 +815,28 @@ describe("losing access", () => {
       admin = await createUser({ email: "admin@example.com", role: "admin" });
     });
 
-    it("ends the subscriptions when an admin resets the password", async () => {
+    it("ends the subscriptions and the webhook destinations when an admin resets the password", async () => {
       const id = await subscribed(alice);
+      const webhook = await webhookDestination(alice);
+      const otherWebhook = await webhookDestination(bob);
       const cookies = await login(admin.email);
       const res = await send(`/api/v1/users/${alice.id}/password`, { cookies, json: { password: NEW_PASSWORD } });
       expect(res.status).toBe(204);
       await expectEnded(id);
+      await expectEnded(webhook);
+      expect((await readSubscription(otherWebhook))?.unsubscribedAt).toBeNull();
     });
 
-    it("ends the subscriptions when an admin revokes the sessions", async () => {
+    it("ends the subscriptions and the webhook destinations when an admin revokes the sessions", async () => {
       const id = await subscribed(alice);
+      const webhook = await webhookDestination(alice);
+      const otherWebhook = await webhookDestination(bob);
       const cookies = await login(admin.email);
       const res = await send(`/api/v1/users/${alice.id}/revoke-sessions`, { method: "POST", cookies });
       expect(res.status).toBe(204);
       await expectEnded(id);
+      await expectEnded(webhook);
+      expect((await readSubscription(otherWebhook))?.unsubscribedAt).toBeNull();
     });
 
     it("ends the subscriptions without OAUTH_PROVIDER", async () => {

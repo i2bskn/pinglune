@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deleteUser } from "../src/auth/users";
 import { users, workspaces, type UserRow, type WorkspaceRow } from "../src/db/schema";
+import { NO_EXPIRY } from "../src/subscriptions/queries";
 import {
   createApiKey,
   createEmailAddress,
@@ -154,6 +155,34 @@ describe("DELETE /api/v1/users/:id", () => {
     expect(await listDeliveries("workspace_id = ?", memberWorkspace.id)).toEqual([]);
     expect((await listDeliveries()).map((row) => row.subscription_id)).toEqual([adminSubscription.id]);
     expect(await countWhere("subscriptions", "user_id", member.id)).toBe(0);
+  });
+
+  it("deletes the webhook destinations of the user and their deliveries", async () => {
+    const webhook = await createSubscription({
+      user: member,
+      kind: "webhook",
+      name: "bot",
+      secret: new TextEncoder().encode("crsr_key"),
+      expiresAt: NO_EXPIRY,
+    });
+    const adminWebhook = await createSubscription({
+      user: admin,
+      kind: "webhook",
+      name: "bot",
+      secret: new TextEncoder().encode("crsr_key"),
+      expiresAt: NO_EXPIRY,
+    });
+    await fillWorkspace(member);
+    await fillWorkspace(admin);
+    expect((await listDeliveries()).map((row) => row.subscription_id).sort()).toEqual(
+      [webhook.id, adminWebhook.id].sort(),
+    );
+
+    expect((await deleteRequest(member.id, adminCookies)).status).toBe(204);
+
+    expect((await listDeliveries()).map((row) => row.subscription_id)).toEqual([adminWebhook.id]);
+    expect(await countWhere("subscriptions", "id", webhook.id)).toBe(0);
+    expect(await countWhere("subscriptions", "id", adminWebhook.id)).toBe(1);
   });
 
   it("keeps the user deleted when deleting the R2 objects fails", async () => {

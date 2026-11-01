@@ -358,13 +358,17 @@ export const TEST_JWT_SECRET = "test-secret-test-secret-test-secret-0123";
 let subscriptionSequence = 0;
 
 // Inserts a pinglune.event subscription directly, with its secret encrypted as events/subscribe stores it.
-// workspaceId defaults to the user's personal workspace; expiresAt to one day from now.
+// workspaceId defaults to the user's personal workspace; expiresAt to one day from now; kind to "mcp". For a
+// webhook destination, pass kind "webhook" and the Bearer key as UTF-8 bytes in secret.
 export async function createSubscription(params: {
   user: UserRow;
+  kind?: "mcp" | "webhook";
+  name?: string | null;
   workspaceId?: string;
   callbackUrl?: string;
   arguments?: string;
-  secret?: Uint8Array<ArrayBuffer>;
+  // Any view: TextEncoder returns Uint8Array<ArrayBufferLike>, but Workers have no SharedArrayBuffer.
+  secret?: Uint8Array;
   previousSecret?: Uint8Array<ArrayBuffer> | null;
   secretRotatedAt?: number | null;
   expiresAt?: number;
@@ -376,13 +380,15 @@ export async function createSubscription(params: {
   const id = `sub_${subscriptionSequence.toString(16).padStart(32, "0")}`;
   const now = params.createdAt ?? Date.now();
   const key = await subscriptionSecretKey(TEST_JWT_SECRET);
-  const secret = params.secret ?? crypto.getRandomValues(new Uint8Array(32));
+  const secret = (params.secret ?? crypto.getRandomValues(new Uint8Array(32))) as Uint8Array<ArrayBuffer>;
   const [row] = await db
     .insert(subscriptions)
     .values({
       id,
       userId: params.user.id,
       workspaceId: params.workspaceId ?? (await personalWorkspaceOf(params.user)).id,
+      kind: params.kind ?? "mcp",
+      name: params.name ?? null,
       eventName: params.eventName ?? "pinglune.event",
       arguments: params.arguments ?? "{}",
       callbackUrl: params.callbackUrl ?? "https://hooks.example.com/pinglune",

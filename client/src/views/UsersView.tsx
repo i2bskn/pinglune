@@ -330,10 +330,12 @@ function UserRow({
                   disabled={sending}
                 />
               </label>
-              <p>このユーザーはすべての端末でログアウトし、MCP&nbsp;の接続も切れます。</p>
+              <p>このユーザーはすべての端末でログアウトし、MCP&nbsp;の接続も切れます。登録したWebhook配信先も止まります。</p>
             </>
           )}
-          {open === "logout" && <p>このユーザーをすべての端末でログアウトさせます。MCP&nbsp;の接続も切れます。</p>}
+          {open === "logout" && (
+            <p>このユーザーをすべての端末でログアウトさせます。MCP&nbsp;の接続も切れ、登録したWebhook配信先も止まります。</p>
+          )}
           {open === "delete" && (
             <>
               <p>

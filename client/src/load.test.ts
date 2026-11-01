@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ApiKey, EmailAddressList, Source, User } from "../../src/api/types";
+import type { ApiKey, DeliveryList, EmailAddressList, Source, Subscription, User } from "../../src/api/types";
 import { createApiClient, createApiFetch } from "./api";
-import { loadEvents, loadSourceDetail, loadUsersView } from "./load";
+import { loadDeliveriesView, loadEvents, loadSourceDetail, loadUsersView } from "./load";
 
 type Reply = () => Response;
 
@@ -129,5 +129,48 @@ describe("loadSourceDetail", () => {
     const { client, fetch } = setup({});
     expect(await loadSourceDetail(client, "a/b")).toEqual({ kind: "notFound" });
     expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("loadDeliveriesView", () => {
+  const MCP: Subscription = {
+    id: "sub_00000000000000000000000000000001",
+    kind: "mcp",
+    name: null,
+    callback_host: "hooks.example.com",
+    arguments: {},
+    status: "active",
+    refresh_before: 1,
+    expires_at: 2,
+    created_at: 1,
+    updated_at: 1,
+  };
+  const WEBHOOK: Subscription = {
+    ...MCP,
+    id: "sub_00000000000000000000000000000002",
+    kind: "webhook",
+    name: "Grok Bot",
+    refresh_before: null,
+    expires_at: null,
+  };
+  const DELIVERIES: DeliveryList = { deliveries: [], next_cursor: null };
+
+  it("passes the subscriptions of both kinds as they are", async () => {
+    const { client } = setup({
+      "/api/v1/subscriptions": [json(200, { subscriptions: [MCP, WEBHOOK] })],
+      "/api/v1/deliveries": [json(200, DELIVERIES)],
+    });
+    expect(await loadDeliveriesView(client)).toEqual({
+      kind: "ready",
+      data: { subscriptions: [MCP, WEBHOOK], deliveries: DELIVERIES },
+    });
+  });
+
+  it("is an error with the API message when the subscriptions fail", async () => {
+    const { client } = setup({
+      "/api/v1/subscriptions": [apiError(500, "サーバーでエラーが発生しました")],
+      "/api/v1/deliveries": [json(200, DELIVERIES)],
+    });
+    expect(await loadDeliveriesView(client)).toEqual({ kind: "error", message: "サーバーでエラーが発生しました" });
   });
 });

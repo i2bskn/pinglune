@@ -1,9 +1,11 @@
 import type {
   ApiKey,
   CreateUserRequest,
+  CreateWebhookDestinationRequest,
   CreatedApiKey,
   EmailAddress,
   Source,
+  Subscription,
   UpdateSourceRequest,
   User,
 } from "../../src/api/types";
@@ -80,8 +82,8 @@ export async function changeUserRole(client: ApiClient, userId: string, role: Us
   );
 }
 
-// Sets a new password for a user and ends their sessions and MCP connections (password mode only). Admins
-// only. In OIDC mode the server also answers 404 with the same code, which cannot be told apart from a
+// Sets a new password for a user and ends their sessions, MCP connections and webhook destinations (password
+// mode only). Admins only. In OIDC mode the server also answers 404 with the same code, which cannot be told apart from a
 // missing user; it only happens if the mode changed after the screen loaded, and the reload that follows
 // hides the button. Never rejects.
 export async function resetUserPassword(client: ApiClient, userId: string, password: string): Promise<UserActionResult> {
@@ -91,7 +93,7 @@ export async function resetUserPassword(client: ApiClient, userId: string, passw
   );
 }
 
-// Ends the sessions and MCP connections of a user. Admins only. Never rejects.
+// Ends the sessions, MCP connections and webhook destinations of a user. Admins only. Never rejects.
 export async function revokeUserSessions(client: ApiClient, userId: string): Promise<UserActionResult> {
   if (!isValidId(userId)) return INVALID_USER_ID;
   return resourceActionResult(
@@ -210,5 +212,39 @@ export async function revokeEmailAddress(
         param: { id: sourceId, localPart },
       }),
     ),
+  );
+}
+
+export type CreateWebhookDestinationResult = { kind: "ok"; subscription: Subscription } | SendFailure;
+
+// Registers a webhook destination in the signed-in user's workspace. Errors, including limit_exceeded (409), are
+// shown with the server's message. Never rejects.
+export async function createWebhookDestination(
+  client: ApiClient,
+  input: CreateWebhookDestinationRequest,
+): Promise<CreateWebhookDestinationResult> {
+  const sent = await send(() => client.api.v1.subscriptions.webhooks.$post({ json: input }));
+  if (sent.kind !== "response") return sent;
+  const { res } = sent;
+  if (res.ok) {
+    const body = await okJson<Subscription>(res);
+    return body.kind === "ok" ? { kind: "ok", subscription: body.value } : body;
+  }
+  return { kind: "error", message: await responseErrorMessage(res) };
+}
+
+// The outcome of deleting a webhook destination. notFound means it is gone (or is not a webhook destination).
+export type WebhookDestinationActionResult = ResourceActionResult;
+
+const INVALID_WEBHOOK_DESTINATION_ID = { kind: "error", message: "Webhook 配信先が見つかりません" } as const;
+
+// Deletes (ends) a webhook destination. Deleting a deleted one is ok. Never rejects.
+export async function deleteWebhookDestination(
+  client: ApiClient,
+  subscriptionId: string,
+): Promise<WebhookDestinationActionResult> {
+  if (!isValidId(subscriptionId)) return INVALID_WEBHOOK_DESTINATION_ID;
+  return resourceActionResult(
+    await send(() => client.api.v1.subscriptions[":id"].delete.$post({ param: { id: subscriptionId } })),
   );
 }

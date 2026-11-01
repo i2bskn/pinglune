@@ -194,10 +194,13 @@ export type EmailAddressRow = typeof emailAddresses.$inferSelect;
 export type EventRow = typeof events.$inferSelect;
 export type EventDataRow = typeof eventData.$inferSelect;
 
-// MCP Events subscriptions (events/subscribe). The id is derived from the user, the callback URL, the event name
-// and the arguments, so that the same subscription is an update. Rows are ended with unsubscribed_at rather than
-// deleted (deliveries will refer to them), except when the user is deleted.
-// Active: unsubscribed_at IS NULL AND expires_at > now.
+// The destinations of pinglune.event webhooks, of two kinds:
+// - mcp: MCP Events subscriptions (events/subscribe). The id is derived from the user, the callback URL, the event
+//   name and the arguments, so that the same subscription is an update. Signed with Standard Webhooks.
+// - webhook: webhook destinations registered on the management screen (src/routes/subscriptions.ts). The id is
+//   random, the secret is a Bearer key, and expires_at is NO_EXPIRY.
+// Rows are ended with unsubscribed_at rather than deleted (deliveries refer to them), except when the user is
+// deleted. Active: unsubscribed_at IS NULL AND expires_at > now.
 export const subscriptions = sqliteTable(
   "subscriptions",
   {
@@ -209,17 +212,22 @@ export const subscriptions = sqliteTable(
       .notNull()
       .references(() => workspaces.id),
     eventName: text("event_name").notNull(),
+    // Checked by the application only: a CHECK constraint would rebuild the table. The default keeps the inserts
+    // of the code before this column working while a deploy applies the migration first.
+    kind: text("kind", { enum: ["mcp", "webhook"] }).notNull().default("mcp"),
+    // The display name of a webhook destination (trimmed, 1 to 64 characters). NULL for mcp.
+    name: text("name"),
     // Canonical JSON of the validated arguments. "{}" when there are none.
     arguments: text("arguments").notNull(),
     // new URL(url).href.
     callbackUrl: text("callback_url").notNull(),
-    // The signing secret, encrypted (src/subscriptions/secret.ts).
+    // mcp: the signing secret; webhook: the Bearer key as UTF-8. Encrypted (src/subscriptions/secret.ts).
     secret: text("secret").notNull(),
     // The secret before the last rotation, encrypted. Deliveries also sign with it for 1 hour after
     // secret_rotated_at, so that the receiver can switch keys.
     previousSecret: text("previous_secret"),
     secretRotatedAt: integer("secret_rotated_at"),
-    // refreshBefore + 1 hour of grace.
+    // mcp: refreshBefore + 1 hour of grace. webhook: NO_EXPIRY.
     expiresAt: integer("expires_at").notNull(),
     unsubscribedAt: integer("unsubscribed_at"),
     createdAt: integer("created_at").notNull(),

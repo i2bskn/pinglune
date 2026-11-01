@@ -34,7 +34,7 @@ function invalidToken(audience: string): Response {
 }
 
 // The hosts that callbacks must not point at: the request's, and APP_ORIGIN's when it is a URL.
-function selfHosts(request: Request, env: Bindings): string[] {
+export function selfHosts(request: Request, env: Bindings): string[] {
   const hosts = [normalizeHost(new URL(request.url).hostname)];
   const appHost = appOriginHost(env.APP_ORIGIN);
   if (appHost !== null) hosts.push(appHost);

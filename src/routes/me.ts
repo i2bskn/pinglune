@@ -36,7 +36,9 @@ const me = new Hono<AppEnv>()
     }
 
     // All MCP grants are revoked, unlike sessions, where the current one is kept, and the MCP Events
-    // subscriptions end. KV first: if it fails, D1 is unchanged and the request can be retried.
+    // subscriptions end. Webhook destinations stay: their keys belong to the receivers, not to the user's login,
+    // so a routine password change does not stop them silently. KV first: if it fails, D1 is unchanged and the
+    // request can be retried.
     if (c.env.OAUTH_PROVIDER) await revokeAllGrants(c.env.OAUTH_PROVIDER, user.id);
     const db = c.get("db");
     const config = c.get("config");
@@ -47,7 +49,7 @@ const me = new Hono<AppEnv>()
     await db.batch([
       db.update(users).set({ passwordHash, updatedAt: now }).where(eq(users.id, user.id)),
       revokeUserSessionsQuery(db, user.id, now),
-      endUserSubscriptionsQuery(db, user.id, now),
+      endUserSubscriptionsQuery(db, user.id, now, { includeWebhooks: false }),
       insert,
     ]);
     await setCookiesForSession(c, session, config.jwtSecret, now);

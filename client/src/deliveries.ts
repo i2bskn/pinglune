@@ -1,4 +1,10 @@
-import type { Delivery, DeliveryStatus, Subscription, SubscriptionStatus } from "../../src/api/types";
+import type {
+  CreateWebhookDestinationRequest,
+  Delivery,
+  DeliveryStatus,
+  Subscription,
+  SubscriptionStatus,
+} from "../../src/api/types";
 
 export const DELIVERY_STATUS_LABELS: Record<DeliveryStatus, string> = {
   pending: "未配信",
@@ -21,10 +27,10 @@ const ERROR_LABELS: Record<string, string> = {
   redirect: "リダイレクトが返されました",
   dns_failed: "名前解決に失敗しました",
   blocked_destination: "送信できない宛先です",
-  subscription_inactive: "購読が終了しています",
+  subscription_inactive: "配信先が終了しています",
   event_not_found: "イベントが見つかりません",
   payload_too_large: "イベントが大きすぎます",
-  secret_unavailable: "署名用の鍵を読めませんでした",
+  secret_unavailable: "鍵を読めませんでした",
   dead_lettered: "処理を完了できませんでした",
 };
 
@@ -58,4 +64,64 @@ export function describeArguments(args: Subscription["arguments"]): string {
     if (entries.length > 0) parts.push(`ラベル: ${entries.join(", ")}`);
   }
   return parts.length === 0 ? "すべてのイベント" : parts.join(" / ");
+}
+
+// Webhook destinations are deleted rather than unsubscribed; they never expire.
+export const WEBHOOK_DESTINATION_STATUS_LABELS: Record<SubscriptionStatus, string> = {
+  active: "有効",
+  expired: "期限切れ",
+  unsubscribed: "削除済み",
+};
+
+// The items of a comma-separated field, trimmed, without empty ones. An empty list means the field is not sent.
+export function splitList(value: string): string[] {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter((item) => item !== "");
+}
+
+export const INVALID_LABELS_MESSAGE = "ラベルは1行に キー=値 の形で、キーを重複させずに書いてください";
+
+// The labels of a textarea with one key=value per line. Lines are trimmed and empty ones skipped; the first "="
+// separates the key from the value, and both are trimmed. null for a line without "=", an empty key or value, or
+// a key given twice.
+export function parseLabelLines(value: string): Record<string, string> | null {
+  // A Map, so that a key such as "__proto__" is an ordinary key.
+  const labels = new Map<string, string>();
+  for (const raw of value.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line === "") continue;
+    const index = line.indexOf("=");
+    if (index < 0) return null;
+    const key = line.slice(0, index).trim();
+    const label = line.slice(index + 1).trim();
+    if (key === "" || label === "" || labels.has(key)) return null;
+    labels.set(key, label);
+  }
+  return Object.fromEntries(labels);
+}
+
+export type WebhookDestinationForm = {
+  name: string;
+  url: string;
+  token: string;
+  types: string;
+  sources: string;
+  labels: string;
+};
+
+// The request of the registration form. Empty condition fields are left out; the server checks the rest.
+export function webhookDestinationRequest(
+  form: WebhookDestinationForm,
+): { ok: true; value: CreateWebhookDestinationRequest } | { ok: false; message: string } {
+  const labels = parseLabelLines(form.labels);
+  if (labels === null) return { ok: false, message: INVALID_LABELS_MESSAGE };
+  const value: CreateWebhookDestinationRequest = { name: form.name, url: form.url, token: form.token };
+  const types = splitList(form.types);
+  if (types.length > 0) value.types = types;
+  const sources = splitList(form.sources);
+  if (sources.length > 0) value.sources = sources;
+  if (Object.keys(labels).length > 0) value.labels = labels;
+  return { ok: true, value };
 }

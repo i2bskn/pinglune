@@ -2,7 +2,7 @@
 //
 // Workers cannot pin the address that fetch() connects to, so the host is resolved with DNS over HTTPS right
 // before every send and rejected if any address is not public; fetch() then resolves the name again. A DNS
-// answer that changes between the two lookups (DNS rebinding) is not caught: see docs/mcp-events.md.
+// answer that changes between the two lookups (DNS rebinding) is not caught: see docs/api.md.
 
 export type DestinationFailure = "blocked_destination" | "dns_failed";
 

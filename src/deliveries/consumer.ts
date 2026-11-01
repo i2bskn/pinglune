@@ -1,7 +1,8 @@
 // The consumers of the delivery queue and of its dead letter queue (wrangler.jsonc).
 //
 // Each message is one delivery. The consumer reads the delivery, checks that the subscription is still active and
-// that its user still has access to the workspace, builds the envelope from D1 and sends a signed webhook. Sends
+// that its user still has access to the workspace, builds the envelope from D1 and sends a webhook: signed for MCP
+// Events subscriptions, with the Bearer key for webhook destinations. Sends
 // that may succeed later are retried with a delay of 30 seconds doubling up to 5 times (about 15 minutes in
 // total); the number of tries is counted in D1. Every state change is conditional on the delivery being pending,
 // so that a delivery processed twice at the same time is never overwritten.
@@ -16,7 +17,7 @@ import { DELIVERY_ID_PATTERN } from "../ids";
 import { decryptSecret, subscriptionSecretKey } from "../subscriptions/secret";
 import { findSubscriptionById } from "../subscriptions/queries";
 import { appOriginHost } from "../webhooks/destination";
-import { sendWebhook, type SendResult } from "../webhooks/send";
+import { sendWebhook, type SendResult, type WebhookAuth } from "../webhooks/send";
 import { findPersonalWorkspaceByUserId } from "../workspaces/queries";
 import { deliveryEnvelope } from "./envelope";
 import { failPendingDelivery, findDeliveryById, MAX_ATTEMPTS, recordAttempt, type DeliveryStatus } from "./queries";
@@ -79,6 +80,36 @@ async function signingSecrets(
   return secrets;
 }
 
+// The Bearer key of a webhook destination, or null if it cannot be decrypted.
+async function bearerToken(jwtSecret: string, subscription: SubscriptionRow): Promise<string | null> {
+  const key = await subscriptionSecretKey(jwtSecret);
+  const token = await decryptSecret(key, subscription.id, subscription.secret);
+  return token === null ? null : new TextDecoder().decode(token);
+}
+
+// The kind of a subscription, or null for a value that this code does not know. The column has no CHECK
+// constraint, so a row may hold any value.
+function kindOf(subscription: SubscriptionRow): SubscriptionRow["kind"] | null {
+  const kind: string = subscription.kind;
+  return kind === "mcp" || kind === "webhook" ? kind : null;
+}
+
+// How the webhook is authenticated, or null if its secret cannot be decrypted. Only MCP Events subscriptions
+// rotate secrets, so only they also sign with the previous one.
+async function authOf(
+  jwtSecret: string,
+  subscription: SubscriptionRow,
+  kind: SubscriptionRow["kind"],
+  now: number,
+): Promise<WebhookAuth | null> {
+  if (kind === "webhook") {
+    const token = await bearerToken(jwtSecret, subscription);
+    return token === null ? null : { kind: "bearer", token };
+  }
+  const secrets = await signingSecrets(jwtSecret, subscription, now);
+  return secrets === null ? null : { kind: "signature", secrets };
+}
+
 // The new status after a send, given the number of tries including it.
 function statusAfter(result: SendResult, attempts: number): DeliveryStatus {
   if (result.ok) return "delivered";
@@ -109,6 +140,12 @@ async function deliver(deps: ConsumerDeps, message: Message<unknown>, id: string
     await fail("subscription_inactive");
     return;
   }
+  const kind = kindOf(subscription);
+  if (kind === null) {
+    console.error("delivery: unknown subscription kind", { deliveryId: id });
+    await fail("subscription_inactive");
+    return;
+  }
 
   const event = await findWorkspaceEvent(db, delivery.workspaceId, delivery.eventId);
   if (!event) {
@@ -116,15 +153,15 @@ async function deliver(deps: ConsumerDeps, message: Message<unknown>, id: string
     return;
   }
 
-  // Serialized once: the signature covers these exact bytes.
+  // Serialized once: the signature (of MCP Events subscriptions) covers these exact bytes.
   const body = encoder.encode(JSON.stringify(deliveryEnvelope(event)));
   if (body.byteLength > MAX_PAYLOAD_BYTES) {
     await fail("payload_too_large");
     return;
   }
 
-  const secrets = await signingSecrets(deps.jwtSecret, subscription, now);
-  if (secrets === null) {
+  const auth = await authOf(deps.jwtSecret, subscription, kind, now);
+  if (auth === null) {
     await fail("secret_unavailable");
     return;
   }
@@ -138,7 +175,7 @@ async function deliver(deps: ConsumerDeps, message: Message<unknown>, id: string
       msgId: event.event_id,
       timestampSec: Math.floor(now / 1000),
       body,
-      secrets,
+      auth,
     },
     { selfHosts: deps.selfHosts },
   );

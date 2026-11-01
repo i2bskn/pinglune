@@ -65,8 +65,9 @@ function emailDomainOf(env: Bindings): string | null {
   return result.domain;
 }
 
-// The trimmed name, or null if invalid.
-function normalizeSourceName(value: unknown): string | null {
+// The trimmed name, or null if invalid: 1 to 64 characters without control characters. Also the rule of the
+// names of webhook destinations (src/routes/subscriptions.ts).
+export function normalizeDisplayName(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const name = value.trim();
   const length = codePointLength(name);
@@ -74,9 +75,9 @@ function normalizeSourceName(value: unknown): string | null {
   return name;
 }
 
-const invalidNameMessage = "名前は制御文字を含まない 1〜64 文字にしてください";
+export const invalidNameMessage = "名前は制御文字を含まない 1〜64 文字にしてください";
 
-function unknownField(body: Record<string, unknown>, allowed: string[]): string | null {
+export function unknownField(body: Record<string, unknown>, allowed: string[]): string | null {
   for (const key of Object.keys(body)) if (!allowed.includes(key)) return key;
   return null;
 }
@@ -84,7 +85,7 @@ function unknownField(body: Record<string, unknown>, allowed: string[]): string 
 const createSourceBody = jsonBody<CreateSourceRequest, { name: string }>((body, c) => {
   const unknown = unknownField(body, ["name"]);
   if (unknown !== null) return apiError(c, 400, "unknown_field", `未知の項目があります: ${unknown}`);
-  const name = normalizeSourceName(body.name);
+  const name = normalizeDisplayName(body.name);
   if (name === null) return apiError(c, 400, "invalid_name", invalidNameMessage);
   return { ok: true, value: { name } };
 });
@@ -97,7 +98,7 @@ const updateSourceBody = jsonBody<UpdateSourceRequest, { name?: string; enabled?
   }
   const value: { name?: string; enabled?: boolean } = {};
   if ("name" in body) {
-    const name = normalizeSourceName(body.name);
+    const name = normalizeDisplayName(body.name);
     if (name === null) return apiError(c, 400, "invalid_name", invalidNameMessage);
     value.name = name;
   }

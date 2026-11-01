@@ -129,19 +129,41 @@ export type IngestResponse = { event_id: string; duplicate: boolean };
 
 export type SubscriptionStatus = "active" | "expired" | "unsubscribed";
 
-// An MCP Events subscription. Neither the secrets nor the whole callback URL is returned.
+// mcp: an MCP Events subscription (events/subscribe). webhook: a webhook destination registered on the screen,
+// sent with a Bearer key.
+export type SubscriptionKind = "mcp" | "webhook";
+
+// An MCP Events subscription or a webhook destination. Neither the secrets (or keys) nor the whole callback URL is
+// returned.
 export type Subscription = {
   id: string;
+  kind: SubscriptionKind;
+  // The name of a webhook destination. null for mcp.
+  name: string | null;
   // The host of the callback URL only.
   callback_host: string | null;
   // The conditions (types, sources, labels); null if the stored value is broken.
   arguments: Record<string, unknown> | null;
+  // Webhook destinations are "active" or "unsubscribed" (deleted); they never expire.
   status: SubscriptionStatus;
-  // expires_at minus the grace of 1 hour: when the client should refresh the subscription.
-  refresh_before: number;
-  expires_at: number;
+  // mcp only: expires_at minus the grace of 1 hour, when the client should refresh the subscription. null for
+  // webhook.
+  refresh_before: number | null;
+  // mcp only. null for webhook, which does not expire.
+  expires_at: number | null;
   created_at: number;
   updated_at: number;
+};
+
+// The conditions (types, sources, labels) are optional, as in events/subscribe; an empty array or object is
+// rejected. The key is never returned.
+export type CreateWebhookDestinationRequest = {
+  name: string;
+  url: string;
+  token: string;
+  types?: string[];
+  sources?: string[];
+  labels?: Record<string, string>;
 };
 
 export type SubscriptionList = { subscriptions: Subscription[] };

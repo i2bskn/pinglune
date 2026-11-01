@@ -7,6 +7,7 @@ import type { Bindings } from "../src/env";
 import worker from "../src/index";
 import { acceptEvent } from "../src/intake/service";
 import { eventPayloadSchema } from "../src/mcp/event-payload";
+import { NO_EXPIRY } from "../src/subscriptions/queries";
 import { signWebhook } from "../src/webhooks/sign";
 import {
   createSource,
@@ -464,6 +465,83 @@ describe("deliveries that are not sent", () => {
       expect(await delivery()).toMatchObject({ status: "pending", attempts: 0 });
     },
   );
+});
+
+describe("webhook destinations", () => {
+  const TOKEN = "crsr_0123456789abcdefghijklmnopqrstuvwxyz";
+
+  beforeEach(async () => {
+    subscription = await createSubscription({
+      user: owner,
+      kind: "webhook",
+      name: "bot",
+      callbackUrl: CALLBACK,
+      secret: new TextEncoder().encode(TOKEN),
+      expiresAt: NO_EXPIRY,
+    });
+    await setDelivery("subscription_id = ?", subscription.id);
+  });
+
+  it("sends the envelope with the Bearer key and webhook-id, without signature headers", async () => {
+    const result = await run();
+    expectAck(result);
+    expect(callbacks).toHaveLength(1);
+    const [{ request, body } = { request: new Request(CALLBACK), body: "" }] = callbacks;
+    expect(request.url).toBe(CALLBACK);
+    expect(request.headers.get("authorization")).toBe(`Bearer ${TOKEN}`);
+    expect(request.headers.get("webhook-id")).toBe(eventId);
+    expect(request.headers.get("content-type")).toBe("application/json");
+    expect(request.headers.get("user-agent")).toBe("Pinglune-Webhooks/1");
+    expect(request.headers.has("webhook-signature")).toBe(false);
+    expect(request.headers.has("webhook-timestamp")).toBe(false);
+    expect(request.headers.has("x-mcp-subscription-id")).toBe(false);
+    expect(JSON.parse(body)).toMatchObject({ eventId, name: "pinglune.event", cursor: null });
+    expect(await delivery()).toMatchObject({ status: "delivered", attempts: 1, last_http_status: 200 });
+  });
+
+  it("retries a 401 like other 4xx", async () => {
+    respond = () => new Response(null, { status: 401 });
+    expectRetry(await run(), 30);
+    expect(await delivery()).toMatchObject({ status: "pending", attempts: 1, last_http_status: 401, last_error: "http_4xx" });
+  });
+
+  it("fails when the key cannot be decrypted", async () => {
+    await setSubscription("secret = 'v1.broken.value'");
+    expectAck(await run());
+    expect(callbacks).toEqual([]);
+    expect(await delivery()).toMatchObject({ status: "failed", attempts: 0, last_error: "secret_unavailable" });
+  });
+
+  it("fails when the destination is deleted", async () => {
+    await setSubscription("unsubscribed_at = ?", now - 1);
+    expectAck(await run());
+    expect(callbacks).toEqual([]);
+    expect(await delivery()).toMatchObject({ status: "failed", last_error: "subscription_inactive" });
+  });
+
+  it("never logs the key or the whole URL", async () => {
+    const logs = [vi.spyOn(console, "warn"), vi.spyOn(console, "error"), vi.spyOn(console, "log")].map((spy) =>
+      spy.mockImplementation(() => {}),
+    );
+    respond = () => new Response(null, { status: 410 });
+    expectAck(await run());
+    expect(await delivery()).toMatchObject({ status: "failed", last_error: "http_4xx" });
+    const logged = JSON.stringify(logs.flatMap((spy) => spy.mock.calls));
+    expect(logged).toContain(CALLBACK_HOST);
+    expect(logged).not.toContain(TOKEN);
+    expect(logged).not.toContain("/pinglune?x=1");
+  });
+});
+
+describe("a subscription of an unknown kind", () => {
+  it("fails with subscription_inactive and logs it", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    await setSubscription("kind = 'other'");
+    expectAck(await run());
+    expect(callbacks).toEqual([]);
+    expect(await delivery()).toMatchObject({ status: "failed", attempts: 0, last_error: "subscription_inactive" });
+    expect(error).toHaveBeenCalledWith("delivery: unknown subscription kind", { deliveryId });
+  });
 });
 
 describe("unexpected errors", () => {

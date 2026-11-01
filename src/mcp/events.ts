@@ -1,5 +1,5 @@
 // MCP Events (events/list, events/subscribe, events/unsubscribe) as ChatGPT uses them: webhook delivery only,
-// no replay. See docs/mcp-events.md.
+// no replay. See docs/api.md.
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -210,7 +210,7 @@ async function verifyCallback(
       msgId: `msg_verification_${randomHex(VERIFICATION_ID_BYTES)}`,
       timestampSec: Math.floor(now / 1000),
       body: new TextEncoder().encode(JSON.stringify({ type: "verification", challenge })),
-      secrets: [secret],
+      auth: { kind: "signature", secrets: [secret] },
     },
     { selfHosts: deps.selfHosts },
   );
@@ -287,6 +287,8 @@ async function subscribe(deps: EventDeps, rawParams: unknown) {
     id,
     userId: user.id,
     workspaceId: workspace.id,
+    kind: "mcp",
+    name: null,
     eventName,
     arguments: canonicalJson(args),
     callbackUrl: url.href,

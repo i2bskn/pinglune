@@ -92,11 +92,12 @@ const usersApi = new Hono<AppEnv>()
     if (c.env.OAUTH_PROVIDER) await revokeAllGrants(c.env.OAUTH_PROVIDER, id);
     const now = clock.now();
     const passwordHash = await hashPassword(input.password);
-    // The MCP Events subscriptions end with the grants, with or without OAUTH_PROVIDER.
+    // The MCP Events subscriptions and the webhook destinations end with the grants, with or without
+    // OAUTH_PROVIDER: an admin's reset may answer a compromise, and an attacker's destination never expires.
     await db.batch([
       db.update(users).set({ passwordHash, updatedAt: now }).where(eq(users.id, id)),
       revokeUserSessionsQuery(db, id, now),
-      endUserSubscriptionsQuery(db, id, now),
+      endUserSubscriptionsQuery(db, id, now, { includeWebhooks: true }),
     ]);
     return c.body(null, 204);
   })
@@ -105,10 +106,10 @@ const usersApi = new Hono<AppEnv>()
     const id = c.req.param("id");
     if (!(await findUserById(db, id))) return apiError(c, 404, "not_found", userNotFound);
     // MCP grants first: if KV fails, D1 is unchanged and the request can be retried. The MCP Events
-    // subscriptions end with the grants, with or without OAUTH_PROVIDER.
+    // subscriptions and the webhook destinations end with the grants, with or without OAUTH_PROVIDER.
     if (c.env.OAUTH_PROVIDER) await revokeAllGrants(c.env.OAUTH_PROVIDER, id);
     const now = clock.now();
-    await endUserSubscriptionsQuery(db, id, now).run();
+    await endUserSubscriptionsQuery(db, id, now, { includeWebhooks: true }).run();
     await revokeUserSessionsQuery(db, id, now).run();
     return c.body(null, 204);
   })
