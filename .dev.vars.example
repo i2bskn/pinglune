@@ -1,0 +1,30 @@
+# Copy to .dev.vars for local development with `wrangler dev`.
+# Cookies use the Secure attribute and the __Host- prefix. Chrome and Firefox store them on
+# http://localhost, but Safari does not, so use Chrome or Firefox for local development.
+
+# The Deploy to Cloudflare button asks for every uncommented key in this file as a secret.
+# Keep only JWT_SECRET uncommented; the other settings are plain variables.
+
+# Required. At least 32 characters. Generate one with `openssl rand -hex 32`.
+# Left empty on purpose so that a placeholder is never used in production.
+JWT_SECRET=
+
+# "password" (default) or "oidc"
+# AUTH_MODE=password
+
+# Required only when AUTH_MODE=oidc.
+# APP_ORIGIN=https://pinglune.example.com
+# OIDC_ISSUER=https://idp.example.com
+# OIDC_CLIENT_ID=pinglune
+# OIDC_CLIENT_SECRET=dummy-secret
+
+# Effectively required when AUTH_MODE=oidc. Empty denies every login. "*" allows everyone (when the IdP
+# restricts who can sign in). Otherwise comma separated emails (exact match) or domains (exact match,
+# subdomains do not match).
+# ALLOWED_EMAILS=example.com,alice@example.org
+
+# Optional for AUTH_MODE=oidc. Set to "false" only when the IdP does not send email_verified and every
+# login method of the IdP verifies emails (e.g. Cloudflare Access for SaaS with Google as the only login method).
+# Users are linked to existing accounts by email, so an unverified login method could take over an account.
+# When the claim is present it must still be true. Review this setting whenever OIDC_ISSUER changes.
+# OIDC_REQUIRE_EMAIL_VERIFIED=false

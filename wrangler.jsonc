@@ -1,0 +1,95 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "pinglune",
+  "main": "src/index.ts",
+  // Must not exceed the newest date supported by the workerd bundled with wrangler and
+  // @cloudflare/vitest-plugin (workerd 1.20261023.1), so that tests and production use the same date.
+  "compatibility_date": "2026-10-23",
+  // Required for OAuth clients that use Client ID Metadata Documents: fetches of their metadata
+  // must not reach internal addresses.
+  "compatibility_flags": ["global_fetch_strictly_public"],
+  // Settings are managed in the Cloudflare dashboard ("Variables and Secrets") or via `wrangler secret put`.
+  // Do not add "vars" here; keep_vars prevents redeploys from overwriting them.
+  "keep_vars": true,
+  // Preview URLs would serve unmigrated code against the production D1 database.
+  "preview_urls": false,
+  "observability": { "enabled": true },
+  // The D1 database is created near whoever runs the first `wrangler deploy` (for the Deploy to Cloudflare button
+  // and Workers Builds, the build environment), which can be far from the users. An API request makes several
+  // sequential D1 queries, so Smart Placement runs the Worker near the database instead of near the user.
+  // Static assets are still served from the nearest location, since they do not invoke the Worker.
+  "placement": { "mode": "smart" },
+  // Builds the React client into dist/client before `wrangler deploy` and `wrangler dev`, so that
+  // the Workers Builds build command can stay empty. `wrangler dev` rebuilds when client/ changes.
+  "build": { "command": "pnpm run build:client", "watch_dir": "client" },
+  "assets": {
+    "directory": "./dist/client",
+    // Paths without a file (e.g. /users) return index.html and are routed by the SPA.
+    "not_found_handling": "single-page-application",
+    // Paths handled by the Worker; everything else is served by the static assets without invoking it.
+    // Patterns match the pathname only, and "/x/*" does not match "/x", so both are listed.
+    // Keep in sync with the routes in src/app.ts and isOAuthPath in src/index.ts: when adding a
+    // top-level path there, add it here as well.
+    "run_worker_first": [
+      "/api/*",
+      "/auth",
+      "/auth/*",
+      "/authorize",
+      "/ingest",
+      "/ingest/*",
+      "/mcp",
+      "/mcp/*",
+      "/oauth/*",
+      "/.well-known/*"
+    ]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      // No database_id: `wrangler deploy` provisions the database automatically, or connects to an
+      // existing D1 database with this name in the account.
+      "database_name": "pinglune",
+      "migrations_dir": "drizzle/migrations"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      // OAuth clients, grants and tokens for MCP. No id: like the D1 database, `wrangler deploy`
+      // provisions the namespace automatically.
+      "binding": "OAUTH_KV"
+    }
+  ],
+  "r2_buckets": [
+    {
+      // The bodies and attachments of received events (src/intake). No bucket_name: like the D1 database
+      // and the KV namespace, `wrangler deploy` provisions the bucket automatically.
+      // R2 must be enabled in the Cloudflare dashboard first.
+      "binding": "EVENT_DATA"
+    }
+  ],
+  // Webhook deliveries of MCP Events (src/deliveries). `wrangler deploy` creates missing queues only for producer
+  // bindings, and fails with "Queue ... does not exist" for a queue that has only a consumer.
+  "queues": {
+    "producers": [
+      { "binding": "DELIVERY_QUEUE", "queue": "pinglune-deliveries" },
+      // Not used by the code: declared only so that `wrangler deploy` creates the dead letter queue as well.
+      { "binding": "DELIVERY_DLQ", "queue": "pinglune-deliveries-dlq" }
+    ],
+    "consumers": [
+      {
+        "queue": "pinglune-deliveries",
+        // At most 4 messages per invocation: each uses up to 7 D1 queries and 3 external fetches, within the
+        // per-invocation limits of the Free plan (50 each).
+        "max_batch_size": 4,
+        "max_batch_timeout": 2,
+        // Only unexpected exceptions retry the message itself; failed sends retry with an explicit delay.
+        "max_retries": 5,
+        "dead_letter_queue": "pinglune-deliveries-dlq"
+      },
+      // Records the dead-lettered deliveries as failed.
+      { "queue": "pinglune-deliveries-dlq", "max_batch_size": 10, "max_batch_timeout": 5, "max_retries": 10 }
+    ]
+  },
+  // The daily maintenance (src/maintenance/daily.ts), at 18:00 UTC (03:00 in Japan).
+  "triggers": { "crons": ["0 18 * * *"] }
+}
