@@ -226,3 +226,7 @@ if (!result.ok && result.error.retryable) {
 | `read_data` | 本文・添付の中身をUTF-8のテキストとして、`offset` と `limit`（バイト）の範囲で読みます。続きは `next_offset` から読みます。バイナリとUTF-8以外の文字コードは中身を返しません |
 
 引数と結果の詳細は[MCPの読み取りツール](docs/architecture.md#mcpの読み取りツール)を参照してください。
+
+## ライセンス
+
+[Apache License 2.0](LICENSE)
