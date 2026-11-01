@@ -21,6 +21,9 @@ export type Bindings = {
   OIDC_CLIENT_SECRET?: string;
   ALLOWED_EMAILS?: string;
   OIDC_REQUIRE_EMAIL_VERIFIED?: string;
+  // The domain of the email intake (the apex of a Cloudflare zone). Optional; read by parseEmailDomain, not by
+  // loadConfig.
+  EMAIL_DOMAIN?: string;
 };
 
 export type AuthMode = "oidc" | "password";
@@ -135,4 +138,18 @@ function parseHttpsUrl(value: string | undefined): string | null {
   } catch {
     return null;
   }
+}
+
+export type EmailDomainResult = { ok: true; domain: string | null } | { ok: false };
+
+const EMAIL_DOMAIN_PATTERN = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$/;
+
+// EMAIL_DOMAIN, trimmed and lowercased. Unset or blank turns the email intake off (domain null). Kept out of
+// loadConfig so that a mistake in this optional setting stops only the email intake, not HTTP, MCP or deliveries.
+export function parseEmailDomain(value: unknown): EmailDomainResult {
+  if (value === undefined) return { ok: true, domain: null };
+  if (typeof value !== "string") return { ok: false };
+  const domain = value.trim().toLowerCase();
+  if (domain === "") return { ok: true, domain: null };
+  return EMAIL_DOMAIN_PATTERN.test(domain) ? { ok: true, domain } : { ok: false };
 }

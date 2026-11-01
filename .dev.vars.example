@@ -28,3 +28,8 @@ JWT_SECRET=
 # Users are linked to existing accounts by email, so an unverified login method could take over an account.
 # When the claim is present it must still be true. Review this setting whenever OIDC_ISSUER changes.
 # OIDC_REQUIRE_EMAIL_VERIFIED=false
+
+# Optional. The domain of the email intake: the apex of a Cloudflare zone (e.g. example.com) whose
+# Email Routing catch-all rule sends mail to this Worker. Set it only when you use the email intake.
+# Keep it commented out here, so that the Deploy to Cloudflare button does not ask for it as a secret.
+# EMAIL_DOMAIN=example.com

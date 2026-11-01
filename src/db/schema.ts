@@ -118,6 +118,24 @@ export const apiKeys = sqliteTable(
   (t) => [index("api_keys_source_id_idx").on(t.sourceId)],
 );
 
+// Addresses of the email intake (src/intake/email.ts): <id>@<EMAIL_DOMAIN>. The domain is not stored, so the
+// addresses keep working when EMAIL_DOMAIN changes. Rows are revoked rather than deleted, except when the user is
+// deleted.
+export const emailAddresses = sqliteTable(
+  "email_addresses",
+  {
+    // The local part: 20 lowercase letters and digits.
+    id: text("id").primaryKey(),
+    sourceId: text("source_id")
+      .notNull()
+      .references(() => sources.id),
+    createdAt: integer("created_at").notNull(),
+    lastReceivedAt: integer("last_received_at"),
+    revokedAt: integer("revoked_at"),
+  },
+  (t) => [index("email_addresses_source_id_idx").on(t.sourceId)],
+);
+
 export const events = sqliteTable(
   "events",
   {
@@ -172,6 +190,7 @@ export const eventData = sqliteTable(
 
 export type SourceRow = typeof sources.$inferSelect;
 export type ApiKeyRow = typeof apiKeys.$inferSelect;
+export type EmailAddressRow = typeof emailAddresses.$inferSelect;
 export type EventRow = typeof events.$inferSelect;
 export type EventDataRow = typeof eventData.$inferSelect;
 

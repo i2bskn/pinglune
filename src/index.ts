@@ -2,6 +2,7 @@ import app from "./app";
 import { clock } from "./clock";
 import { handleQueue } from "./deliveries/consumer";
 import { loadConfig, type Bindings, type Config } from "./env";
+import { handleEmail } from "./intake/email";
 import { runDailyMaintenance } from "./maintenance/daily";
 import { getOAuthProvider } from "./mcp/provider";
 
@@ -56,6 +57,11 @@ export default {
   // The delivery queue and its dead letter queue (src/deliveries/consumer.ts).
   async queue(batch: MessageBatch<unknown>, env: Bindings): Promise<void> {
     await handleQueue(batch, env);
+  },
+
+  // The email intake (src/intake/email.ts), from the catch-all rule of Email Routing.
+  async email(message: ForwardableEmailMessage, env: Bindings): Promise<void> {
+    await handleEmail(message, env);
   },
 
   // The daily cron (src/maintenance/daily.ts).

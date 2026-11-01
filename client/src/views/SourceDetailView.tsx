@@ -1,6 +1,13 @@
 import { type FormEvent, useState } from "react";
-import type { ApiKey, Source } from "../../../src/api/types";
-import { type SourceActionResult, issueApiKey, revokeApiKey, updateSource } from "../actions";
+import type { ApiKey, EmailAddress, Source } from "../../../src/api/types";
+import {
+  type SourceActionResult,
+  issueApiKey,
+  issueEmailAddress,
+  revokeApiKey,
+  revokeEmailAddress,
+  updateSource,
+} from "../actions";
 import { formatDateTime } from "../format";
 import { PlusIcon } from "../icons";
 import { Link } from "../Link";
@@ -10,8 +17,9 @@ import { UNKNOWN_RESULT_MESSAGE } from "./SourcesView";
 
 const GONE_MESSAGE = "この送信元は見つかりません";
 const KEY_GONE_MESSAGE = "このAPIキーは見つかりません";
+const ADDRESS_GONE_MESSAGE = "このメールアドレスは見つかりません";
 
-// One source: rename, enable or disable, its ID for Service Bindings, and its API keys.
+// One source: rename, enable or disable, its ID for Service Bindings, its API keys and its email addresses.
 export function SourceDetailView({ client, id }: { client: ApiClient; id: string }) {
   const [state, reload] = useView(() => loadSourceDetail(client, id), `source:${id}`);
   // The result of the last operation, kept across the reload that follows.
@@ -23,7 +31,7 @@ export function SourceDetailView({ client, id }: { client: ApiClient; id: string
   if (state.kind !== "ready") {
     return <ViewStatus state={state} notFoundMessage={GONE_MESSAGE} onReload={reload} />;
   }
-  const { source, apiKeys } = state.data;
+  const { source, apiKeys, emailAddresses } = state.data;
 
   return (
     <main className="main">
@@ -102,6 +110,48 @@ export function SourceDetailView({ client, id }: { client: ApiClient; id: string
           ))}
         </ul>
       )}
+
+      <h2>メールアドレス</h2>
+      {emailAddresses.email_domain === null ? (
+        <p className="muted">
+          メールでの受付は設定されていません。README の『メールでの受付』を参照して <code>EMAIL_DOMAIN</code>{" "}
+          を設定してください。
+        </p>
+      ) : (
+        <>
+          <p>メールで送るときの宛先です。届いたメールはこの送信元のイベントとして受け付けます。</p>
+          <IssueEmailAddressButton
+            client={client}
+            sourceId={source.id}
+            onIssued={() => {
+              setNotice("メールアドレスを発行しました");
+              reload();
+            }}
+            onGone={() => {
+              setNotice(GONE_MESSAGE);
+              reload();
+            }}
+          />
+          {emailAddresses.email_addresses.length === 0 ? (
+            <p className="muted">メールアドレスはまだありません。</p>
+          ) : (
+            <ul className="list api-keys email-addresses">
+              {emailAddresses.email_addresses.map((emailAddress) => (
+                <EmailAddressRow
+                  key={emailAddress.local_part}
+                  client={client}
+                  sourceId={source.id}
+                  emailAddress={emailAddress}
+                  onDone={(message) => {
+                    setNotice(message);
+                    reload();
+                  }}
+                />
+              ))}
+            </ul>
+          )}
+        </>
+      )}
     </main>
   );
 }
@@ -162,7 +212,7 @@ function SourceSettings({
         <dt>状態</dt>
         <dd>
           <span className={source.enabled ? "badge" : "badge badge-off"}>{source.enabled ? "有効" : "無効"}</span>
-          {!source.enabled && <span className="muted">（HTTPとService Bindingsのどちらからも受け付けません）</span>}
+          {!source.enabled && <span className="muted">（HTTP・Service Bindings・メールのいずれからも受け付けません）</span>}
         </dd>
         <dt>作成日時</dt>
         <dd>{formatDateTime(source.created_at)}</dd>
@@ -340,6 +390,141 @@ function ApiKeyRow({
           <div className="folder-form-actions">
             <button type="submit" className="button-danger" disabled={sending}>
               失効させる
+            </button>
+            <button type="button" onClick={() => setConfirming(false)} disabled={sending}>
+              やめる
+            </button>
+          </div>
+          {failure !== null && <p role="alert">{failure}</p>}
+        </form>
+      )}
+    </li>
+  );
+}
+
+function IssueEmailAddressButton({
+  client,
+  sourceId,
+  onIssued,
+  onGone,
+}: {
+  client: ApiClient;
+  sourceId: string;
+  onIssued: () => void;
+  onGone: () => void;
+}) {
+  const [sending, setSending] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+
+  async function issue() {
+    setSending(true);
+    setFailure(null);
+    const result = await issueEmailAddress(client, sourceId);
+    switch (result.kind) {
+      case "ok":
+        setSending(false);
+        onIssued();
+        return;
+      case "notFound":
+        setSending(false);
+        onGone();
+        return;
+      case "error":
+        setSending(false);
+        setFailure(result.message);
+        return;
+      case "unknown":
+        setSending(false);
+        setFailure(UNKNOWN_RESULT_MESSAGE);
+        return;
+      case "redirecting":
+        return;
+    }
+  }
+
+  return (
+    <div className="actions">
+      <button type="button" className="button-primary" onClick={() => void issue()} disabled={sending}>
+        <PlusIcon />
+        メールアドレスを発行
+      </button>
+      {failure !== null && <p role="alert">{failure}</p>}
+    </div>
+  );
+}
+
+function EmailAddressRow({
+  client,
+  sourceId,
+  emailAddress,
+  onDone,
+}: {
+  client: ApiClient;
+  sourceId: string;
+  emailAddress: EmailAddress;
+  onDone: (message: string | null) => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+  const revoked = emailAddress.revoked_at !== null;
+  // The domain is set whenever the list is shown; the local part is the fallback.
+  const shown = emailAddress.address ?? emailAddress.local_part;
+
+  async function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSending(true);
+    setFailure(null);
+    const result = await revokeEmailAddress(client, sourceId, emailAddress.local_part);
+    if (result.kind === "redirecting") return;
+    setSending(false);
+    if (result.kind === "ok") {
+      setConfirming(false);
+      onDone("メールアドレスを無効にしました");
+      return;
+    }
+    if (result.kind === "notFound") {
+      setConfirming(false);
+      onDone(ADDRESS_GONE_MESSAGE);
+      return;
+    }
+    setFailure(resultMessage(result, ADDRESS_GONE_MESSAGE));
+  }
+
+  return (
+    <li className={revoked ? "api-key api-key-revoked" : "api-key"}>
+      <div className="api-key-head">
+        <code className="api-key-id email-address">{shown}</code>
+        <span className={revoked ? "badge badge-off" : "badge"}>{revoked ? "無効化済み" : "有効"}</span>
+        {!revoked && (
+          <button
+            type="button"
+            className="button-danger-outline"
+            onClick={() => {
+              setConfirming(true);
+              setFailure(null);
+            }}
+            disabled={sending}
+          >
+            無効にする
+          </button>
+        )}
+      </div>
+      <div className="api-key-meta">
+        <span>作成: {formatDateTime(emailAddress.created_at)}</span>
+        <span>
+          最終受信: {emailAddress.last_received_at === null ? "未受信" : formatDateTime(emailAddress.last_received_at)}
+        </span>
+        {emailAddress.revoked_at !== null && <span>無効化: {formatDateTime(emailAddress.revoked_at)}</span>}
+      </div>
+      {confirming && (
+        <form className="folder-form" aria-label="メールアドレスを無効にする" onSubmit={(event) => void onSubmit(event)}>
+          <p>
+            メールアドレス <code>{shown}</code> を無効にします。このアドレス宛てのメールは受け付けなくなります。元に戻せません。
+          </p>
+          <div className="folder-form-actions">
+            <button type="submit" className="button-danger" disabled={sending}>
+              無効にする
             </button>
             <button type="button" onClick={() => setConfirming(false)} disabled={sending}>
               やめる

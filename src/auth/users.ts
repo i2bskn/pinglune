@@ -167,6 +167,11 @@ export async function deleteUser(db: Db, id: string): Promise<DeleteUserResult> 
     d1
       .prepare(`DELETE FROM api_keys WHERE source_id IN (SELECT id FROM sources WHERE workspace_id = ?2) AND ${guard}`)
       .bind(id, workspaceId),
+    d1
+      .prepare(
+        `DELETE FROM email_addresses WHERE source_id IN (SELECT id FROM sources WHERE workspace_id = ?2) AND ${guard}`,
+      )
+      .bind(id, workspaceId),
     d1.prepare(`DELETE FROM sources WHERE workspace_id = ?2 AND ${guard}`).bind(id, workspaceId),
     d1.prepare(`DELETE FROM subscriptions WHERE user_id = ?1 AND ${guard}`).bind(id),
     d1.prepare(`DELETE FROM workspaces WHERE owner_user_id = ?1 AND kind = 'personal' AND ${guard}`).bind(id),

@@ -1,13 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ApiKey, Source, User } from "../../src/api/types";
+import type { ApiKey, EmailAddress, Source, User } from "../../src/api/types";
 import {
   changeUserRole,
   createSource,
   createUser,
   deleteUser,
   issueApiKey,
+  issueEmailAddress,
   resetUserPassword,
   revokeApiKey,
+  revokeEmailAddress,
   revokeUserSessions,
   updateSource,
 } from "./actions";
@@ -166,6 +168,7 @@ describe.each([
 
 const SOURCE_ID = "src_01JC9Z7H2K4M6N8P0Q2R4S6T8V";
 const KEY_ID = "abcdefghij012345";
+const LOCAL_PART = "abcdefghij0123456789";
 
 describe("createSource", () => {
   const url = "/api/v1/sources";
@@ -249,7 +252,65 @@ describe("issueApiKey", () => {
   });
 });
 
+describe("issueEmailAddress", () => {
+  const url = `/api/v1/sources/${SOURCE_ID}/email-addresses`;
+  const ADDRESS: EmailAddress = {
+    local_part: LOCAL_PART,
+    address: `${LOCAL_PART}@example.com`,
+    created_at: 1,
+    last_received_at: null,
+    revoked_at: null,
+  };
+
+  it("is ok with the address on 201", async () => {
+    const { client, fetch } = setup(() => Response.json(ADDRESS, { status: 201 }), 401, url);
+    expect(await issueEmailAddress(client, SOURCE_ID)).toEqual({ kind: "ok", emailAddress: ADDRESS });
+    expect(fetch.mock.calls[0]?.[1]?.method).toBe("POST");
+  });
+
+  it("is not found on 404", async () => {
+    const { client } = setup(apiError(404, "送信元が見つかりません"), 401, url);
+    expect(await issueEmailAddress(client, SOURCE_ID)).toEqual({ kind: "notFound" });
+  });
+
+  it("is an error with the API message on 409", async () => {
+    const { client } = setup(apiError(409, "メールでの受付が設定されていません（EMAIL_DOMAIN）"), 401, url);
+    expect(await issueEmailAddress(client, SOURCE_ID)).toEqual({
+      kind: "error",
+      message: "メールでの受付が設定されていません（EMAIL_DOMAIN）",
+    });
+  });
+
+  it("is an error when the created address is not JSON", async () => {
+    const { client } = setup(() => new Response("oops", { status: 201 }), 401, url);
+    expect(await issueEmailAddress(client, SOURCE_ID)).toMatchObject({ kind: "error" });
+  });
+
+  it("is unknown when fetch rejects", async () => {
+    const { client } = setup(() => Promise.reject(new TypeError("Failed to fetch")), 401, url);
+    expect(await issueEmailAddress(client, SOURCE_ID)).toEqual({ kind: "unknown" });
+  });
+
+  it("is redirecting when login is required", async () => {
+    const { client } = setup(apiError(401, "ログインしてください"), 401, url);
+    expect(await issueEmailAddress(client, SOURCE_ID)).toEqual({ kind: "redirecting" });
+  });
+
+  it("is an error without sending for an invalid ID", async () => {
+    const { client, fetch } = setup(() => new Response(null, { status: 201 }), 401, url);
+    expect(await issueEmailAddress(client, "../users/u1")).toEqual({ kind: "error", message: "送信元が見つかりません" });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
 describe.each([
+  {
+    name: "revokeEmailAddress",
+    url: `/api/v1/sources/${SOURCE_ID}/email-addresses/${LOCAL_PART}/revoke`,
+    method: "POST",
+    body: undefined,
+    call: (client: Parameters<typeof revokeApiKey>[0], id: string) => revokeEmailAddress(client, id, LOCAL_PART),
+  },
   {
     name: "revokeApiKey",
     url: `/api/v1/sources/${SOURCE_ID}/api-keys/${KEY_ID}/revoke`,
@@ -303,5 +364,11 @@ describe.each([
 it("revokeApiKey does not send an invalid key ID", async () => {
   const { client, fetch } = setup(() => Response.json({}), 401, "/unused");
   expect(await revokeApiKey(client, SOURCE_ID, "../x")).toEqual({ kind: "error", message: "送信元が見つかりません" });
+  expect(fetch).not.toHaveBeenCalled();
+});
+
+it("revokeEmailAddress does not send an invalid local part", async () => {
+  const { client, fetch } = setup(() => Response.json({}), 401, "/unused");
+  expect(await revokeEmailAddress(client, SOURCE_ID, "../x")).toEqual({ kind: "error", message: "送信元が見つかりません" });
   expect(fetch).not.toHaveBeenCalled();
 });

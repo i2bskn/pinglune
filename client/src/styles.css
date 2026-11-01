@@ -959,6 +959,12 @@ code {
   text-decoration: line-through;
 }
 
+/* Intake email addresses are long: they wrap anywhere, and one click selects the whole address to copy. */
+.api-key-id.email-address {
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
 .api-key .folder-form {
   margin: 0.5rem 0 0;
   box-shadow: none;

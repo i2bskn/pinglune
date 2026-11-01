@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type {
   ApiKey,
   DeliveryList,
+  EmailAddressList,
   EventDetail,
   EventList,
   Source,
@@ -154,19 +155,20 @@ export async function loadSources(client: ApiClient): Promise<Loaded<Source[]>> 
   return { kind: "ready", data: list.value.sources };
 }
 
-export type SourceDetailData = { source: Source; apiKeys: ApiKey[] };
+export type SourceDetailData = { source: Source; apiKeys: ApiKey[]; emailAddresses: EmailAddressList };
 
 // There is no API for one source; it is taken from the list.
 export async function loadSourceDetail(client: ApiClient, id: string): Promise<Loaded<SourceDetailData>> {
   if (!isValidId(id)) return { kind: "notFound" };
-  const [list, keys] = await Promise.all([
+  const [list, keys, addresses] = await Promise.all([
     request(() => client.api.v1.sources.$get()),
     request(() => client.api.v1.sources[":id"]["api-keys"].$get({ param: { id } })),
+    request(() => client.api.v1.sources[":id"]["email-addresses"].$get({ param: { id } })),
   ]);
-  if (list.kind !== "ok" || keys.kind !== "ok") return failure([list, keys]);
+  if (list.kind !== "ok" || keys.kind !== "ok" || addresses.kind !== "ok") return failure([list, keys, addresses]);
   const source = list.value.sources.find((s) => s.id === id);
   if (!source) return { kind: "notFound" };
-  return { kind: "ready", data: { source, apiKeys: keys.value.api_keys } };
+  return { kind: "ready", data: { source, apiKeys: keys.value.api_keys, emailAddresses: addresses.value } };
 }
 
 // Loads a screen's data while the component is mounted, and again when key changes or reload is called.

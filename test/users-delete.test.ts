@@ -5,6 +5,7 @@ import { deleteUser } from "../src/auth/users";
 import { users, workspaces, type UserRow, type WorkspaceRow } from "../src/db/schema";
 import {
   createApiKey,
+  createEmailAddress,
   createSource,
   createSubscription,
   createUser,
@@ -81,11 +82,13 @@ async function countWhere(table: string, column: string, value: string): Promise
   return row?.count ?? 0;
 }
 
-// A source with a key and an event with a body and an attachment, received through the HTTP intake.
+// A source with a key, an email address, and an event with a body and an attachment, received through the HTTP
+// intake.
 async function fillWorkspace(user: UserRow): Promise<{ workspace: WorkspaceRow; sourceId: string; keyId: string }> {
   const workspace = await personalWorkspaceOf(user);
   const source = await createSource({ workspaceId: workspace.id, name: "app" });
   const { key, keyId } = await createApiKey(source.id);
+  await createEmailAddress(source.id);
   const form = new FormData();
   form.append("metadata", JSON.stringify({ idempotency_key: "k", type: "t", summary: "s" }));
   form.append("body", new File(["body"], "b"));
@@ -109,7 +112,7 @@ describe("DELETE /api/v1/users/:id", () => {
     expect(await countRows("workspaces", [workspace.id])).toBe(0);
   });
 
-  it("deletes the sources, API keys, events, event data and R2 objects of the workspace", async () => {
+  it("deletes the sources, API keys, email addresses, events, event data and R2 objects of the workspace", async () => {
     const mine = await fillWorkspace(member);
     const theirs = await fillWorkspace(admin);
     // An orphan left by a failed intake.
@@ -120,12 +123,14 @@ describe("DELETE /api/v1/users/:id", () => {
 
     expect(await countWhere("sources", "workspace_id", mine.workspace.id)).toBe(0);
     expect(await countWhere("api_keys", "source_id", mine.sourceId)).toBe(0);
+    expect(await countWhere("email_addresses", "source_id", mine.sourceId)).toBe(0);
     expect(await countWhere("events", "workspace_id", mine.workspace.id)).toBe(0);
     expect(await countWhere("event_data", "workspace_id", mine.workspace.id)).toBe(0);
     expect(await listEventDataKeys(`workspaces/${mine.workspace.id}/`)).toEqual([]);
 
     expect(await countWhere("sources", "workspace_id", theirs.workspace.id)).toBe(1);
     expect(await countWhere("api_keys", "source_id", theirs.sourceId)).toBe(1);
+    expect(await countWhere("email_addresses", "source_id", theirs.sourceId)).toBe(1);
     expect(await countWhere("events", "workspace_id", theirs.workspace.id)).toBe(1);
     expect(await countWhere("event_data", "workspace_id", theirs.workspace.id)).toBe(2);
     expect(await listEventDataKeys(`workspaces/${theirs.workspace.id}/`)).toHaveLength(2);
@@ -251,6 +256,7 @@ describe("deleteUser under a race", () => {
     expect(await countRows("workspaces", [workspace.id])).toBe(1);
     expect(await countRows("sources", [sourceId])).toBe(1);
     expect(await countWhere("api_keys", "source_id", sourceId)).toBe(1);
+    expect(await countWhere("email_addresses", "source_id", sourceId)).toBe(1);
     expect(await countWhere("events", "workspace_id", workspace.id)).toBe(1);
     expect(await countWhere("event_data", "workspace_id", workspace.id)).toBe(2);
   });

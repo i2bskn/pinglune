@@ -28,7 +28,7 @@ export const LABEL_KEY_PATTERN = /^[a-z0-9][a-z0-9_.-]{0,62}$/;
 export const LABEL_VALUE_MAX_LENGTH = 256;
 const CONTENT_TYPE_MAX_LENGTH = 255;
 const PRINTABLE_ASCII = /^[\x20-\x7E]*$/;
-const MAX_ATTACHMENTS = 20;
+export const MAX_ATTACHMENTS = 20;
 const ATTACHMENT_NAME_MAX_LENGTH = 255;
 
 // Unicode general category Cc.

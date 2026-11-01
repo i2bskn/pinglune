@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ApiKey, Source, User } from "../../src/api/types";
+import type { ApiKey, EmailAddressList, Source, User } from "../../src/api/types";
 import { createApiClient, createApiFetch } from "./api";
 import { loadEvents, loadSourceDetail, loadUsersView } from "./load";
 
@@ -82,20 +82,47 @@ describe("loadSourceDetail", () => {
   const SOURCE: Source = { id: "src_1", name: "app", enabled: true, created_at: 1, updated_at: 1, active_key_count: 1 };
   const KEY: ApiKey = { key_id: "abcdefghij012345", created_at: 1, last_used_at: null, revoked_at: null };
 
-  it("takes the source from the list, with its keys", async () => {
+  const ADDRESSES: EmailAddressList = {
+    email_domain: "example.com",
+    email_addresses: [
+      {
+        local_part: "abcdefghij0123456789",
+        address: "abcdefghij0123456789@example.com",
+        created_at: 1,
+        last_received_at: null,
+        revoked_at: null,
+      },
+    ],
+  };
+
+  it("takes the source from the list, with its keys and its email addresses", async () => {
     const { client } = setup({
       "/api/v1/sources": [json(200, { sources: [SOURCE] })],
       "/api/v1/sources/src_1/api-keys": [json(200, { api_keys: [KEY] })],
+      "/api/v1/sources/src_1/email-addresses": [json(200, ADDRESSES)],
     });
-    expect(await loadSourceDetail(client, "src_1")).toEqual({ kind: "ready", data: { source: SOURCE, apiKeys: [KEY] } });
+    expect(await loadSourceDetail(client, "src_1")).toEqual({
+      kind: "ready",
+      data: { source: SOURCE, apiKeys: [KEY], emailAddresses: ADDRESSES },
+    });
   });
 
   it("is not found when the keys are not found", async () => {
     const { client } = setup({
       "/api/v1/sources": [json(200, { sources: [] })],
       "/api/v1/sources/src_2/api-keys": [apiError(404, "送信元が見つかりません")],
+      "/api/v1/sources/src_2/email-addresses": [apiError(404, "送信元が見つかりません")],
     });
     expect(await loadSourceDetail(client, "src_2")).toEqual({ kind: "notFound" });
+  });
+
+  it("is an error with the API message when the email addresses fail, like the keys", async () => {
+    const { client } = setup({
+      "/api/v1/sources": [json(200, { sources: [SOURCE] })],
+      "/api/v1/sources/src_1/api-keys": [json(200, { api_keys: [KEY] })],
+      "/api/v1/sources/src_1/email-addresses": [apiError(500, "サーバーでエラーが発生しました")],
+    });
+    expect(await loadSourceDetail(client, "src_1")).toEqual({ kind: "error", message: "サーバーでエラーが発生しました" });
   });
 
   it("is not found for an invalid ID without sending", async () => {

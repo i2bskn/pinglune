@@ -5,6 +5,7 @@ import { hashPassword } from "../src/auth/password";
 import { createDb, type Db } from "../src/db/client";
 import {
   apiKeys,
+  emailAddresses,
   sources,
   subscriptions,
   users,
@@ -17,7 +18,7 @@ import {
 import type { DeliveryMessage } from "../src/deliveries/enqueue";
 import type { Bindings } from "../src/env";
 import worker from "../src/index";
-import { formatApiKey, newKeyId, newKeySecret, newSourceId, sha256Hex } from "../src/ids";
+import { formatApiKey, newEmailLocalPart, newKeyId, newKeySecret, newSourceId, sha256Hex } from "../src/ids";
 import { encryptSecret, subscriptionSecretKey } from "../src/subscriptions/secret";
 import { insertPersonalWorkspaceStatement } from "../src/workspaces/queries";
 
@@ -34,6 +35,7 @@ export async function resetDb(): Promise<void> {
     env.DB.prepare("DELETE FROM event_data"),
     env.DB.prepare("DELETE FROM events"),
     env.DB.prepare("DELETE FROM api_keys"),
+    env.DB.prepare("DELETE FROM email_addresses"),
     env.DB.prepare("DELETE FROM sources"),
     env.DB.prepare("DELETE FROM subscriptions"),
     env.DB.prepare("DELETE FROM sessions"),
@@ -286,6 +288,19 @@ export async function createApiKey(
     })
     .run();
   return { keyId, key: formatApiKey(keyId, secret) };
+}
+
+// Inserts an intake email address directly and returns its local part.
+export async function createEmailAddress(
+  sourceId: string,
+  options: { localPart?: string; createdAt?: number; revokedAt?: number } = {},
+): Promise<string> {
+  const localPart = options.localPart ?? newEmailLocalPart();
+  await db
+    .insert(emailAddresses)
+    .values({ id: localPart, sourceId, createdAt: options.createdAt ?? Date.now(), revokedAt: options.revokedAt ?? null })
+    .run();
+  return localPart;
 }
 
 export async function countTable(table: string): Promise<number> {

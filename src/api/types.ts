@@ -87,6 +87,19 @@ export type ApiKeyList = { api_keys: ApiKey[] };
 // key is the plain key `pl_<keyId>_<secret>`, returned only in this response.
 export type CreatedApiKey = { api_key: ApiKey; key: string };
 
+// An address of the email intake. The local part is not a secret: it can be shown any number of times.
+export type EmailAddress = {
+  local_part: string;
+  // `${local_part}@${EMAIL_DOMAIN}`. null when EMAIL_DOMAIN is unset or invalid.
+  address: string | null;
+  created_at: number;
+  last_received_at: number | null;
+  revoked_at: number | null;
+};
+
+// The email intake is off when email_domain is null.
+export type EmailAddressList = { email_domain: string | null; email_addresses: EmailAddress[] };
+
 export type EventSummary = {
   event_id: string;
   type: string;

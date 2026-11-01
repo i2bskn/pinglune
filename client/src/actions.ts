@@ -2,6 +2,7 @@ import type {
   ApiKey,
   CreateUserRequest,
   CreatedApiKey,
+  EmailAddress,
   Source,
   UpdateSourceRequest,
   User,
@@ -129,7 +130,8 @@ export async function createSource(client: ApiClient, name: string): Promise<Cre
   return { kind: "error", message: await responseErrorMessage(res) };
 }
 
-// The outcome of the actions on a source or one of its keys. notFound means the source or the key is gone.
+// The outcome of the actions on a source, one of its keys or one of its email addresses. notFound means the source,
+// the key or the address is gone.
 export type SourceActionResult = ResourceActionResult;
 
 const INVALID_SOURCE_ID = { kind: "error", message: "送信元が見つかりません" } as const;
@@ -172,6 +174,41 @@ export async function revokeApiKey(client: ApiClient, sourceId: string, keyId: s
   return resourceActionResult(
     await send(() =>
       client.api.v1.sources[":id"]["api-keys"][":keyId"].revoke.$post({ param: { id: sourceId, keyId } }),
+    ),
+  );
+}
+
+export type IssueEmailAddressResult = { kind: "ok"; emailAddress: EmailAddress } | { kind: "notFound" } | SendFailure;
+
+// Issues an email address of the email intake. Errors, including email_not_configured and limit_exceeded (409),
+// are shown with the server's message. Never rejects.
+export async function issueEmailAddress(client: ApiClient, sourceId: string): Promise<IssueEmailAddressResult> {
+  if (!isValidId(sourceId)) return INVALID_SOURCE_ID;
+  const sent = await send(() =>
+    client.api.v1.sources[":id"]["email-addresses"].$post({ param: { id: sourceId } }),
+  );
+  if (sent.kind !== "response") return sent;
+  const { res } = sent;
+  if (res.ok) {
+    const body = await okJson<EmailAddress>(res);
+    return body.kind === "ok" ? { kind: "ok", emailAddress: body.value } : body;
+  }
+  if (res.status === 404) return { kind: "notFound" };
+  return { kind: "error", message: await responseErrorMessage(res) };
+}
+
+// Revokes an email address of a source. Revoking a revoked address is ok. Never rejects.
+export async function revokeEmailAddress(
+  client: ApiClient,
+  sourceId: string,
+  localPart: string,
+): Promise<SourceActionResult> {
+  if (!isValidId(sourceId) || !isValidId(localPart)) return INVALID_SOURCE_ID;
+  return resourceActionResult(
+    await send(() =>
+      client.api.v1.sources[":id"]["email-addresses"][":localPart"].revoke.$post({
+        param: { id: sourceId, localPart },
+      }),
     ),
   );
 }

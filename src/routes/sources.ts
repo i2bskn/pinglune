@@ -4,15 +4,32 @@ import type {
   ApiKeyList,
   CreateSourceRequest,
   CreatedApiKey,
+  EmailAddressList,
   SourceList,
   UpdateSourceRequest,
 } from "../api/types";
 import { apiError, requireUser } from "../auth/middleware";
 import { isUniqueViolation } from "../auth/users";
 import { clock } from "../clock";
-import { apiKeys, sources } from "../db/schema";
-import type { AppEnv } from "../env";
-import { formatApiKey, KEY_ID_PATTERN, newKeyId, newKeySecret, newSourceId, sha256Hex, SOURCE_ID_PATTERN } from "../ids";
+import { apiKeys, emailAddresses, sources } from "../db/schema";
+import {
+  countActiveEmailAddresses,
+  findSourceEmailAddress,
+  listSourceEmailAddresses,
+  toApiEmailAddress,
+} from "../email-addresses/queries";
+import { parseEmailDomain, type AppEnv, type Bindings } from "../env";
+import {
+  EMAIL_LOCAL_PART_PATTERN,
+  formatApiKey,
+  KEY_ID_PATTERN,
+  newEmailLocalPart,
+  newKeyId,
+  newKeySecret,
+  newSourceId,
+  sha256Hex,
+  SOURCE_ID_PATTERN,
+} from "../ids";
 import { codePointLength } from "../intake/validation";
 import {
   countActiveApiKeys,
@@ -29,11 +46,24 @@ import { requirePersonalWorkspace } from "./workspace";
 
 const MAX_SOURCES_PER_WORKSPACE = 100;
 const MAX_ACTIVE_KEYS_PER_SOURCE = 10;
+const MAX_ACTIVE_EMAIL_ADDRESSES_PER_SOURCE = 10;
 export const SOURCE_NAME_MAX_LENGTH = 64;
 const CONTROL = /[\u0000-\u001F\u007F-\u009F]/;
 
 const sourceNotFound = "送信元が見つかりません";
 const keyNotFound = "APIキーが見つかりません";
+const emailAddressNotFound = "メールアドレスが見つかりません";
+
+// The domain of the email intake, or null when it is off. An invalid value is treated as unset here, so that the
+// screen tells the operator; the value itself is not logged.
+function emailDomainOf(env: Bindings): string | null {
+  const result = parseEmailDomain(env.EMAIL_DOMAIN);
+  if (!result.ok) {
+    console.error("invalid EMAIL_DOMAIN");
+    return null;
+  }
+  return result.domain;
+}
 
 // The trimmed name, or null if invalid.
 function normalizeSourceName(value: unknown): string | null {
@@ -186,6 +216,72 @@ const sourcesApi = new Hono<AppEnv>()
     const key = await findSourceApiKey(db, id, keyId);
     if (!key) return apiError(c, 404, "not_found", keyNotFound);
     return c.json(toApiKey(key), 200);
+  })
+  .get("/:id/email-addresses", async (c) => {
+    const db = c.get("db");
+    const id = c.req.param("id");
+    if (!SOURCE_ID_PATTERN.test(id) || !(await findWorkspaceSource(db, c.get("workspace").id, id))) {
+      return apiError(c, 404, "not_found", sourceNotFound);
+    }
+    const domain = emailDomainOf(c.env);
+    const rows = await listSourceEmailAddresses(db, id);
+    const body: EmailAddressList = {
+      email_domain: domain,
+      email_addresses: rows.map((row) => toApiEmailAddress(row, domain)),
+    };
+    return c.json(body, 200);
+  })
+  .post("/:id/email-addresses", async (c) => {
+    const db = c.get("db");
+    const id = c.req.param("id");
+    // Addresses can be issued for a disabled source too, like API keys.
+    if (!SOURCE_ID_PATTERN.test(id) || !(await findWorkspaceSource(db, c.get("workspace").id, id))) {
+      return apiError(c, 404, "not_found", sourceNotFound);
+    }
+    const domain = emailDomainOf(c.env);
+    if (domain === null) {
+      return apiError(c, 409, "email_not_configured", "メールでの受付が設定されていません（EMAIL_DOMAIN）");
+    }
+    // A loose limit: concurrent requests may go slightly over it.
+    if ((await countActiveEmailAddresses(db, id)) >= MAX_ACTIVE_EMAIL_ADDRESSES_PER_SOURCE) {
+      return apiError(c, 409, "limit_exceeded", "有効なメールアドレスは 1 つの送信元に 10 個までです");
+    }
+    const now = clock.now();
+    // On a collision, one more try.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const localPart = newEmailLocalPart();
+      try {
+        await db.insert(emailAddresses).values({ id: localPart, sourceId: id, createdAt: now }).run();
+      } catch (error) {
+        if (isUniqueViolation(error)) continue;
+        throw error;
+      }
+      const created = await findSourceEmailAddress(db, id, localPart);
+      if (!created) throw new Error("created email address not found");
+      return c.json(toApiEmailAddress(created, domain), 201);
+    }
+    return apiError(c, 503, "temporarily_unavailable", "メールアドレスを発行できませんでした。もう一度試してください");
+  })
+  .post("/:id/email-addresses/:localPart/revoke", async (c) => {
+    const db = c.get("db");
+    const id = c.req.param("id");
+    const localPart = c.req.param("localPart");
+    if (!SOURCE_ID_PATTERN.test(id) || !(await findWorkspaceSource(db, c.get("workspace").id, id))) {
+      return apiError(c, 404, "not_found", sourceNotFound);
+    }
+    // Only an address of this source: an address of another source (or another user) is never revoked here.
+    if (!EMAIL_LOCAL_PART_PATTERN.test(localPart) || !(await findSourceEmailAddress(db, id, localPart))) {
+      return apiError(c, 404, "not_found", emailAddressNotFound);
+    }
+    // Revoking again keeps the first revoked_at.
+    await db
+      .update(emailAddresses)
+      .set({ revokedAt: clock.now() })
+      .where(and(eq(emailAddresses.id, localPart), eq(emailAddresses.sourceId, id), isNull(emailAddresses.revokedAt)))
+      .run();
+    const address = await findSourceEmailAddress(db, id, localPart);
+    if (!address) return apiError(c, 404, "not_found", emailAddressNotFound);
+    return c.json(toApiEmailAddress(address, emailDomainOf(c.env)), 200);
   });
 
 export default sourcesApi;

@@ -1,4 +1,4 @@
-// Identifiers: prefixed ULIDs for rows, and the parts of API keys.
+// Identifiers: prefixed ULIDs for rows, the parts of API keys, and the local parts of intake email addresses.
 
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const TIME_LENGTH = 10;
@@ -74,24 +74,36 @@ export function newDeliveryId(now: number): string {
 
 const KEY_ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 const KEY_ID_LENGTH = 16;
+const EMAIL_LOCAL_PART_LENGTH = 20;
 // The largest multiple of 36 that fits in a byte; bytes at or above it are dropped so that every
 // character is equally likely.
 const KEY_ID_BYTE_LIMIT = 252;
 const SECRET_BYTES = 32;
 
 export const KEY_ID_PATTERN = /^[a-z0-9]{16}$/;
+export const EMAIL_LOCAL_PART_PATTERN = /^[a-z0-9]{20}$/;
 
-// 16 characters of [a-z0-9], chosen without bias.
-export function newKeyId(): string {
+// length characters of [a-z0-9], chosen without bias.
+function randomAlphanumeric(length: number): string {
   let id = "";
-  while (id.length < KEY_ID_LENGTH) {
+  while (id.length < length) {
     for (const byte of crypto.getRandomValues(new Uint8Array(32))) {
       if (byte >= KEY_ID_BYTE_LIMIT) continue;
       id += KEY_ID_ALPHABET[byte % KEY_ID_ALPHABET.length];
-      if (id.length === KEY_ID_LENGTH) break;
+      if (id.length === length) break;
     }
   }
   return id;
+}
+
+// 16 characters of [a-z0-9], chosen without bias.
+export function newKeyId(): string {
+  return randomAlphanumeric(KEY_ID_LENGTH);
+}
+
+// The local part of an intake email address: 20 characters of [a-z0-9] (about 2^103), so it cannot be guessed.
+export function newEmailLocalPart(): string {
+  return randomAlphanumeric(EMAIL_LOCAL_PART_LENGTH);
 }
 
 // 32 random bytes in base64url without padding (43 characters).
