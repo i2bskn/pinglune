@@ -152,7 +152,7 @@ function spyBucket() {
 }
 
 describe("tools/list", () => {
-  it("lists the three read-only tools and the two queue tools", async () => {
+  it("lists the three read-only tools, the two queue tools and the two conversation tools", async () => {
     const result = (await rpc(alice, "tools/list", {})) as {
       tools: {
         name: string;
@@ -163,8 +163,10 @@ describe("tools/list", () => {
     expect(result.tools.map((tool) => tool.name).sort()).toEqual([
       "ack_events",
       "claim_events",
+      "get_conversation",
       "get_event",
       "list_events",
+      "post_message",
       "read_data",
     ]);
     const readOnly = Object.fromEntries(result.tools.map((tool) => [tool.name, tool.annotations?.readOnlyHint]));
@@ -174,10 +176,17 @@ describe("tools/list", () => {
       read_data: true,
       claim_events: false,
       ack_events: false,
+      get_conversation: true,
+      post_message: false,
     });
     const tools = new Map(result.tools.map((tool) => [tool.name, tool]));
     expect(tools.get("claim_events")?.annotations).toMatchObject({ idempotentHint: false, destructiveHint: false });
     expect(tools.get("ack_events")?.annotations).toMatchObject({ idempotentHint: true, destructiveHint: false });
+    expect(tools.get("post_message")?.annotations).toMatchObject({
+      idempotentHint: false,
+      destructiveHint: false,
+      openWorldHint: false,
+    });
     for (const tool of result.tools) expect(tool.inputSchema.additionalProperties).toBe(false);
   });
 });

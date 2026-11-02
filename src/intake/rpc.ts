@@ -120,7 +120,10 @@ export class Intake extends WorkerEntrypoint<Bindings, IntakeProps> {
       if (typeof sourceId !== "string" || !SOURCE_ID_PATTERN.test(sourceId)) {
         return toRpcError(intakeError("unauthorized"));
       }
-      const source = await this.env.DB.prepare("SELECT id, workspace_id, name, enabled FROM sources WHERE id = ?")
+      // The conversation source is never matched: it is unknown here.
+      const source = await this.env.DB.prepare(
+        "SELECT id, workspace_id, name, enabled FROM sources WHERE id = ? AND kind = 'program'",
+      )
         .bind(sourceId)
         .first<SourceRow>();
       if (!source) return toRpcError(intakeError("unauthorized"));

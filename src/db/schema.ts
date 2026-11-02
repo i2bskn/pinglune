@@ -84,6 +84,9 @@ export type WorkspaceRow = typeof workspaces.$inferSelect;
 
 // A program that sends events into a workspace. Sources are never deleted (events refer to them); they are
 // disabled instead.
+// kind "conversation" is the hidden source of the messages of conversations (src/conversations/): one per workspace,
+// created when it is first needed. It is never listed, never matched by the management API, the API keys, the email
+// addresses or Service Bindings, and its name does not take a name from the user's sources.
 export const sources = sqliteTable(
   "sources",
   {
@@ -94,10 +97,22 @@ export const sources = sqliteTable(
     // Trimmed. Case-sensitive.
     name: text("name").notNull(),
     enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+    // Checked by the application only: a CHECK constraint would rebuild the table. Existing rows are programs.
+    kind: text("kind", { enum: ["program", "conversation"] }).notNull().default("program"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },
-  (t) => [uniqueIndex("sources_workspace_id_name_unique").on(t.workspaceId, t.name)],
+  (t) => [
+    // Names are unique among the user's sources only. The condition is a literal: a bound value would not work in
+    // the index definition.
+    uniqueIndex("sources_workspace_id_name_unique")
+      .on(t.workspaceId, t.name)
+      .where(sql`${t.kind} = 'program'`),
+    // One conversation source per workspace.
+    uniqueIndex("sources_workspace_conversation_unique")
+      .on(t.workspaceId)
+      .where(sql`${t.kind} = 'conversation'`),
+  ],
 );
 
 // API keys of the HTTP intake. The key is pl_<id>_<secret>; only the SHA-256 of the secret is stored.
@@ -154,11 +169,16 @@ export const events = sqliteTable(
     labels: text("labels").notNull(),
     occurredAt: integer("occurred_at").notNull(),
     receivedAt: integer("received_at").notNull(),
+    // The conversation of a message (src/conversations/). NULL for the events of programs; the event lists show
+    // only those.
+    conversationId: text("conversation_id").references(() => conversations.id),
   },
   (t) => [
     uniqueIndex("events_source_idempotency_unique").on(t.sourceId, t.idempotencyKey),
     // The cursor of the list. ULIDs are in time order.
     index("events_workspace_id_id_idx").on(t.workspaceId, t.id),
+    // The history of a conversation, in time order.
+    index("events_conversation_id_id_idx").on(t.conversationId, t.id),
   ],
 );
 
@@ -287,3 +307,71 @@ export const deliveries = sqliteTable(
 );
 
 export type DeliveryRow = typeof deliveries.$inferSelect;
+
+// A conversation between AIs (and the user) whose messages are events (events.conversation_id). Each message is
+// delivered to the destinations of the other participants only. A conversation stops when the AIs have sent
+// max_ai_messages messages, or when the user stops it; it is never resumed. Rows are deleted only with the user.
+export const conversations = sqliteTable(
+  "conversations",
+  {
+    // cnv_ + ULID.
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id),
+    // Trimmed, 1 to 64 characters (normalizeDisplayName).
+    title: text("title").notNull(),
+    status: text("status", { enum: ["open", "stopped"] }).notNull(),
+    // NULL while open.
+    stopReason: text("stop_reason", { enum: ["user", "limit"] }),
+    // 1 to 100.
+    maxAiMessages: integer("max_ai_messages").notNull(),
+    // The messages of the AIs accepted so far. The messages of the user are not counted.
+    aiMessageCount: integer("ai_message_count").notNull().default(0),
+    createdByUserId: text("created_by_user_id")
+      .notNull()
+      .references(() => users.id),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+    stoppedAt: integer("stopped_at"),
+  },
+  (t) => [
+    // The cursor of the list.
+    index("conversations_workspace_id_id_idx").on(t.workspaceId, t.id),
+    check("conversations_status_check", sql`${t.status} IN ('open', 'stopped')`),
+    check("conversations_stop_reason_check", sql`${t.stopReason} IS NULL OR ${t.stopReason} IN ('user', 'limit')`),
+  ],
+);
+
+// An AI in a conversation: the OAuth client that its messages are matched with, and the destination its
+// notifications go to. Set when the conversation is created, and never changed.
+export const conversationParticipants = sqliteTable(
+  "conversation_participants",
+  {
+    // cpt_ + ULID.
+    id: text("id").primaryKey(),
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversations.id),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id),
+    // The display name, unique in the conversation.
+    name: text("name").notNull(),
+    // ctx.auth.clientId of the MCP requests of this AI.
+    oauthClientId: text("oauth_client_id").notNull(),
+    // A subscription of kind mcp, webhook or queue. Nothing is delivered to it once it has ended.
+    subscriptionId: text("subscription_id")
+      .notNull()
+      .references(() => subscriptions.id),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [
+    // Also the index of the participants of a conversation.
+    uniqueIndex("conversation_participants_client_unique").on(t.conversationId, t.oauthClientId),
+    uniqueIndex("conversation_participants_name_unique").on(t.conversationId, t.name),
+  ],
+);
+
+export type ConversationRow = typeof conversations.$inferSelect;
+export type ConversationParticipantRow = typeof conversationParticipants.$inferSelect;

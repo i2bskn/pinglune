@@ -1,7 +1,25 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ApiKey, DeliveryList, EmailAddressList, Source, Subscription, User } from "../../src/api/types";
+import type {
+  ApiKey,
+  ConversationDetail,
+  ConversationMessageList,
+  DeliveryList,
+  EmailAddressList,
+  Source,
+  Subscription,
+  User,
+} from "../../src/api/types";
 import { createApiClient, createApiFetch } from "./api";
-import { loadDeliveriesView, loadEvents, loadSourceDetail, loadUsersView } from "./load";
+import {
+  loadConversationDetail,
+  loadConversationForm,
+  loadConversationMessages,
+  loadConversations,
+  loadDeliveriesView,
+  loadEvents,
+  loadSourceDetail,
+  loadUsersView,
+} from "./load";
 
 type Reply = () => Response;
 
@@ -198,5 +216,114 @@ describe("loadDeliveriesView", () => {
       "/api/v1/deliveries": [json(200, DELIVERIES)],
     });
     expect(await loadDeliveriesView(client)).toEqual({ kind: "error", message: "サーバーでエラーが発生しました" });
+  });
+});
+
+describe("conversations", () => {
+  const ID = "cnv_01JC9Z7H2K4M6N8P0Q2R4S6T8V";
+  const DETAIL: ConversationDetail = {
+    id: ID,
+    title: "相談",
+    status: "open",
+    stop_reason: null,
+    max_ai_messages: 20,
+    ai_message_count: 1,
+    participants: [
+      {
+        name: "dot",
+        oauth_client_id: "c1",
+        oauth_client_name: "dot",
+        destination_kind: "webhook",
+        destination_name: "dot",
+        callback_host: "hooks.example.com",
+        destination_status: "active",
+      },
+    ],
+    created_at: 1,
+    updated_at: 2,
+  };
+  const MESSAGES: ConversationMessageList = {
+    messages: [
+      { event_id: "evt_01JC9Z7H2K4M6N8P0Q2R4S6T8V", sender: "a", sender_kind: "user", is_user: true, text: "hi", created_at: 1 },
+    ],
+    older_cursor: "evt_01JC9Z7H2K4M6N8P0Q2R4S6T8V",
+  };
+  const ACTIVE: Subscription = {
+    id: "sub_00000000000000000000000000000002",
+    kind: "webhook",
+    name: "dot",
+    callback_host: "hooks.example.com",
+    arguments: {},
+    status: "active",
+    refresh_before: null,
+    expires_at: null,
+    created_at: 1,
+    updated_at: 1,
+  };
+  const ENDED: Subscription = { ...ACTIVE, id: "sub_00000000000000000000000000000003", status: "unsubscribed" };
+
+  it("sends the cursor of the next page of the list", async () => {
+    const page = { conversations: [], next_cursor: null };
+    const { client, calls } = setup({
+      "/api/v1/conversations": [json(200, page)],
+      [`/api/v1/conversations?cursor=${ID}`]: [json(200, page)],
+    });
+    expect(await loadConversations(client)).toEqual({ kind: "ready", data: page });
+    expect(await loadConversations(client, ID)).toEqual({ kind: "ready", data: page });
+    expect(calls(`/api/v1/conversations?cursor=${ID}`)).toBe(1);
+  });
+
+  it("loads a conversation with its newest messages", async () => {
+    const { client } = setup({
+      [`/api/v1/conversations/${ID}`]: [json(200, DETAIL)],
+      [`/api/v1/conversations/${ID}/messages`]: [json(200, MESSAGES)],
+    });
+    expect(await loadConversationDetail(client, ID)).toEqual({
+      kind: "ready",
+      data: { conversation: DETAIL, messages: MESSAGES },
+    });
+  });
+
+  it("is not found when the conversation is not found", async () => {
+    const { client } = setup({
+      [`/api/v1/conversations/${ID}`]: [apiError(404, "会話が見つかりません")],
+      [`/api/v1/conversations/${ID}/messages`]: [apiError(404, "会話が見つかりません")],
+    });
+    expect(await loadConversationDetail(client, ID)).toEqual({ kind: "notFound" });
+  });
+
+  it("is not found for an invalid ID without sending", async () => {
+    const { client, fetch } = setup({});
+    expect(await loadConversationDetail(client, "a/b")).toEqual({ kind: "notFound" });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("sends the cursor of the older messages", async () => {
+    const cursor = "evt_01JC9Z7H2K4M6N8P0Q2R4S6T8V";
+    const { client } = setup({ [`/api/v1/conversations/${ID}/messages?cursor=${cursor}`]: [json(200, MESSAGES)] });
+    expect(await loadConversationMessages(client, ID, cursor)).toEqual({ kind: "ready", data: MESSAGES });
+  });
+
+  it("loads the MCP connections and the active destinations for the form", async () => {
+    const connections = [{ client_id: "c1", client_name: "dot" }];
+    const { client } = setup({
+      "/api/v1/mcp-connections": [json(200, { connections })],
+      "/api/v1/subscriptions": [json(200, { subscriptions: [ACTIVE, ENDED] })],
+    });
+    expect(await loadConversationForm(client)).toEqual({
+      kind: "ready",
+      data: { connections, connectionsError: null, subscriptions: [ACTIVE] },
+    });
+  });
+
+  it("shows the form without connections when they cannot be read", async () => {
+    const { client } = setup({
+      "/api/v1/mcp-connections": [apiError(503, "この接続先では MCP 接続を確認できません")],
+      "/api/v1/subscriptions": [json(200, { subscriptions: [ACTIVE] })],
+    });
+    expect(await loadConversationForm(client)).toEqual({
+      kind: "ready",
+      data: { connections: [], connectionsError: "この接続先では MCP 接続を確認できません", subscriptions: [ACTIVE] },
+    });
   });
 });

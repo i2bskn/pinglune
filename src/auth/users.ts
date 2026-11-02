@@ -154,7 +154,8 @@ export async function deleteUser(db: Db, id: string): Promise<DeleteUserResult> 
     AND (role = 'member' OR (SELECT COUNT(*) FROM users WHERE role = 'admin') > 1))`;
   const d1 = db.$client;
   // Children first: the deliveries (of the workspace's events and of the user's subscriptions), the data of the
-  // workspace, the subscriptions, the workspace, the sessions, then the user. ?2 is the workspace ID; NULL
+  // workspace (the events before the conversations they belong to, the participants before the subscriptions they
+  // refer to), the subscriptions, the workspace, the sessions, then the user. ?2 is the workspace ID; NULL
   // matches nothing.
   const results = await d1.batch([
     d1
@@ -164,6 +165,8 @@ export async function deleteUser(db: Db, id: string): Promise<DeleteUserResult> 
       .bind(id, workspaceId),
     d1.prepare(`DELETE FROM event_data WHERE workspace_id = ?2 AND ${guard}`).bind(id, workspaceId),
     d1.prepare(`DELETE FROM events WHERE workspace_id = ?2 AND ${guard}`).bind(id, workspaceId),
+    d1.prepare(`DELETE FROM conversation_participants WHERE workspace_id = ?2 AND ${guard}`).bind(id, workspaceId),
+    d1.prepare(`DELETE FROM conversations WHERE workspace_id = ?2 AND ${guard}`).bind(id, workspaceId),
     d1
       .prepare(`DELETE FROM api_keys WHERE source_id IN (SELECT id FROM sources WHERE workspace_id = ?2) AND ${guard}`)
       .bind(id, workspaceId),

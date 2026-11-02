@@ -43,6 +43,13 @@
       "when": 1793560964226,
       "tag": "0005_webhook_destinations",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1793598017004,
+      "tag": "0006_conversations",
+      "breakpoints": true
     }
   ]
 }

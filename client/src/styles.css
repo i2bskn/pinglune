@@ -228,6 +228,7 @@ button:disabled {
 input[type="text"],
 input[type="email"],
 input[type="password"],
+input[type="number"],
 select,
 textarea {
   max-width: 100%;
@@ -1079,6 +1080,107 @@ textarea {
   font-size: 0.8125rem;
   color: var(--ink-3);
   overflow-wrap: anywhere;
+}
+
+/* ---------- Conversations ---------- */
+
+.conversation-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.75rem;
+  margin: 0 0 1rem;
+  font-size: 0.875rem;
+  color: var(--ink-2);
+}
+
+/* The confirmation of the stop takes a line of its own below the buttons. */
+.actions .conversation-stop {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+/* One participant of the creation form. */
+.participant-fields {
+  min-width: 0;
+  margin: 0 0 1rem;
+  padding: 0.75rem 1rem 0.25rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.participant-fields legend {
+  padding: 0 0.25rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.participant-fields .button-danger-outline {
+  min-height: 2.25rem;
+  margin: 0 0 0.75rem;
+  font-size: 0.875rem;
+}
+
+/* The messages: the AIs on the left, the user on the right. */
+.chat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin: 0 0 1.25rem;
+  padding: 0;
+  list-style: none;
+}
+
+.chat-message {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  align-self: flex-start;
+  min-width: 0;
+  max-width: min(36rem, 88%);
+  padding: 0.625rem 0.875rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+}
+
+.chat-message-user {
+  align-self: flex-end;
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--line));
+}
+
+.chat-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 0.625rem;
+  font-size: 0.8125rem;
+  color: var(--ink-3);
+}
+
+.chat-sender {
+  min-width: 0;
+  font-weight: 600;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.chat-sender-kind {
+  font-weight: 400;
+}
+
+/* Line breaks of the text are kept; long words wrap. */
+.chat-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 639px) {
+  .chat-message {
+    max-width: 100%;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

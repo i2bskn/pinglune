@@ -7,6 +7,8 @@ export type Route =
   | { name: "source"; id: string }
   | { name: "users" }
   | { name: "deliveries" }
+  | { name: "conversations" }
+  | { name: "conversation"; id: string }
   | { name: "notFound" };
 
 // hc() puts params into the URL without encoding them, so IDs are limited to characters that cannot
@@ -26,10 +28,13 @@ export function matchRoute(path: string): Route {
   if (pathname === "/users") return { name: "users" };
   if (pathname === "/sources") return { name: "sources" };
   if (pathname === "/deliveries") return { name: "deliveries" };
+  if (pathname === "/conversations") return { name: "conversations" };
   const event = /^\/events\/([^/]+)$/.exec(pathname);
   if (event?.[1] !== undefined && isValidId(event[1])) return { name: "event", id: event[1] };
   const source = /^\/sources\/([^/]+)$/.exec(pathname);
   if (source?.[1] !== undefined && isValidId(source[1])) return { name: "source", id: source[1] };
+  const conversation = /^\/conversations\/([^/]+)$/.exec(pathname);
+  if (conversation?.[1] !== undefined && isValidId(conversation[1])) return { name: "conversation", id: conversation[1] };
   return { name: "notFound" };
 }
 

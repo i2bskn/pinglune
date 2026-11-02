@@ -63,6 +63,7 @@ const ERROR_LABELS: Record<string, string> = {
   dead_lettered: "処理を完了できませんでした",
   not_acknowledged: "処理済みの連絡がないまま 5 回取得された",
   expired: "7 日間処理されなかった",
+  conversation_stopped: "会話が停止された",
 };
 
 export function errorLabel(error: string): string {

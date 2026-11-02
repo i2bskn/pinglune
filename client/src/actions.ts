@@ -1,10 +1,13 @@
 import type {
   ApiKey,
+  ConversationDetail,
+  CreateConversationRequest,
   CreateQueueRequest,
   CreateUserRequest,
   CreateWebhookDestinationRequest,
   CreatedApiKey,
   EmailAddress,
+  PostConversationMessageRequest,
   Source,
   Subscription,
   UpdateSourceRequest,
@@ -275,5 +278,52 @@ export async function deleteQueue(client: ApiClient, subscriptionId: string): Pr
   if (!isValidId(subscriptionId)) return INVALID_QUEUE_ID;
   return resourceActionResult(
     await send(() => client.api.v1.subscriptions[":id"].delete.$post({ param: { id: subscriptionId } })),
+  );
+}
+
+export type CreateConversationResult = { kind: "ok"; conversation: ConversationDetail } | SendFailure;
+
+// Creates a conversation and sends its first message. A retry with the same idempotency_key returns the
+// conversation created first (200). Errors, including limit_exceeded (409) and temporarily_unavailable (503), are
+// shown with the server's message. Never rejects.
+export async function createConversation(
+  client: ApiClient,
+  input: CreateConversationRequest,
+): Promise<CreateConversationResult> {
+  const sent = await send(() => client.api.v1.conversations.$post({ json: input }));
+  if (sent.kind !== "response") return sent;
+  const { res } = sent;
+  if (res.ok) {
+    const body = await okJson<ConversationDetail>(res);
+    return body.kind === "ok" ? { kind: "ok", conversation: body.value } : body;
+  }
+  return { kind: "error", message: await responseErrorMessage(res) };
+}
+
+// The outcome of the actions on a conversation. notFound means it is gone; other errors (400, 409
+// conversation_stopped, 503) are shown with the server's message.
+export type ConversationActionResult = ResourceActionResult;
+
+const INVALID_CONVERSATION_ID = { kind: "error", message: "会話が見つかりません" } as const;
+
+// Sends a message of the user to a conversation. Never rejects.
+export async function postConversationMessage(
+  client: ApiClient,
+  conversationId: string,
+  input: PostConversationMessageRequest,
+): Promise<ConversationActionResult> {
+  if (!isValidId(conversationId)) return INVALID_CONVERSATION_ID;
+  return resourceActionResult(
+    await send(() =>
+      client.api.v1.conversations[":id"].messages.$post({ param: { id: conversationId }, json: input }),
+    ),
+  );
+}
+
+// Stops a conversation. Stopping a stopped one is ok. Never rejects.
+export async function stopConversation(client: ApiClient, conversationId: string): Promise<ConversationActionResult> {
+  if (!isValidId(conversationId)) return INVALID_CONVERSATION_ID;
+  return resourceActionResult(
+    await send(() => client.api.v1.conversations[":id"].stop.$post({ param: { id: conversationId } })),
   );
 }

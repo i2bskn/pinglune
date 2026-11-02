@@ -1,10 +1,14 @@
 import { useEffect, useState } from "react";
 import type {
   ApiKey,
+  ConversationDetail,
+  ConversationList,
+  ConversationMessageList,
   DeliveryList,
   EmailAddressList,
   EventDetail,
   EventList,
+  McpConnection,
   Source,
   Subscription,
   User,
@@ -169,6 +173,70 @@ export async function loadSourceDetail(client: ApiClient, id: string): Promise<L
   const source = list.value.sources.find((s) => s.id === id);
   if (!source) return { kind: "notFound" };
   return { kind: "ready", data: { source, apiKeys: keys.value.api_keys, emailAddresses: addresses.value } };
+}
+
+// A page of the conversation list. cursor is the next_cursor of the previous page.
+export async function loadConversations(client: ApiClient, cursor?: string): Promise<Loaded<ConversationList>> {
+  const list = await request(() => client.api.v1.conversations.$get({ query: cursor === undefined ? {} : { cursor } }));
+  if (list.kind === "redirecting") return list;
+  // The list itself is never missing; a 404 here is an unexpected response.
+  if (list.kind === "notFound" || list.kind === "error") return { kind: "error", message: list.message };
+  return { kind: "ready", data: list.value };
+}
+
+export type ConversationDetailData = { conversation: ConversationDetail; messages: ConversationMessageList };
+
+// A conversation and its newest messages.
+export async function loadConversationDetail(client: ApiClient, id: string): Promise<Loaded<ConversationDetailData>> {
+  if (!isValidId(id)) return { kind: "notFound" };
+  const [conversation, messages] = await Promise.all([
+    request(() => client.api.v1.conversations[":id"].$get({ param: { id } })),
+    request(() => client.api.v1.conversations[":id"].messages.$get({ param: { id }, query: {} })),
+  ]);
+  if (conversation.kind !== "ok" || messages.kind !== "ok") return failure([conversation, messages]);
+  return { kind: "ready", data: { conversation: conversation.value, messages: messages.value } };
+}
+
+// The messages older than cursor (the older_cursor of the previous page).
+export async function loadConversationMessages(
+  client: ApiClient,
+  id: string,
+  cursor: string,
+): Promise<Loaded<ConversationMessageList>> {
+  if (!isValidId(id)) return { kind: "notFound" };
+  const page = await request(() =>
+    client.api.v1.conversations[":id"].messages.$get({ param: { id }, query: { cursor } }),
+  );
+  if (page.kind !== "ok") return failure([page]);
+  return { kind: "ready", data: page.value };
+}
+
+export type ConversationFormData = {
+  // The MCP connections of the user. Empty with connectionsError set when they cannot be read (e.g. 503 where MCP is
+  // not served).
+  connections: McpConnection[];
+  connectionsError: string | null;
+  // The active destinations (MCP subscriptions, webhook destinations and polling queues).
+  subscriptions: Subscription[];
+};
+
+// The choices of the creation form of a conversation.
+export async function loadConversationForm(client: ApiClient): Promise<Loaded<ConversationFormData>> {
+  const [connections, subscriptions] = await Promise.all([
+    request(() => client.api.v1["mcp-connections"].$get()),
+    request(() => client.api.v1.subscriptions.$get()),
+  ]);
+  if (connections.kind === "redirecting" || subscriptions.kind === "redirecting") return { kind: "redirecting" };
+  // The list is never missing; a 404 here is an unexpected response.
+  if (subscriptions.kind !== "ok") return { kind: "error", message: subscriptions.message };
+  return {
+    kind: "ready",
+    data: {
+      connections: connections.kind === "ok" ? connections.value.connections : [],
+      connectionsError: connections.kind === "ok" ? null : connections.message,
+      subscriptions: subscriptions.value.subscriptions.filter((subscription) => subscription.status === "active"),
+    },
+  };
 }
 
 // Loads a screen's data while the component is mounted, and again when key changes or reload is called.

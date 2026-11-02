@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, inArray, lt, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lt, sql, type SQL } from "drizzle-orm";
 import type { EventData, EventDetail, EventSummary } from "../api/types";
 import type { Db } from "../db/client";
 import { eventData, events, sources, type EventDataRow } from "../db/schema";
@@ -19,6 +19,7 @@ const eventColumns = {
   labels: events.labels,
   occurredAt: events.occurredAt,
   receivedAt: events.receivedAt,
+  conversationId: events.conversationId,
   // Qualified by hand: drizzle renders ${events.id} without the table name, which would bind to event_data.
   dataCount: sql<number>`(SELECT COUNT(*) FROM event_data WHERE event_data.event_id = events.id)`,
 };
@@ -75,17 +76,19 @@ export type ListEventsOptions = {
 };
 
 // The IDs of the sources of the workspace with one of the names. Other workspaces' sources of the same name
-// are not included; disabled sources are.
+// are not included; disabled sources are. The conversation source is not: its events are never listed anyway.
 async function workspaceSourceIds(db: Db, workspaceId: string, names: string[]): Promise<string[]> {
   const rows = await db
     .select({ id: sources.id })
     .from(sources)
-    .where(and(eq(sources.workspaceId, workspaceId), inArray(sources.name, [...new Set(names)])))
+    .where(
+      and(eq(sources.workspaceId, workspaceId), eq(sources.kind, "program"), inArray(sources.name, [...new Set(names)])),
+    )
     .all();
   return rows.map((row) => row.id);
 }
 
-// The newest events of the workspace that match the options.
+// The newest events of the workspace that match the options. The messages of conversations are not listed.
 export async function listWorkspaceEvents(
   db: Db,
   workspaceId: string,
@@ -93,7 +96,7 @@ export async function listWorkspaceEvents(
 ): Promise<{ events: EventSummary[]; nextCursor: string | null }> {
   const { cursor, filter, receivedSince } = options;
   const limit = options.limit ?? EVENT_PAGE_SIZE;
-  const conditions: SQL[] = [eq(events.workspaceId, workspaceId)];
+  const conditions: SQL[] = [eq(events.workspaceId, workspaceId), isNull(events.conversationId)];
   if (cursor !== undefined) conditions.push(lt(events.id, cursor));
   if (receivedSince !== undefined) conditions.push(gte(events.receivedAt, receivedSince));
   if (filter?.types !== undefined) conditions.push(inArray(events.type, [...new Set(filter.types)]));
@@ -127,7 +130,8 @@ export async function listWorkspaceEvents(
   };
 }
 
-// The event only if it belongs to the workspace.
+// The event only if it belongs to the workspace. The messages of conversations are found too: the AIs read their
+// bodies, and the deliveries link to them.
 export async function findWorkspaceEvent(db: Db, workspaceId: string, id: string): Promise<EventDetail | null> {
   const row = await db
     .select(eventColumns)
@@ -142,7 +146,7 @@ export async function findWorkspaceEvent(db: Db, workspaceId: string, id: string
     .where(eq(eventData.eventId, row.id))
     .orderBy(asc(eventData.position))
     .all();
-  return { ...toSummary(row, names), data: data.map(toApiEventData) };
+  return { ...toSummary(row, names), conversation_id: row.conversationId, data: data.map(toApiEventData) };
 }
 
 // The events of the workspace with these IDs, in no particular order. IDs of other workspaces are not found.

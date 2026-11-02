@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ApiKey, EmailAddress, Source, Subscription, User } from "../../src/api/types";
+import type { ApiKey, ConversationDetail, EmailAddress, Source, Subscription, User } from "../../src/api/types";
 import {
   changeUserRole,
+  createConversation,
   createSource,
   createQueue,
   createUser,
@@ -11,10 +12,12 @@ import {
   deleteWebhookDestination,
   issueApiKey,
   issueEmailAddress,
+  postConversationMessage,
   resetUserPassword,
   revokeApiKey,
   revokeEmailAddress,
   revokeUserSessions,
+  stopConversation,
   updateSource,
 } from "./actions";
 import { createApiClient, createApiFetch } from "./api";
@@ -504,5 +507,103 @@ describe("deleteQueue", () => {
       message: "ポーリング用キューが見つかりません",
     });
     expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+const CONVERSATION: ConversationDetail = {
+  id: "cnv_01JC9Z7H2K4M6N8P0Q2R4S6T8V",
+  title: "相談",
+  status: "open",
+  stop_reason: null,
+  max_ai_messages: 20,
+  ai_message_count: 0,
+  participants: [],
+  created_at: 1,
+  updated_at: 1,
+};
+
+describe("createConversation", () => {
+  const url = "/api/v1/conversations";
+  const input = {
+    title: "相談",
+    max_ai_messages: 5,
+    participants: [{ name: "dot", oauth_client_id: "c1", subscription_id: "sub_00000000000000000000000000000002" }],
+    message: "hi",
+    idempotency_key: "k1",
+  };
+
+  it("sends the input and is ok with the conversation on 201", async () => {
+    const { client, fetch } = setup(() => Response.json(CONVERSATION, { status: 201 }), 401, url);
+    expect(await createConversation(client, input)).toEqual({ kind: "ok", conversation: CONVERSATION });
+    const init = fetch.mock.calls[0]?.[1];
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(String(init?.body))).toEqual(input);
+  });
+
+  it("is ok with the existing conversation on a retry (200)", async () => {
+    const { client } = setup(() => Response.json(CONVERSATION), 401, url);
+    expect(await createConversation(client, input)).toEqual({ kind: "ok", conversation: CONVERSATION });
+  });
+
+  it("is an error with the API message on 409", async () => {
+    const { client } = setup(apiError(409, "進行中の会話は 20 件までです"), 401, url);
+    expect(await createConversation(client, input)).toEqual({ kind: "error", message: "進行中の会話は 20 件までです" });
+  });
+
+  it("is unknown when fetch rejects", async () => {
+    const { client } = setup(() => Promise.reject(new TypeError("Failed to fetch")), 401, url);
+    expect(await createConversation(client, input)).toEqual({ kind: "unknown" });
+  });
+});
+
+describe("postConversationMessage", () => {
+  const url = `/api/v1/conversations/${CONVERSATION.id}/messages`;
+  const input = { text: "hi", idempotency_key: "k1" };
+
+  it("sends the text and the key and is ok", async () => {
+    const { client, fetch } = setup(
+      () => Response.json({ event_id: "evt_1", conversation: CONVERSATION }, { status: 201 }),
+      401,
+      url,
+    );
+    expect(await postConversationMessage(client, CONVERSATION.id, input)).toEqual({ kind: "ok" });
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toEqual(input);
+  });
+
+  it("is an error with the API message when the conversation is stopped", async () => {
+    const { client } = setup(apiError(409, "会話は停止しています"), 401, url);
+    expect(await postConversationMessage(client, CONVERSATION.id, input)).toEqual({
+      kind: "error",
+      message: "会話は停止しています",
+    });
+  });
+
+  it("is not found on 404", async () => {
+    const { client } = setup(apiError(404, "会話が見つかりません"), 401, url);
+    expect(await postConversationMessage(client, CONVERSATION.id, input)).toEqual({ kind: "notFound" });
+  });
+
+  it("is an error without sending for an invalid ID", async () => {
+    const { client, fetch } = setup(() => Response.json({}), 401, url);
+    expect(await postConversationMessage(client, "../sources", input)).toEqual({
+      kind: "error",
+      message: "会話が見つかりません",
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("stopConversation", () => {
+  const url = `/api/v1/conversations/${CONVERSATION.id}/stop`;
+
+  it("sends the request and is ok", async () => {
+    const { client, fetch } = setup(() => Response.json({ ...CONVERSATION, status: "stopped" }), 401, url);
+    expect(await stopConversation(client, CONVERSATION.id)).toEqual({ kind: "ok" });
+    expect(fetch.mock.calls[0]?.[1]?.method).toBe("POST");
+  });
+
+  it("is unknown when fetch rejects", async () => {
+    const { client } = setup(() => Promise.reject(new TypeError("Failed to fetch")), 401, url);
+    expect(await stopConversation(client, CONVERSATION.id)).toEqual({ kind: "unknown" });
   });
 });

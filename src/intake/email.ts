@@ -109,7 +109,10 @@ async function receive(
     message.setReject(REJECT_UNKNOWN);
     return;
   }
-  const row = await env.DB.prepare("SELECT id, workspace_id, name, enabled FROM sources WHERE id = ?")
+  // The conversation source is never matched: it has no addresses anyway.
+  const row = await env.DB.prepare(
+    "SELECT id, workspace_id, name, enabled FROM sources WHERE id = ? AND kind = 'program'",
+  )
     .bind(address.source_id)
     .first<SourceRow>();
   if (!row) {

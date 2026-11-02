@@ -75,7 +75,14 @@ export const mcpHandler = {
       // Avoids compiling Ajv on every request.
       { jsonSchemaValidator: new CfWorkerJsonSchemaValidator(), capabilities },
     );
-    registerTools(server, { db, d1: env.DB, user, bucket: env.EVENT_DATA });
+    registerTools(server, {
+      db,
+      d1: env.DB,
+      user,
+      bucket: env.EVENT_DATA,
+      clientId: auth.clientId ?? null,
+      queue: env.DELIVERY_QUEUE,
+    });
     registerEventMethods(server, { db, user, jwtSecret: config.jwtSecret, selfHosts: selfHosts(request, env) });
     const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: undefined,

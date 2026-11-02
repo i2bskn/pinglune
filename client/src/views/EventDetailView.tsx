@@ -44,10 +44,21 @@ function EventDetailContent({ client, event }: { client: ApiClient; event: Event
         <dd>
           <code>{event.event_id}</code>
         </dd>
-        <dt>送信元</dt>
-        <dd>
-          <Link to={`/sources/${event.source.id}`}>{event.source.name}</Link>
-        </dd>
+        {event.conversation_id === null ? (
+          <>
+            <dt>送信元</dt>
+            <dd>
+              <Link to={`/sources/${event.source.id}`}>{event.source.name}</Link>
+            </dd>
+          </>
+        ) : (
+          <>
+            <dt>会話</dt>
+            <dd>
+              <Link to={`/conversations/${event.conversation_id}`}>会話を開く</Link>
+            </dd>
+          </>
+        )}
         <dt>発生日時</dt>
         <dd>
           <time dateTime={new Date(event.occurred_at).toISOString()}>{formatDateTime(event.occurred_at)}</time>

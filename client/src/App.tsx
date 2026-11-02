@@ -8,6 +8,8 @@ import { loadMe, useView } from "./load";
 import { type Route, matchRoute, usePath } from "./router";
 import { markLeaving } from "./unload";
 import { LoadError, Menu, NotFound, useDocumentTitle } from "./views/common";
+import { ConversationDetailView } from "./views/ConversationDetailView";
+import { ConversationsView } from "./views/ConversationsView";
 import { DeliveriesView } from "./views/DeliveriesView";
 import { ErrorBoundary } from "./views/ErrorBoundary";
 import { EventDetailView } from "./views/EventDetailView";
@@ -72,6 +74,10 @@ function Screen({ route, user }: { route: Route; user: User }) {
       return <SourceDetailView client={client} id={route.id} />;
     case "deliveries":
       return <DeliveriesView client={client} />;
+    case "conversations":
+      return <ConversationsView client={client} />;
+    case "conversation":
+      return <ConversationDetailView client={client} id={route.id} />;
     case "users":
       return <UsersView client={client} currentUserId={user.id} />;
     case "notFound":
@@ -85,7 +91,9 @@ function RouteNotFound() {
 }
 
 // The section of the navigation a screen belongs to.
-function section(route: Route): "events" | "sources" | "deliveries" | null {
+type Section = "events" | "sources" | "deliveries" | "conversations";
+
+function section(route: Route): Section | null {
   switch (route.name) {
     case "home":
     case "event":
@@ -95,6 +103,9 @@ function section(route: Route): "events" | "sources" | "deliveries" | null {
       return "sources";
     case "deliveries":
       return "deliveries";
+    case "conversations":
+    case "conversation":
+      return "conversations";
     case "users":
     case "notFound":
       return null;
@@ -105,7 +116,7 @@ function Header({ user, path, route }: { user: User; path: string; route: Route 
   const name = user.name ?? user.email;
   const current = section(route);
   // "page" on the top screen of a section, "location" on a screen inside it.
-  const ariaCurrent = (to: "events" | "sources" | "deliveries", top: Route["name"]) =>
+  const ariaCurrent = (to: Section, top: Route["name"]) =>
     current !== to ? undefined : route.name === top ? ("page" as const) : ("location" as const);
   return (
     <header className="header">
@@ -123,6 +134,9 @@ function Header({ user, path, route }: { user: User; path: string; route: Route 
           </Link>
           <Link to="/deliveries" className="nav-link" aria-current={ariaCurrent("deliveries", "deliveries")}>
             配信
+          </Link>
+          <Link to="/conversations" className="nav-link" aria-current={ariaCurrent("conversations", "conversations")}>
+            会話
           </Link>
         </nav>
         {/* Keyed by the path, so that it is closed again on every screen. */}

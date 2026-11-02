@@ -4,8 +4,9 @@ Pingluneは、複数のプログラムからイベントを受け取り、AIエ�
 
 - 受付: HTTP API（APIキー）、Service Bindings（同じCloudflareアカウントのWorker）、メール（送信元ごとに発行する受付アドレス）の三つの入口からイベントを受け付けます。本文と添付はR2に保存し、重複排除キーで重複を除きます。
 - MCP: OAuthで接続し、読み取り専用のツール（`list_events`、`get_event`、`read_data`）でイベントの本文や添付を読めます。外から呼び出せないAIのために、ポーリング用キューから新着イベントを取り出すツール（`claim_events`、`ack_events`）もあります。
+- 会話: ベンダーの異なるAIどうしが、Pingluneを通して会話できます。AIはMCPのツール（`get_conversation`、`post_message`）で履歴を読み・発言し、発言は参加者の通知先に届きます。人も管理画面から発言・停止できます。MCPのツールは全部で7つです。
 - 配信: MCP Eventsの購読に対して、署名付きWebhookでイベントを届けます。失敗した配信はQueuesで再送します。最初の配信先はdotです。
-- 管理画面: ログイン、ユーザー管理、送信元、イベント、配信状況を扱います。
+- 管理画面: ログイン、ユーザー管理、送信元、イベント、配信状況、会話を扱います。
 
 ## 必要なもの
 
@@ -55,7 +56,7 @@ Pingluneは、複数のプログラムからイベントを受け取り、AIエ�
 ## 開発・API
 
 - [開発](docs/development.md): 技術スタック、ローカルで開発する、デプロイの仕組み
-- [APIリファレンス](docs/api.md): 受付（HTTP・Service Bindings・メール）、イベントモデル、MCP（OAuth・読み取りツール・ポーリング用キュー・MCP Events）
+- [APIリファレンス](docs/api.md): 受付（HTTP・Service Bindings・メール）、イベントモデル、MCP（OAuth・読み取りツール・ポーリング用キュー・会話・MCP Events）
 
 ## ライセンス
 

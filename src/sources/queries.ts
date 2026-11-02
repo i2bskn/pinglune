@@ -13,6 +13,7 @@ const sourceColumns = {
   workspaceId: sources.workspaceId,
   name: sources.name,
   enabled: sources.enabled,
+  kind: sources.kind,
   createdAt: sources.createdAt,
   updatedAt: sources.updatedAt,
   activeKeyCount,
@@ -38,33 +39,40 @@ export function toApiKey(key: ApiKeyRow): ApiKey {
   };
 }
 
+// The source of programs with this ID. The conversation source (src/conversations/) is never matched.
 export function findSourceById(db: Db, id: string): Promise<SourceRow | undefined> {
-  return db.select().from(sources).where(eq(sources.id, id)).get();
+  return db
+    .select()
+    .from(sources)
+    .where(and(eq(sources.id, id), eq(sources.kind, "program")))
+    .get();
 }
 
-// The source only if it belongs to the workspace.
+// The source only if it belongs to the workspace. The conversation source is never matched.
 export function findWorkspaceSource(db: Db, workspaceId: string, id: string): Promise<SourceWithKeyCount | undefined> {
   return db
     .select(sourceColumns)
     .from(sources)
-    .where(and(eq(sources.id, id), eq(sources.workspaceId, workspaceId)))
+    .where(and(eq(sources.id, id), eq(sources.workspaceId, workspaceId), eq(sources.kind, "program")))
     .get();
 }
 
+// The sources of programs. The conversation source is not listed.
 export function listWorkspaceSources(db: Db, workspaceId: string): Promise<SourceWithKeyCount[]> {
   return db
     .select(sourceColumns)
     .from(sources)
-    .where(eq(sources.workspaceId, workspaceId))
+    .where(and(eq(sources.workspaceId, workspaceId), eq(sources.kind, "program")))
     .orderBy(asc(sources.createdAt), asc(sources.id))
     .all();
 }
 
+// The sources of programs, for the limit. The conversation source is not counted.
 export async function countWorkspaceSources(db: Db, workspaceId: string): Promise<number> {
   const row = await db
     .select({ count: sql<number>`COUNT(*)` })
     .from(sources)
-    .where(eq(sources.workspaceId, workspaceId))
+    .where(and(eq(sources.workspaceId, workspaceId), eq(sources.kind, "program")))
     .get();
   return row?.count ?? 0;
 }

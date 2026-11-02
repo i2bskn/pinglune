@@ -47,7 +47,7 @@ const invalidUrlMessage = "URL が正しくありません（https のみ）";
 
 const webhookFilter = z.strictObject(eventFilterShape);
 
-function statusOf(row: SubscriptionRow, now: number): SubscriptionStatus {
+export function statusOf(row: SubscriptionRow, now: number): SubscriptionStatus {
   if (row.unsubscribedAt !== null) return "unsubscribed";
   // Webhook destinations and polling queues do not expire.
   if (row.kind === "webhook" || row.kind === "queue") return "active";
