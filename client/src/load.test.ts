@@ -153,16 +153,42 @@ describe("loadDeliveriesView", () => {
     refresh_before: null,
     expires_at: null,
   };
-  const DELIVERIES: DeliveryList = { deliveries: [], next_cursor: null };
+  const QUEUE: Subscription = {
+    ...WEBHOOK,
+    id: "sub_00000000000000000000000000000003",
+    kind: "queue",
+    name: "Muse",
+    callback_host: null,
+  };
+  const DELIVERIES: DeliveryList = {
+    deliveries: [
+      {
+        id: "dlv_01JC9Z7H2K4M6N8P0Q2R4S6T8V",
+        event_id: "evt_01JC9Z7H2K4M6N8P0Q2R4S6T8V",
+        subscription_id: QUEUE.id,
+        callback_host: null,
+        destination_kind: "queue",
+        destination_name: "Muse",
+        status: "pending",
+        attempts: 0,
+        last_attempt_at: null,
+        last_http_status: null,
+        last_error: null,
+        delivered_at: null,
+        created_at: 1,
+      },
+    ],
+    next_cursor: null,
+  };
 
-  it("passes the subscriptions of both kinds as they are", async () => {
+  it("passes the subscriptions of every kind and the deliveries as they are", async () => {
     const { client } = setup({
-      "/api/v1/subscriptions": [json(200, { subscriptions: [MCP, WEBHOOK] })],
+      "/api/v1/subscriptions": [json(200, { subscriptions: [MCP, WEBHOOK, QUEUE] })],
       "/api/v1/deliveries": [json(200, DELIVERIES)],
     });
     expect(await loadDeliveriesView(client)).toEqual({
       kind: "ready",
-      data: { subscriptions: [MCP, WEBHOOK], deliveries: DELIVERIES },
+      data: { subscriptions: [MCP, WEBHOOK, QUEUE], deliveries: DELIVERIES },
     });
   });
 

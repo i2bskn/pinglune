@@ -1037,6 +1037,34 @@ textarea {
   background: var(--bg);
 }
 
+/* The ID of a polling queue: the code takes the rest of the line, and the button wraps below on narrow screens. */
+.copyable-id {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.5rem;
+  min-width: 0;
+}
+
+.copyable-id .copyable {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+.copyable-id button {
+  min-height: 2.25rem;
+  font-size: 0.875rem;
+}
+
+.copyable-id [role="status"] {
+  flex-basis: 100%;
+  font-size: 0.8125rem;
+}
+
+.copyable-id [role="status"]:empty {
+  display: none;
+}
+
 .delivery-event {
   align-self: flex-start;
   max-width: 100%;

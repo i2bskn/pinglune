@@ -37,8 +37,9 @@ const me = new Hono<AppEnv>()
 
     // All MCP grants are revoked, unlike sessions, where the current one is kept, and the MCP Events
     // subscriptions end. Webhook destinations stay: their keys belong to the receivers, not to the user's login,
-    // so a routine password change does not stop them silently. KV first: if it fails, D1 is unchanged and the
-    // request can be retried.
+    // so a routine password change does not stop them silently. Polling queues stay too: they are read through MCP,
+    // which needs a new authorization anyway. KV first: if it fails, D1 is unchanged and the request can be
+    // retried.
     if (c.env.OAUTH_PROVIDER) await revokeAllGrants(c.env.OAUTH_PROVIDER, user.id);
     const db = c.get("db");
     const config = c.get("config");

@@ -145,6 +145,21 @@ export async function findWorkspaceEvent(db: Db, workspaceId: string, id: string
   return { ...toSummary(row, names), data: data.map(toApiEventData) };
 }
 
+// The events of the workspace with these IDs, in no particular order. IDs of other workspaces are not found.
+export async function findWorkspaceEventsByIds(db: Db, workspaceId: string, ids: string[]): Promise<EventSummary[]> {
+  if (ids.length === 0) return [];
+  const rows = await db
+    .select(eventColumns)
+    .from(events)
+    .where(and(eq(events.workspaceId, workspaceId), inArray(events.id, [...new Set(ids)])))
+    .all();
+  const names = await sourceNames(
+    db,
+    rows.map((row) => row.sourceId),
+  );
+  return rows.map((row) => toSummary(row, names));
+}
+
 // One data item only if it belongs to the workspace.
 export function findWorkspaceEventData(db: Db, workspaceId: string, dataRef: string): Promise<EventDataRow | undefined> {
   return db

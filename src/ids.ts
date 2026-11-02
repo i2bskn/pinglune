@@ -55,8 +55,8 @@ export const EVENT_ID_PATTERN = new RegExp(`^evt_${ULID_PATTERN}$`);
 export const DATA_REF_PATTERN = new RegExp(`^dat_${ULID_PATTERN}$`);
 export const SOURCE_ID_PATTERN = new RegExp(`^src_${ULID_PATTERN}$`);
 export const DELIVERY_ID_PATTERN = new RegExp(`^dlv_${ULID_PATTERN}$`);
-// MCP Events subscriptions (sub_ + 32 hex digits of SHA-256) and webhook destinations (sub_ + 16 random bytes in
-// hex) share this form.
+// MCP Events subscriptions (sub_ + 32 hex digits of SHA-256), webhook destinations and polling queues (sub_ + 16
+// random bytes in hex) share this form.
 export const SUBSCRIPTION_ID_PATTERN = /^sub_[0-9a-f]{32}$/;
 
 export function newEventId(now: number): string {
@@ -75,11 +75,12 @@ export function newDeliveryId(now: number): string {
   return `dlv_${newUlid(now)}`;
 }
 
-const WEBHOOK_DESTINATION_ID_BYTES = 16;
+const RANDOM_SUBSCRIPTION_ID_BYTES = 16;
 
-// The ID of a webhook destination: sub_ + 16 random bytes in lowercase hex, the form of MCP subscription IDs.
-export function newWebhookDestinationId(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(WEBHOOK_DESTINATION_ID_BYTES));
+// The ID of a webhook destination or a polling queue: sub_ + 16 random bytes in lowercase hex, the form of MCP
+// subscription IDs.
+export function newRandomSubscriptionId(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(RANDOM_SUBSCRIPTION_ID_BYTES));
   return `sub_${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
 

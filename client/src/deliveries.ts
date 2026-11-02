@@ -1,4 +1,5 @@
 import type {
+  CreateQueueRequest,
   CreateWebhookDestinationRequest,
   Delivery,
   DeliveryStatus,
@@ -11,6 +12,34 @@ export const DELIVERY_STATUS_LABELS: Record<DeliveryStatus, string> = {
   delivered: "配信済み",
   failed: "失敗",
 };
+
+// Deliveries to polling queues wait for an AI to take them, and are done when it reports them processed.
+export const QUEUE_DELIVERY_STATUS_LABELS: Record<DeliveryStatus, string> = {
+  pending: "取得待ち",
+  delivered: "処理済み",
+  failed: "失敗",
+};
+
+export function isQueueDelivery(delivery: Delivery): boolean {
+  return delivery.destination_kind === "queue";
+}
+
+export function deliveryStatusLabel(delivery: Delivery): string {
+  return (isQueueDelivery(delivery) ? QUEUE_DELIVERY_STATUS_LABELS : DELIVERY_STATUS_LABELS)[delivery.status];
+}
+
+// Where a delivery goes: the callback host, or the name of a polling queue.
+export function deliveryDestination(delivery: Delivery): string {
+  if (isQueueDelivery(delivery)) {
+    return delivery.destination_name === null ? "キュー" : `キュー: ${delivery.destination_name}`;
+  }
+  return delivery.callback_host ?? "不明な宛先";
+}
+
+// The number of tries, e.g. "試行 2 回"; for a polling queue, the number of times it was taken.
+export function attemptsLabel(delivery: Delivery): string {
+  return `${isQueueDelivery(delivery) ? "取得" : "試行"} ${delivery.attempts} 回`;
+}
 
 export const SUBSCRIPTION_STATUS_LABELS: Record<SubscriptionStatus, string> = {
   active: "有効",
@@ -32,14 +61,21 @@ const ERROR_LABELS: Record<string, string> = {
   payload_too_large: "イベントが大きすぎます",
   secret_unavailable: "鍵を読めませんでした",
   dead_lettered: "処理を完了できませんでした",
+  not_acknowledged: "処理済みの連絡がないまま 5 回取得された",
+  expired: "7 日間処理されなかった",
 };
 
 export function errorLabel(error: string): string {
   return ERROR_LABELS[error] ?? error;
 }
 
-// The outcome of the last try, e.g. "受信側でエラーが起きました（HTTP 503）". null before the first try.
+// The outcome of the last try, e.g. "受信側でエラーが起きました（HTTP 503）". null before the first try. Polling
+// queues have no HTTP status, and are "処理済み" when acknowledged.
 export function lastResult(delivery: Delivery): string | null {
+  if (isQueueDelivery(delivery)) {
+    if (delivery.last_error !== null) return errorLabel(delivery.last_error);
+    return delivery.status === "delivered" ? "処理済み" : null;
+  }
   const status = delivery.last_http_status === null ? "" : `（HTTP ${delivery.last_http_status}）`;
   if (delivery.last_error !== null) return `${errorLabel(delivery.last_error)}${status}`;
   if (delivery.status === "delivered") return `成功${status}`;
@@ -66,7 +102,7 @@ export function describeArguments(args: Subscription["arguments"]): string {
   return parts.length === 0 ? "すべてのイベント" : parts.join(" / ");
 }
 
-// Webhook destinations are deleted rather than unsubscribed; they never expire.
+// Webhook destinations and polling queues are deleted rather than unsubscribed; they never expire.
 export const WEBHOOK_DESTINATION_STATUS_LABELS: Record<SubscriptionStatus, string> = {
   active: "有効",
   expired: "期限切れ",
@@ -118,6 +154,21 @@ export function webhookDestinationRequest(
   const labels = parseLabelLines(form.labels);
   if (labels === null) return { ok: false, message: INVALID_LABELS_MESSAGE };
   const value: CreateWebhookDestinationRequest = { name: form.name, url: form.url, token: form.token };
+  const types = splitList(form.types);
+  if (types.length > 0) value.types = types;
+  const sources = splitList(form.sources);
+  if (sources.length > 0) value.sources = sources;
+  if (Object.keys(labels).length > 0) value.labels = labels;
+  return { ok: true, value };
+}
+
+export type QueueForm = { name: string; types: string; sources: string; labels: string };
+
+// The request of the polling queue form. Empty condition fields are left out; the server checks the rest.
+export function queueRequest(form: QueueForm): { ok: true; value: CreateQueueRequest } | { ok: false; message: string } {
+  const labels = parseLabelLines(form.labels);
+  if (labels === null) return { ok: false, message: INVALID_LABELS_MESSAGE };
+  const value: CreateQueueRequest = { name: form.name };
   const types = splitList(form.types);
   if (types.length > 0) value.types = types;
   const sources = splitList(form.sources);

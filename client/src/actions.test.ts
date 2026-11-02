@@ -3,8 +3,10 @@ import type { ApiKey, EmailAddress, Source, Subscription, User } from "../../src
 import {
   changeUserRole,
   createSource,
+  createQueue,
   createUser,
   createWebhookDestination,
+  deleteQueue,
   deleteUser,
   deleteWebhookDestination,
   issueApiKey,
@@ -451,6 +453,55 @@ describe("deleteWebhookDestination", () => {
     expect(await deleteWebhookDestination(client, "../sources")).toEqual({
       kind: "error",
       message: "Webhook 配信先が見つかりません",
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+const QUEUE: Subscription = { ...DESTINATION, kind: "queue", name: "Muse", callback_host: null };
+
+describe("createQueue", () => {
+  const url = "/api/v1/subscriptions/queues";
+  const input = { name: "Muse", types: ["alert.observed"] };
+
+  it("sends the input and is ok with the queue on 201", async () => {
+    const { client, fetch } = setup(() => Response.json(QUEUE, { status: 201 }), 401, url);
+    expect(await createQueue(client, input)).toEqual({ kind: "ok", subscription: QUEUE });
+    const init = fetch.mock.calls[0]?.[1];
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(String(init?.body))).toEqual(input);
+  });
+
+  it("is an error with the API message on 409", async () => {
+    const { client } = setup(apiError(409, "ポーリング用キューは 10 件までです"), 401, url);
+    expect(await createQueue(client, input)).toEqual({ kind: "error", message: "ポーリング用キューは 10 件までです" });
+  });
+
+  it("is unknown when fetch rejects", async () => {
+    const { client } = setup(() => Promise.reject(new TypeError("Failed to fetch")), 401, url);
+    expect(await createQueue(client, input)).toEqual({ kind: "unknown" });
+  });
+});
+
+describe("deleteQueue", () => {
+  const url = `/api/v1/subscriptions/${QUEUE.id}/delete`;
+
+  it("sends the request and is ok", async () => {
+    const { client, fetch } = setup(() => Response.json({ ...QUEUE, status: "unsubscribed" }), 401, url);
+    expect(await deleteQueue(client, QUEUE.id)).toEqual({ kind: "ok" });
+    expect(fetch.mock.calls[0]?.[1]?.method).toBe("POST");
+  });
+
+  it("is not found on 404", async () => {
+    const { client } = setup(apiError(404, "配信先が見つかりません"), 401, url);
+    expect(await deleteQueue(client, QUEUE.id)).toEqual({ kind: "notFound" });
+  });
+
+  it("is an error without sending for an invalid ID", async () => {
+    const { client, fetch } = setup(() => Response.json(QUEUE), 401, url);
+    expect(await deleteQueue(client, "../sources")).toEqual({
+      kind: "error",
+      message: "ポーリング用キューが見つかりません",
     });
     expect(fetch).not.toHaveBeenCalled();
   });

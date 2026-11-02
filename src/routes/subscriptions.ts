@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import type {
+  CreateQueueRequest,
   CreateWebhookDestinationRequest,
   Subscription,
   SubscriptionList,
@@ -14,13 +15,16 @@ import { subscriptions, type SubscriptionRow } from "../db/schema";
 import type { AppEnv } from "../env";
 import { callbackHost } from "../deliveries/queries";
 import { eventFilterShape, type EventFilter } from "../events/filter";
-import { newWebhookDestinationId, SUBSCRIPTION_ID_PATTERN } from "../ids";
+import { newRandomSubscriptionId, SUBSCRIPTION_ID_PATTERN } from "../ids";
 import { EVENT_NAME, EXPIRY_GRACE_MS } from "../mcp/events";
 import { selfHosts } from "../mcp/handler";
+import { MAX_ACTIVE_QUEUES_PER_WORKSPACE } from "../queues/constants";
+import { countActiveQueues, endQueue, listWorkspaceQueues } from "../queues/queries";
 import { encryptSecret, subscriptionSecretKey } from "../subscriptions/secret";
 import {
   countActiveWebhookDestinations,
   endWebhookDestination,
+  findWorkspaceDestination,
   findWorkspaceWebhookDestination,
   listWorkspaceMcpSubscriptions,
   listWorkspaceWebhookDestinations,
@@ -32,21 +36,21 @@ import { invalidNameMessage, normalizeDisplayName, unknownField } from "./source
 import { requirePersonalWorkspace } from "./workspace";
 
 // No paging: a workspace has few subscriptions. Each kind is listed up to this many, so that MCP subscriptions
-// never push the webhook destinations out of the list.
+// never push the webhook destinations or the polling queues out of the list.
 const SUBSCRIPTION_LIST_LIMIT = 100;
 const MAX_ACTIVE_WEBHOOK_DESTINATIONS_PER_WORKSPACE = 20;
 // Printable ASCII without spaces, as HTTP header values allow without quoting.
 const TOKEN_PATTERN = /^[\x21-\x7E]{1,1024}$/;
 
-const webhookDestinationNotFound = "Webhook 配信先が見つかりません";
+const destinationNotFound = "配信先が見つかりません";
 const invalidUrlMessage = "URL が正しくありません（https のみ）";
 
 const webhookFilter = z.strictObject(eventFilterShape);
 
 function statusOf(row: SubscriptionRow, now: number): SubscriptionStatus {
   if (row.unsubscribedAt !== null) return "unsubscribed";
-  // Webhook destinations do not expire.
-  if (row.kind === "webhook") return "active";
+  // Webhook destinations and polling queues do not expire.
+  if (row.kind === "webhook" || row.kind === "queue") return "active";
   return row.expiresAt <= now ? "expired" : "active";
 }
 
@@ -61,7 +65,8 @@ function parseArguments(value: string): Record<string, unknown> | null {
   }
 }
 
-// Neither the secrets (or keys), the whole callback URL nor the user is returned.
+// Neither the secrets (or keys), the whole callback URL nor the user is returned. Polling queues have no callback
+// URL: callback_host is null.
 function toApiSubscription(row: SubscriptionRow, now: number): Subscription {
   const isMcp = row.kind === "mcp";
   return {
@@ -109,18 +114,33 @@ const createWebhookDestinationBody = jsonBody<CreateWebhookDestinationRequest, W
   return { ok: true, value: { name, url: parsedUrl.url, token: body.token, filter: filter.data } };
 });
 
+type QueueInput = { name: string; filter: EventFilter };
+
+const createQueueBody = jsonBody<CreateQueueRequest, QueueInput>((body, c) => {
+  const unknown = unknownField(body, ["name", ...FILTER_FIELDS]);
+  if (unknown !== null) return apiError(c, 400, "unknown_field", `未知の項目があります: ${unknown}`);
+  const name = normalizeDisplayName(body.name);
+  if (name === null) return apiError(c, 400, "invalid_name", invalidNameMessage);
+  const given: Record<string, unknown> = {};
+  for (const field of FILTER_FIELDS) if (field in body) given[field] = body[field];
+  const filter = webhookFilter.safeParse(given);
+  if (!filter.success) return apiError(c, 400, "invalid_filter", "条件が正しくありません");
+  return { ok: true, value: { name, filter: filter.data } };
+});
+
 const subscriptionsApi = new Hono<AppEnv>()
   .use("*", requireUser, requirePersonalWorkspace)
   .get("/", async (c) => {
     const db = c.get("db");
     const workspaceId = c.get("workspace").id;
-    const [mcp, webhooks] = await Promise.all([
+    const [mcp, webhooks, queues] = await Promise.all([
       listWorkspaceMcpSubscriptions(db, workspaceId, SUBSCRIPTION_LIST_LIMIT),
       listWorkspaceWebhookDestinations(db, workspaceId, SUBSCRIPTION_LIST_LIMIT),
+      listWorkspaceQueues(db, workspaceId, SUBSCRIPTION_LIST_LIMIT),
     ]);
     const now = clock.now();
     const body: SubscriptionList = {
-      subscriptions: [...mcp, ...webhooks].map((row) => toApiSubscription(row, now)),
+      subscriptions: [...mcp, ...webhooks, ...queues].map((row) => toApiSubscription(row, now)),
     };
     return c.json(body, 200);
   })
@@ -139,7 +159,7 @@ const subscriptionsApi = new Hono<AppEnv>()
     const tokenBytes = new TextEncoder().encode(token) as Uint8Array<ArrayBuffer>;
     // On an ID collision, one more try. Not an upsert: a collision must not overwrite the existing row.
     for (let attempt = 0; attempt < 2; attempt++) {
-      const id = newWebhookDestinationId();
+      const id = newRandomSubscriptionId();
       try {
         await db
           .insert(subscriptions)
@@ -177,18 +197,75 @@ const subscriptionsApi = new Hono<AppEnv>()
       "Webhook 配信先を登録できませんでした。もう一度試してください",
     );
   })
+  .post("/queues", createQueueBody, async (c) => {
+    const { name, filter } = c.req.valid("json");
+    const db = c.get("db");
+    const user = c.get("user");
+    const workspaceId = c.get("workspace").id;
+    // A loose limit: concurrent requests may go slightly over it.
+    if ((await countActiveQueues(db, workspaceId)) >= MAX_ACTIVE_QUEUES_PER_WORKSPACE) {
+      return apiError(c, 409, "limit_exceeded", "ポーリング用キューは 10 件までです");
+    }
+    const now = clock.now();
+    // On an ID collision, one more try. Not an upsert: a collision must not overwrite the existing row.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const id = newRandomSubscriptionId();
+      try {
+        await db
+          .insert(subscriptions)
+          .values({
+            id,
+            userId: user.id,
+            workspaceId,
+            kind: "queue",
+            name,
+            eventName: EVENT_NAME,
+            arguments: canonicalJson(filter),
+            // Nothing is sent and there is no key; the columns are NOT NULL.
+            callbackUrl: "",
+            secret: "",
+            previousSecret: null,
+            secretRotatedAt: null,
+            expiresAt: NO_EXPIRY,
+            unsubscribedAt: null,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .run();
+      } catch (error) {
+        if (isUniqueViolation(error)) continue;
+        throw error;
+      }
+      const created = await findWorkspaceDestination(db, workspaceId, id);
+      if (!created) throw new Error("created queue not found");
+      return c.json(toApiSubscription(created, now), 201);
+    }
+    return apiError(
+      c,
+      503,
+      "temporarily_unavailable",
+      "ポーリング用キューを登録できませんでした。もう一度試してください",
+    );
+  })
   .post("/:id/delete", async (c) => {
     const db = c.get("db");
     const workspaceId = c.get("workspace").id;
     const id = c.req.param("id");
-    // Webhook destinations only: MCP subscriptions are ended by their clients, which would subscribe again.
-    if (!SUBSCRIPTION_ID_PATTERN.test(id) || !(await findWorkspaceWebhookDestination(db, workspaceId, id))) {
-      return apiError(c, 404, "not_found", webhookDestinationNotFound);
-    }
+    // Webhook destinations and polling queues only: MCP subscriptions are ended by their clients, which would
+    // subscribe again.
+    const destination = SUBSCRIPTION_ID_PATTERN.test(id)
+      ? await findWorkspaceDestination(db, workspaceId, id)
+      : undefined;
+    if (!destination) return apiError(c, 404, "not_found", destinationNotFound);
     const now = clock.now();
-    await endWebhookDestination(db, workspaceId, id, now);
-    const ended = await findWorkspaceWebhookDestination(db, workspaceId, id);
-    if (!ended) return apiError(c, 404, "not_found", webhookDestinationNotFound);
+    if (destination.kind === "queue") {
+      // The deliveries not taken yet would never be: they fail in the same batch.
+      await endQueue(c.env.DB, workspaceId, id, now);
+    } else {
+      await endWebhookDestination(db, workspaceId, id, now);
+    }
+    const ended = await findWorkspaceDestination(db, workspaceId, id);
+    if (!ended) return apiError(c, 404, "not_found", destinationNotFound);
     return c.json(toApiSubscription(ended, now), 200);
   });
 

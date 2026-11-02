@@ -296,7 +296,7 @@ describe("POST /api/v1/subscriptions/:id/delete", () => {
     expect(await errorOf(await remove(theirs.id))).toEqual({
       status: 404,
       code: "not_found",
-      message: "Webhook 配信先が見つかりません",
+      message: "配信先が見つかりません",
     });
     expect((await findSubscriptionById(db, theirs.id))?.unsubscribedAt).toBeNull();
   });

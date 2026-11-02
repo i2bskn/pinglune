@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "../db/client";
 import { subscriptions, type SubscriptionRow } from "../db/schema";
 
@@ -63,6 +63,26 @@ export function findWorkspaceWebhookDestination(
     .from(subscriptions)
     .where(
       and(eq(subscriptions.id, id), eq(subscriptions.workspaceId, workspaceId), eq(subscriptions.kind, "webhook")),
+    )
+    .get();
+}
+
+// The webhook destination or polling queue of a workspace with this ID: the subscriptions that the management
+// screen registers and deletes. MCP subscriptions are never matched.
+export function findWorkspaceDestination(
+  db: Db,
+  workspaceId: string,
+  id: string,
+): Promise<SubscriptionRow | undefined> {
+  return db
+    .select()
+    .from(subscriptions)
+    .where(
+      and(
+        eq(subscriptions.id, id),
+        eq(subscriptions.workspaceId, workspaceId),
+        inArray(subscriptions.kind, ["webhook", "queue"]),
+      ),
     )
     .get();
 }
@@ -133,9 +153,11 @@ export async function endSubscription(db: Db, id: string, userId: string, now: n
     .run();
 }
 
-// Ends the user's MCP Events subscriptions when their access is revoked, and their webhook destinations too when
-// includeWebhooks is set. Webhook destinations deliver with a key of the receiver, not with the user's login, so
-// the user's own password change leaves them; an admin's intervention (which may answer a compromise) ends them.
+// Ends the user's MCP Events subscriptions when their access is revoked, and when includeWebhooks is set also their
+// webhook destinations and polling queues (every kind other than mcp). Webhook destinations deliver with a key of
+// the receiver, not with the user's login, and polling queues are passive buffers read through MCP (which needs
+// the user to authorize again), so the user's own password change leaves them; an admin's intervention (which may
+// answer a compromise) ends them.
 // A query, so that it can join a batch.
 export function endUserSubscriptionsQuery(
   db: Db,

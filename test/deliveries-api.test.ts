@@ -5,6 +5,7 @@ import { clock } from "../src/clock";
 import type { SourceRow, UserRow } from "../src/db/schema";
 import { acceptEvent } from "../src/intake/service";
 import {
+  createQueue,
   createSource,
   createSubscription,
   createUser,
@@ -140,6 +141,8 @@ describe("GET /api/v1/deliveries", () => {
         event_id: second,
         subscription_id: subscription.id,
         callback_host: "hooks.example.com",
+        destination_kind: "mcp",
+        destination_name: null,
         status: "pending",
         attempts: 0,
         last_attempt_at: null,
@@ -153,6 +156,8 @@ describe("GET /api/v1/deliveries", () => {
         event_id: first,
         subscription_id: subscription.id,
         callback_host: "hooks.example.com",
+        destination_kind: "mcp",
+        destination_name: null,
         status: "failed",
         attempts: 6,
         last_attempt_at: now,
@@ -163,6 +168,22 @@ describe("GET /api/v1/deliveries", () => {
       },
     ]);
     expect(JSON.stringify(body)).not.toContain("secret-path");
+  });
+
+  it("shows a polling queue with its kind and name, without a callback host", async () => {
+    const queue = await createQueue({ user: alice, name: "Muse" });
+    const eventId = await ingest(aliceSource);
+    const { body } = await getJson<DeliveryList>("/api/v1/deliveries");
+    expect(body.deliveries).toEqual([
+      expect.objectContaining({
+        event_id: eventId,
+        subscription_id: queue.id,
+        callback_host: null,
+        destination_kind: "queue",
+        destination_name: "Muse",
+        status: "pending",
+      }),
+    ]);
   });
 
   it("filters by event, and an event of another workspace gives an empty list", async () => {

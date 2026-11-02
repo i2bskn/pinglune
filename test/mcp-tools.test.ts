@@ -152,15 +152,33 @@ function spyBucket() {
 }
 
 describe("tools/list", () => {
-  it("lists the three read-only tools", async () => {
+  it("lists the three read-only tools and the two queue tools", async () => {
     const result = (await rpc(alice, "tools/list", {})) as {
-      tools: { name: string; annotations?: { readOnlyHint?: boolean }; inputSchema: { additionalProperties?: unknown } }[];
+      tools: {
+        name: string;
+        annotations?: { readOnlyHint?: boolean; idempotentHint?: boolean; destructiveHint?: boolean };
+        inputSchema: { additionalProperties?: unknown };
+      }[];
     };
-    expect(result.tools.map((tool) => tool.name).sort()).toEqual(["get_event", "list_events", "read_data"]);
-    for (const tool of result.tools) {
-      expect(tool.annotations?.readOnlyHint).toBe(true);
-      expect(tool.inputSchema.additionalProperties).toBe(false);
-    }
+    expect(result.tools.map((tool) => tool.name).sort()).toEqual([
+      "ack_events",
+      "claim_events",
+      "get_event",
+      "list_events",
+      "read_data",
+    ]);
+    const readOnly = Object.fromEntries(result.tools.map((tool) => [tool.name, tool.annotations?.readOnlyHint]));
+    expect(readOnly).toEqual({
+      list_events: true,
+      get_event: true,
+      read_data: true,
+      claim_events: false,
+      ack_events: false,
+    });
+    const tools = new Map(result.tools.map((tool) => [tool.name, tool]));
+    expect(tools.get("claim_events")?.annotations).toMatchObject({ idempotentHint: false, destructiveHint: false });
+    expect(tools.get("ack_events")?.annotations).toMatchObject({ idempotentHint: true, destructiveHint: false });
+    for (const tool of result.tools) expect(tool.inputSchema.additionalProperties).toBe(false);
   });
 });
 

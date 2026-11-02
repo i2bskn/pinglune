@@ -91,15 +91,18 @@ async function bearerToken(jwtSecret: string, subscription: SubscriptionRow): Pr
 // constraint, so a row may hold any value.
 function kindOf(subscription: SubscriptionRow): SubscriptionRow["kind"] | null {
   const kind: string = subscription.kind;
-  return kind === "mcp" || kind === "webhook" ? kind : null;
+  return kind === "mcp" || kind === "webhook" || kind === "queue" ? kind : null;
 }
+
+// The kinds that are sent as webhooks.
+type SentKind = Exclude<SubscriptionRow["kind"], "queue">;
 
 // How the webhook is authenticated, or null if its secret cannot be decrypted. Only MCP Events subscriptions
 // rotate secrets, so only they also sign with the previous one.
 async function authOf(
   jwtSecret: string,
   subscription: SubscriptionRow,
-  kind: SubscriptionRow["kind"],
+  kind: SentKind,
   now: number,
 ): Promise<WebhookAuth | null> {
   if (kind === "webhook") {
@@ -144,6 +147,13 @@ async function deliver(deps: ConsumerDeps, message: Message<unknown>, id: string
   if (kind === null) {
     console.error("delivery: unknown subscription kind", { deliveryId: id });
     await fail("subscription_inactive");
+    return;
+  }
+  // Deliveries to polling queues are never queued (findUnsentDeliveryIds), but a message may come from an older
+  // Worker. The delivery is left pending for claim_events.
+  if (kind === "queue") {
+    console.warn("delivery: queue delivery in the delivery queue", { deliveryId: id });
+    message.ack();
     return;
   }
 

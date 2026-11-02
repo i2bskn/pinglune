@@ -1,5 +1,6 @@
-// The daily cron (wrangler.jsonc triggers): logs deliveries that stay pending, and deletes R2 objects that no
-// event_data row refers to (left by intakes that stopped or failed between R2 and D1).
+// The daily cron (wrangler.jsonc triggers): logs deliveries that stay pending, fails the deliveries of polling
+// queues that nobody took for 7 days, and deletes R2 objects that no event_data row refers to (left by intakes that
+// stopped or failed between R2 and D1).
 //
 // Each run scans one page of R2 (up to 1,000 objects) and saves where it stopped, so that the Free plan's
 // per-invocation limits hold. With many objects a full pass takes days (100,000 objects: about 100 days).
@@ -7,6 +8,8 @@
 import { describeError } from "../auth/middleware";
 import { stalePendingDeliveries } from "../deliveries/queries";
 import { DATA_REF_PATTERN, EVENT_ID_PATTERN } from "../ids";
+import { QUEUE_RETENTION_MS } from "../queues/constants";
+import { expireQueueDeliveries } from "../queues/queries";
 
 export type MaintenanceDeps = { db: D1Database; bucket: R2Bucket; now: number };
 
@@ -38,6 +41,16 @@ async function checkStalePending(deps: MaintenanceDeps): Promise<void> {
     if (count > 0) console.warn("stale pending deliveries", { count, oldestCreatedAt });
   } catch (error) {
     console.error("checking stale pending deliveries failed", describeError(error));
+  }
+}
+
+// Includes the deliveries of ended queues, and of queues ended by an admin's intervention.
+async function expireQueues(deps: MaintenanceDeps): Promise<void> {
+  try {
+    const count = await expireQueueDeliveries(deps.db, deps.now - QUEUE_RETENTION_MS, deps.now);
+    console.info("expired queue deliveries", { count });
+  } catch (error) {
+    console.error("expiring queue deliveries failed", describeError(error));
   }
 }
 
@@ -105,7 +118,7 @@ async function deleteOrphanObjects(deps: MaintenanceDeps): Promise<void> {
   }
 }
 
-// The two tasks are independent: a failure of one does not stop the other.
+// The tasks are independent: a failure of one does not stop the others.
 export async function runDailyMaintenance(deps: MaintenanceDeps): Promise<void> {
-  await Promise.all([checkStalePending(deps), deleteOrphanObjects(deps)]);
+  await Promise.all([checkStalePending(deps), expireQueues(deps), deleteOrphanObjects(deps)]);
 }

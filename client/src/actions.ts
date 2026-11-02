@@ -1,5 +1,6 @@
 import type {
   ApiKey,
+  CreateQueueRequest,
   CreateUserRequest,
   CreateWebhookDestinationRequest,
   CreatedApiKey,
@@ -82,8 +83,8 @@ export async function changeUserRole(client: ApiClient, userId: string, role: Us
   );
 }
 
-// Sets a new password for a user and ends their sessions, MCP connections and webhook destinations (password
-// mode only). Admins only. In OIDC mode the server also answers 404 with the same code, which cannot be told apart from a
+// Sets a new password for a user and ends their sessions, MCP connections, webhook destinations and polling queues
+// (password mode only). Admins only. In OIDC mode the server also answers 404 with the same code, which cannot be told apart from a
 // missing user; it only happens if the mode changed after the screen loaded, and the reload that follows
 // hides the button. Never rejects.
 export async function resetUserPassword(client: ApiClient, userId: string, password: string): Promise<UserActionResult> {
@@ -93,7 +94,7 @@ export async function resetUserPassword(client: ApiClient, userId: string, passw
   );
 }
 
-// Ends the sessions, MCP connections and webhook destinations of a user. Admins only. Never rejects.
+// Ends the sessions, MCP connections, webhook destinations and polling queues of a user. Admins only. Never rejects.
 export async function revokeUserSessions(client: ApiClient, userId: string): Promise<UserActionResult> {
   if (!isValidId(userId)) return INVALID_USER_ID;
   return resourceActionResult(
@@ -244,6 +245,34 @@ export async function deleteWebhookDestination(
   subscriptionId: string,
 ): Promise<WebhookDestinationActionResult> {
   if (!isValidId(subscriptionId)) return INVALID_WEBHOOK_DESTINATION_ID;
+  return resourceActionResult(
+    await send(() => client.api.v1.subscriptions[":id"].delete.$post({ param: { id: subscriptionId } })),
+  );
+}
+
+export type CreateQueueResult = { kind: "ok"; subscription: Subscription } | SendFailure;
+
+// Registers a polling queue in the signed-in user's workspace. Errors, including limit_exceeded (409), are shown
+// with the server's message. Never rejects.
+export async function createQueue(client: ApiClient, input: CreateQueueRequest): Promise<CreateQueueResult> {
+  const sent = await send(() => client.api.v1.subscriptions.queues.$post({ json: input }));
+  if (sent.kind !== "response") return sent;
+  const { res } = sent;
+  if (res.ok) {
+    const body = await okJson<Subscription>(res);
+    return body.kind === "ok" ? { kind: "ok", subscription: body.value } : body;
+  }
+  return { kind: "error", message: await responseErrorMessage(res) };
+}
+
+// The outcome of deleting a polling queue. notFound means it is gone (or is not a polling queue).
+export type QueueActionResult = ResourceActionResult;
+
+const INVALID_QUEUE_ID = { kind: "error", message: "ポーリング用キューが見つかりません" } as const;
+
+// Deletes (ends) a polling queue; the events not taken yet fail. Deleting a deleted one is ok. Never rejects.
+export async function deleteQueue(client: ApiClient, subscriptionId: string): Promise<QueueActionResult> {
+  if (!isValidId(subscriptionId)) return INVALID_QUEUE_ID;
   return resourceActionResult(
     await send(() => client.api.v1.subscriptions[":id"].delete.$post({ param: { id: subscriptionId } })),
   );

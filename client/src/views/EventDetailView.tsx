@@ -86,7 +86,8 @@ function EventDetailContent({ client, event }: { client: ApiClient; event: Event
   );
 }
 
-// The deliveries of the event to MCP Events subscriptions: the first page only.
+// The deliveries of the event (to MCP Events subscriptions, webhook destinations and polling queues): the first
+// page only.
 function EventDeliveries({ client, eventId }: { client: ApiClient; eventId: string }) {
   const [state] = useView(() => loadDeliveries(client, { eventId }), `deliveries:${eventId}`);
   switch (state.kind) {

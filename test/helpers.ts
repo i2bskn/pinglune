@@ -19,6 +19,7 @@ import type { DeliveryMessage } from "../src/deliveries/enqueue";
 import type { Bindings } from "../src/env";
 import worker from "../src/index";
 import { formatApiKey, newEmailLocalPart, newKeyId, newKeySecret, newSourceId, sha256Hex } from "../src/ids";
+import { NO_EXPIRY } from "../src/subscriptions/queries";
 import { encryptSecret, subscriptionSecretKey } from "../src/subscriptions/secret";
 import { insertPersonalWorkspaceStatement } from "../src/workspaces/queries";
 
@@ -405,6 +406,45 @@ export async function createSubscription(params: {
     })
     .returning();
   if (!row) throw new Error("failed to create subscription");
+  return row;
+}
+
+let queueSequence = 0;
+
+// Inserts a polling queue directly, as POST /api/v1/subscriptions/queues stores it. workspaceId defaults to the
+// user's personal workspace.
+export async function createQueue(params: {
+  user: UserRow;
+  name?: string;
+  workspaceId?: string;
+  arguments?: string;
+  unsubscribedAt?: number | null;
+  createdAt?: number;
+}): Promise<SubscriptionRow> {
+  queueSequence++;
+  const id = `sub_${queueSequence.toString(16).padStart(32, "f")}`;
+  const now = params.createdAt ?? Date.now();
+  const [row] = await db
+    .insert(subscriptions)
+    .values({
+      id,
+      userId: params.user.id,
+      workspaceId: params.workspaceId ?? (await personalWorkspaceOf(params.user)).id,
+      kind: "queue",
+      name: params.name ?? "queue",
+      eventName: "pinglune.event",
+      arguments: params.arguments ?? "{}",
+      callbackUrl: "",
+      secret: "",
+      previousSecret: null,
+      secretRotatedAt: null,
+      expiresAt: NO_EXPIRY,
+      unsubscribedAt: params.unsubscribedAt ?? null,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning();
+  if (!row) throw new Error("failed to create queue");
   return row;
 }
 

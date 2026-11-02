@@ -130,26 +130,27 @@ export type IngestResponse = { event_id: string; duplicate: boolean };
 export type SubscriptionStatus = "active" | "expired" | "unsubscribed";
 
 // mcp: an MCP Events subscription (events/subscribe). webhook: a webhook destination registered on the screen,
-// sent with a Bearer key.
-export type SubscriptionKind = "mcp" | "webhook";
+// sent with a Bearer key. queue: a polling queue registered on the screen, taken with the claim_events and
+// ack_events MCP tools.
+export type SubscriptionKind = "mcp" | "webhook" | "queue";
 
-// An MCP Events subscription or a webhook destination. Neither the secrets (or keys) nor the whole callback URL is
-// returned.
+// An MCP Events subscription, a webhook destination or a polling queue. Neither the secrets (or keys) nor the
+// whole callback URL is returned.
 export type Subscription = {
   id: string;
   kind: SubscriptionKind;
-  // The name of a webhook destination. null for mcp.
+  // The name of a webhook destination or a polling queue. null for mcp.
   name: string | null;
-  // The host of the callback URL only.
+  // The host of the callback URL only. null for queue, which sends nothing.
   callback_host: string | null;
   // The conditions (types, sources, labels); null if the stored value is broken.
   arguments: Record<string, unknown> | null;
-  // Webhook destinations are "active" or "unsubscribed" (deleted); they never expire.
+  // Webhook destinations and polling queues are "active" or "unsubscribed" (deleted); they never expire.
   status: SubscriptionStatus;
   // mcp only: expires_at minus the grace of 1 hour, when the client should refresh the subscription. null for
-  // webhook.
+  // webhook and queue.
   refresh_before: number | null;
-  // mcp only. null for webhook, which does not expire.
+  // mcp only. null for webhook and queue, which do not expire.
   expires_at: number | null;
   created_at: number;
   updated_at: number;
@@ -166,22 +167,38 @@ export type CreateWebhookDestinationRequest = {
   labels?: Record<string, string>;
 };
 
+// The conditions are optional, as for webhook destinations.
+export type CreateQueueRequest = {
+  name: string;
+  types?: string[];
+  sources?: string[];
+  labels?: Record<string, string>;
+};
+
 export type SubscriptionList = { subscriptions: Subscription[] };
 
 export type DeliveryStatus = "pending" | "delivered" | "failed";
 
-// One webhook delivery of an event to a subscription. Times are UNIX time in milliseconds.
+// One delivery of an event to a subscription: a webhook, or an entry of a polling queue. Times are UNIX time in
+// milliseconds.
 export type Delivery = {
   id: string;
   event_id: string;
   subscription_id: string;
+  // null for queue, and when the subscription is not found.
   callback_host: string | null;
+  // The kind and the name of the subscription; both null when it is not found.
+  destination_kind: SubscriptionKind | null;
+  destination_name: string | null;
+  // For queue: pending until acknowledged (claimed or not), delivered once acknowledged.
   status: DeliveryStatus;
-  // The number of sends tried.
+  // The number of sends tried; for queue, the number of claims.
   attempts: number;
+  // For queue: the time of the last claim.
   last_attempt_at: number | null;
+  // Always null for queue.
   last_http_status: number | null;
-  // The reason of the last failure, e.g. "http_5xx" or "subscription_inactive".
+  // The reason of the last failure, e.g. "http_5xx", "subscription_inactive" or, for queue, "not_acknowledged".
   last_error: string | null;
   delivered_at: number | null;
   created_at: number;

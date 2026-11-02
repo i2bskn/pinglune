@@ -27,10 +27,14 @@ export function insertDeliveryStatement(
 }
 
 // The pending deliveries of an event that were never tried: their messages may not be in the queue. Deliveries
-// waiting for a retry are in the queue already.
+// waiting for a retry are in the queue already. Deliveries to polling queues are never queued: they wait for
+// claim_events.
 export async function findUnsentDeliveryIds(d1: D1Database, eventId: string): Promise<string[]> {
   const { results } = await d1
-    .prepare("SELECT id FROM deliveries WHERE event_id = ? AND status = 'pending' AND attempts = 0")
+    .prepare(
+      `SELECT id FROM deliveries WHERE event_id = ? AND status = 'pending' AND attempts = 0
+        AND NOT EXISTS (SELECT 1 FROM subscriptions s WHERE s.id = deliveries.subscription_id AND s.kind = 'queue')`,
+    )
     .bind(eventId)
     .all<{ id: string }>();
   return results.map((row) => row.id);
@@ -78,13 +82,17 @@ export async function failPendingDelivery(d1: D1Database, id: string, reason: st
   return result.meta.changes === 1;
 }
 
-// The pending deliveries created before a time: their number and the oldest created_at.
+// The pending deliveries created before a time: their number and the oldest created_at. Deliveries to polling
+// queues are not counted: they stay pending until an AI takes them.
 export async function stalePendingDeliveries(
   d1: D1Database,
   createdBefore: number,
 ): Promise<{ count: number; oldestCreatedAt: number | null }> {
   const row = await d1
-    .prepare("SELECT COUNT(*) AS count, MIN(created_at) AS oldest FROM deliveries WHERE status = 'pending' AND created_at < ?")
+    .prepare(
+      `SELECT COUNT(*) AS count, MIN(created_at) AS oldest FROM deliveries WHERE status = 'pending' AND created_at < ?
+        AND NOT EXISTS (SELECT 1 FROM subscriptions s WHERE s.id = deliveries.subscription_id AND s.kind = 'queue')`,
+    )
     .bind(createdBefore)
     .first<{ count: number; oldest: number | null }>();
   return { count: row?.count ?? 0, oldestCreatedAt: row?.oldest ?? null };
@@ -106,7 +114,8 @@ export type ListDeliveriesOptions = {
   eventId?: string;
 };
 
-// The newest deliveries of the workspace. The callback hosts are read from the subscriptions in a separate query.
+// The newest deliveries of the workspace. The destinations (callback host, kind and name) are read from the
+// subscriptions in a separate query.
 export async function listWorkspaceDeliveries(
   db: Db,
   workspaceId: string,
@@ -125,15 +134,25 @@ export async function listWorkspaceDeliveries(
     .all();
   const page = rows.slice(0, limit);
 
-  const hosts = new Map<string, string | null>();
+  const destinations = new Map<
+    string,
+    { host: string | null; kind: Delivery["destination_kind"]; name: string | null }
+  >();
   const subscriptionIds = [...new Set(page.map((row) => row.subscriptionId))];
   if (subscriptionIds.length > 0) {
     const subscriptionRows = await db
-      .select({ id: subscriptions.id, callbackUrl: subscriptions.callbackUrl })
+      .select({
+        id: subscriptions.id,
+        kind: subscriptions.kind,
+        name: subscriptions.name,
+        callbackUrl: subscriptions.callbackUrl,
+      })
       .from(subscriptions)
       .where(inArray(subscriptions.id, subscriptionIds))
       .all();
-    for (const row of subscriptionRows) hosts.set(row.id, callbackHost(row.callbackUrl));
+    for (const row of subscriptionRows) {
+      destinations.set(row.id, { host: callbackHost(row.callbackUrl), kind: row.kind, name: row.name });
+    }
   }
 
   const last = page[page.length - 1];
@@ -142,7 +161,9 @@ export async function listWorkspaceDeliveries(
       id: row.id,
       event_id: row.eventId,
       subscription_id: row.subscriptionId,
-      callback_host: hosts.get(row.subscriptionId) ?? null,
+      callback_host: destinations.get(row.subscriptionId)?.host ?? null,
+      destination_kind: destinations.get(row.subscriptionId)?.kind ?? null,
+      destination_name: destinations.get(row.subscriptionId)?.name ?? null,
       status: row.status,
       attempts: row.attempts,
       last_attempt_at: row.lastAttemptAt,
