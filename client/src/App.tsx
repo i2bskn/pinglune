@@ -9,8 +9,10 @@ import { LoadError, NotFound, useDocumentTitle } from "./views/common";
 import { ConversationDetailView } from "./views/ConversationDetailView";
 import { ConversationsView } from "./views/ConversationsView";
 import { DeliveriesView } from "./views/DeliveriesView";
+import { DeliveryHistoryView } from "./views/DeliveryHistoryView";
 import { ErrorBoundary } from "./views/ErrorBoundary";
 import { EventDetailView } from "./views/EventDetailView";
+import { EventsView } from "./views/EventsView";
 import { HomeView } from "./views/HomeView";
 import { AppShell } from "./views/Sidebar";
 import { SourceDetailView } from "./views/SourceDetailView";
@@ -51,7 +53,7 @@ export function App() {
           <div className="layout">
             <div className="layout-screen">
               <ErrorBoundary key={path}>
-                <Screen route={route} user={me.data} />
+                <Screen route={route} path={path} user={me.data} />
               </ErrorBoundary>
             </div>
           </div>
@@ -60,10 +62,13 @@ export function App() {
   }
 }
 
-function Screen({ route, user }: { route: Route; user: User }) {
+// path includes the query, which the event list and the delivery history read their filters from.
+function Screen({ route, path, user }: { route: Route; path: string; user: User }) {
   switch (route.name) {
     case "home":
       return <HomeView client={client} />;
+    case "events":
+      return <EventsView client={client} path={path} />;
     case "event":
       return <EventDetailView client={client} id={route.id} />;
     case "sources":
@@ -72,6 +77,8 @@ function Screen({ route, user }: { route: Route; user: User }) {
       return <SourceDetailView client={client} id={route.id} />;
     case "deliveries":
       return <DeliveriesView client={client} />;
+    case "deliveryHistory":
+      return <DeliveryHistoryView client={client} path={path} />;
     case "bots":
       return <BotsView client={client} />;
     case "conversations":

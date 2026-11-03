@@ -1,6 +1,20 @@
 // Formats UNIX time in milliseconds. timeZone defaults to the browser's.
 export function formatDateTime(ms: number, timeZone?: string): string {
-  return new Intl.DateTimeFormat("ja-JP", { dateStyle: "medium", timeStyle: "short", timeZone }).format(ms);
+  // Two-digit hours, so that times line up in lists ("08:12", not "8:12").
+  return new Intl.DateTimeFormat("ja-JP", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+    timeZone,
+  }).format(ms);
+}
+
+// Keeps a number with the word after it on one line ("30 秒", "4 分", "214 件"): the space becomes a no-break space.
+export function keepNumbersWithUnits(text: string): string {
+  return text.replace(/(\d)[ \t](?=[^\s\d])/g, "$1\u00a0");
 }
 
 // Formats a size in bytes, e.g. "512 B", "1.5 KB", "25 MB" (1 KB = 1,024 bytes).

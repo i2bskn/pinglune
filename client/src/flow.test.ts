@@ -88,7 +88,7 @@ describe("buildFlow", () => {
         linked: false,
         badges: [
           { label: "無効", tone: "off" },
-          { label: "どの Bot にも届きません", tone: "error" },
+          { label: "どの Bot にも届きません", tone: "warning" },
         ],
       },
       {
@@ -97,14 +97,14 @@ describe("buildFlow", () => {
         name: "free",
         enabled: true,
         linked: false,
-        badges: [{ label: "どの Bot にも届きません", tone: "error" }],
+        badges: [{ label: "どの Bot にも届きません", tone: "warning" }],
       },
     ]);
   });
 
   it("marks a bot without sources", () => {
     const model = buildFlow([], [bot("b1", "Dot", [])]);
-    expect(model.bots[0]?.badges).toEqual([{ label: "送信元なし", tone: "error" }]);
+    expect(model.bots[0]?.badges).toEqual([{ label: "送信元なし", tone: "warning" }]);
     expect(model.bots[0]?.description).toBe("受け取る送信元: なし。配信先: Webhook grok");
   });
 
@@ -121,28 +121,28 @@ describe("buildFlow", () => {
       return buildFlow([], [bot("b1", "Dot", [], overrides)]).bots[0]?.delivery;
     }
 
-    it("is 接続なし for an mcp bot without a connection", () => {
+    it("is 未接続 for an mcp bot without a connection", () => {
       expect(delivery({ delivery_kind: "mcp", delivery: null, connection: null })).toEqual({
         id: "delivery:b1",
         kind: "mcp",
         kindLabel: "MCP Event",
         primary: null,
         note: "AI から接続するとき、この Bot を選んでください",
-        badge: "接続なし",
+        badge: "未接続",
       });
       expect(buildFlow([], [bot("b1", "Dot", [], { delivery_kind: "mcp", delivery: null })]).bots[0]?.description).toBe(
-        "受け取る送信元: なし。配信先: MCP Event 接続なし",
+        "受け取る送信元: なし。配信先: MCP Event 未接続",
       );
     });
 
-    it("is 購読なし for an mcp bot whose connection has no active subscription", () => {
+    it("is 未購読 for an mcp bot whose connection has no active subscription", () => {
       const expected = {
         id: "delivery:b1",
         kind: "mcp",
         kindLabel: "MCP Event",
         primary: "ChatGPT",
         note: "AI が購読すると届きます",
-        badge: "購読なし",
+        badge: "未購読",
       };
       expect(delivery({ delivery_kind: "mcp", delivery: null, connection: CONNECTION })).toEqual(expected);
       expect(
@@ -203,12 +203,20 @@ describe("buildFlow", () => {
 });
 
 describe("edgePath", () => {
-  it("curves from the right middle of one card to the left middle of the other, relative to the origin", () => {
+  it("curves from the right edge of one card to the left edge of the other at the title's height, relative to the origin", () => {
+    const origin = { left: 100, top: 50, width: 800, height: 600 };
+    // 40px high: half of it (20px). 60px high: the anchor (22px).
+    const from = { left: 110, top: 60, width: 200, height: 40 };
+    const to = { left: 350, top: 160, width: 200, height: 60 };
+    // From (210, 30) to (250, 132).
+    expect(edgePath(from, to, origin)).toBe("M 210 30 C 230 30, 230 132, 250 132");
+  });
+
+  it("moves the ends by the offsets", () => {
     const origin = { left: 100, top: 50, width: 800, height: 600 };
     const from = { left: 110, top: 60, width: 200, height: 40 };
     const to = { left: 350, top: 160, width: 200, height: 60 };
-    // From (210, 30) to (250, 140).
-    expect(edgePath(from, to, origin)).toBe("M 210 30 C 230 30, 230 140, 250 140");
+    expect(edgePath(from, to, origin, -3, 6)).toBe("M 210 27 C 230 27, 230 138, 250 138");
   });
 
   it("rounds to two decimals", () => {

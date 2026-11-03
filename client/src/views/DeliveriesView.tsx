@@ -1,5 +1,5 @@
 import { type FormEvent, useState } from "react";
-import type { Delivery, Subscription } from "../../../src/api/types";
+import type { Subscription } from "../../../src/api/types";
 import {
   createQueue,
   createWebhookDestination,
@@ -12,19 +12,14 @@ import {
   WEBHOOK_DESTINATION_STATUS_LABELS,
   type QueueForm,
   type WebhookDestinationForm,
-  attemptsLabel,
-  deliveryDestination,
-  deliveryStatusLabel,
   describeArguments,
-  lastResult,
   queueRequest,
-  subscriptionBotLabel,
   webhookDestinationRequest,
 } from "../deliveries";
 import { formatDateTime } from "../format";
 import { PlusIcon } from "../icons";
 import { Link } from "../Link";
-import { type ApiClient, type DeliveriesData, loadDeliveries, loadDeliveriesView, useView } from "../load";
+import { type ApiClient, type DeliveriesData, loadDeliveriesView, useView } from "../load";
 import { ViewStatus, useDocumentTitle, viewTitle } from "./common";
 import { UNKNOWN_RESULT_MESSAGE } from "./SourcesView";
 
@@ -36,20 +31,20 @@ const QUEUE_GONE_MESSAGE = "このポーリング用キューは見つかりま�
 const QUEUE_GUIDE =
   "AI に、このキューの ID を claim_events に渡して定期的に（5 分おきなど）取得させ、処理したら ack_events を呼ばせてください。";
 
-// The destinations of the signed-in user's workspace (MCP Events subscriptions, which can be stopped here, and webhook
-// destinations and polling queues, which can be registered and deleted here) and the deliveries to them.
+// The destinations of the signed-in user's workspace: MCP Events subscriptions, which can be stopped here, and webhook
+// destinations and polling queues, which can be registered and deleted here. The deliveries to them are on the
+// delivery history (DeliveryHistoryView).
 export function DeliveriesView({ client }: { client: ApiClient }) {
   const [state, reload] = useView(() => loadDeliveriesView(client), "deliveries");
   // The result of the last operation, kept across the reload that follows.
   const [notice, setNotice] = useState<string | null>(null);
-  useDocumentTitle(viewTitle(state, () => "配信"));
+  useDocumentTitle(viewTitle(state, () => "配信先"));
 
   if (state.kind !== "ready") {
     return <ViewStatus state={state} notFoundMessage="ページが見つかりません" onReload={reload} />;
   }
   return (
     <DeliveriesContent
-      key={state.data.deliveries.deliveries[0]?.id ?? "empty"}
       client={client}
       data={state.data}
       notice={notice}
@@ -77,22 +72,24 @@ function DeliveriesContent({
   const queues = data.subscriptions.filter((subscription) => subscription.kind === "queue");
   return (
     <main className="main">
-      <h1>配信</h1>
-      <p className="lead">
-        MCPクライアント（ChatGPTなど）の購読と、登録したWebhook配信先・ポーリング用キューに、条件に一致したイベントを送った記録です。イベントは、送信元を紐づけた
-        <Link to="/bots">Bot</Link>の配信先にだけ届きます。
-      </p>
+      <header className="page-head">
+        <h1>配信先</h1>
+        <p className="lead">
+          イベントを受け取る先の一覧です。AI の購読（MCP Event）、Webhook、ポーリング用キューの3種類があります。どの送信元のイベントが届くかは
+          <Link to="/bots">Bot</Link> で決まり、送った記録は <Link to="/deliveries/history">配信履歴</Link> で確かめられます。
+        </p>
+      </header>
       {notice !== null && (
         <p className="notice" role="status">
           {notice}
         </p>
       )}
 
-      <h2>購読</h2>
+      <h2>MCP Event（AI の購読）</h2>
       {mcpSubscriptions.length === 0 ? (
         <div className="notice">
           <p>購読はまだありません。</p>
-          <p>MCPクライアントがイベントを購読すると、ここに表示されます。</p>
+          <p>MCP クライアントがイベントを購読すると、ここに表示されます。</p>
         </div>
       ) : (
         <ul className="list subscriptions">
@@ -104,7 +101,7 @@ function DeliveriesContent({
 
       <h2>Webhook 配信先</h2>
       <p>
-        Grok Bot など、Bearer 認証の Webhook で受け取るサービスへイベントを送ります。本文や添付は含まれないので、受け取る側は
+        チャットボットなど、Bearer 認証の Webhook で受け取るサービスへイベントを送ります。本文や添付は含まれないので、受け取る側は
         MCP の read_data で読みます。
       </p>
       <CreateWebhookDestinationForm client={client} onCreated={() => onDone("Webhook 配信先を登録しました")} />
@@ -136,9 +133,6 @@ function DeliveriesContent({
           </ul>
         </>
       )}
-
-      <h2>配信の記録</h2>
-      <DeliveryPages client={client} first={data.deliveries} />
     </main>
   );
 }
@@ -190,12 +184,18 @@ function SubscriptionItem({
   return (
     <li className="subscription">
       <span className="delivery-head">
-        <span className="delivery-host">{subscription.callback_host ?? "不明な宛先"}</span>
-        <span className={active ? "badge" : "badge badge-off"}>{SUBSCRIPTION_STATUS_LABELS[subscription.status]}</span>
+        <span className="delivery-host">{connection?.client_name ?? subscription.callback_host ?? "不明な宛先"}</span>
+        <span
+          className={
+            active ? "badge badge-ok" : subscription.status === "expired" ? "badge badge-warning" : "badge badge-off"
+          }
+        >
+          {subscription.status === "expired" ? "未購読（期限切れ）" : SUBSCRIPTION_STATUS_LABELS[subscription.status]}
+        </span>
         {active && (
           <button
             type="button"
-            className="button-danger-outline"
+            className="button-quiet"
             onClick={() => {
               setConfirming(true);
               setFailure(null);
@@ -206,16 +206,29 @@ function SubscriptionItem({
           </button>
         )}
       </span>
-      <span className="delivery-conditions">
-        接続:{" "}
-        {connection === null
-          ? "不明（以前の接続）"
-          : connection.bot_name === null
-            ? connection.client_name
-            : `${connection.client_name}（Bot: ${connection.bot_name}）`}
-      </span>
-      <BotLine subscription={subscription} />
-      <span className="delivery-conditions">{describeArguments(subscription.arguments)}</span>
+      {subscription.status === "expired" && (
+        <span className="warning-note">AI が購読を更新しなかったため、イベントは届きません。AI が購読し直すと届きます。</span>
+      )}
+      <dl className="facts">
+        <div>
+          <dt>宛先</dt>
+          <dd>{subscription.callback_host ?? "不明"}</dd>
+        </div>
+        <div>
+          <dt>接続</dt>
+          <dd>{connection === null ? "不明（以前の接続）" : connection.client_name}</dd>
+        </div>
+        <div>
+          <dt>Bot</dt>
+          <dd>
+            <BotValue subscription={subscription} />
+          </dd>
+        </div>
+        <div>
+          <dt>条件</dt>
+          <dd>{describeArguments(subscription.arguments)}</dd>
+        </div>
+      </dl>
       <span className="delivery-meta">
         {active && subscription.refresh_before !== null && (
           <time dateTime={new Date(subscription.refresh_before).toISOString()}>
@@ -437,7 +450,7 @@ function WebhookDestinationItem({
     <li className="subscription">
       <span className="delivery-head">
         <span className="delivery-host">{name}</span>
-        <span className={active ? "badge" : "badge badge-off"}>{WEBHOOK_DESTINATION_STATUS_LABELS[destination.status]}</span>
+        <span className={active ? "badge badge-ok" : "badge badge-off"}>{WEBHOOK_DESTINATION_STATUS_LABELS[destination.status]}</span>
         {active && (
           <button
             type="button"
@@ -452,9 +465,22 @@ function WebhookDestinationItem({
           </button>
         )}
       </span>
-      <span className="delivery-conditions">宛先: {destination.callback_host ?? "不明な宛先"}</span>
-      <BotLine subscription={destination} />
-      <span className="delivery-conditions">{describeArguments(destination.arguments)}</span>
+      <dl className="facts">
+        <div>
+          <dt>宛先</dt>
+          <dd>{destination.callback_host ?? "不明"}</dd>
+        </div>
+        <div>
+          <dt>Bot</dt>
+          <dd>
+            <BotValue subscription={destination} />
+          </dd>
+        </div>
+        <div>
+          <dt>条件</dt>
+          <dd>{describeArguments(destination.arguments)}</dd>
+        </div>
+      </dl>
       <span className="delivery-meta">
         <time dateTime={new Date(destination.created_at).toISOString()}>
           作成: {formatDateTime(destination.created_at)}
@@ -603,8 +629,9 @@ function CreateQueueForm({ client, onCreated }: { client: ApiClient; onCreated: 
   );
 }
 
-// The ID to pass to claim_events, selectable as a whole, with a button that copies it.
-function CopyableId({ id }: { id: string }) {
+// An ID to copy (the ID of a queue for claim_events, the ID of a source), selectable as a whole, with a button that
+// copies it.
+export function CopyableId({ id }: { id: string }) {
   const [copied, setCopied] = useState<string | null>(null);
 
   async function copy() {
@@ -681,7 +708,7 @@ function QueueItem({
     <li className="subscription">
       <span className="delivery-head">
         <span className="delivery-host">{name}</span>
-        <span className={active ? "badge" : "badge badge-off"}>{WEBHOOK_DESTINATION_STATUS_LABELS[queue.status]}</span>
+        <span className={active ? "badge badge-ok" : "badge badge-off"}>{WEBHOOK_DESTINATION_STATUS_LABELS[queue.status]}</span>
         {active && (
           <button
             type="button"
@@ -697,8 +724,18 @@ function QueueItem({
         )}
       </span>
       {active && <CopyableId id={queue.id} />}
-      <BotLine subscription={queue} />
-      <span className="delivery-conditions">{describeArguments(queue.arguments)}</span>
+      <dl className="facts">
+        <div>
+          <dt>Bot</dt>
+          <dd>
+            <BotValue subscription={queue} />
+          </dd>
+        </div>
+        <div>
+          <dt>条件</dt>
+          <dd>{describeArguments(queue.arguments)}</dd>
+        </div>
+      </dl>
       <span className="delivery-meta">
         <time dateTime={new Date(queue.created_at).toISOString()}>作成: {formatDateTime(queue.created_at)}</time>
         {!active && (
@@ -725,96 +762,17 @@ function QueueItem({
   );
 }
 
-// The bot of a subscription, or why it receives nothing.
-function BotLine({ subscription }: { subscription: Subscription }) {
-  const label = subscriptionBotLabel(subscription);
-  if (label === null) return null;
-  return (
-    <span className={subscription.bot === null ? "delivery-conditions muted" : "delivery-conditions"}>{label}</span>
-  );
-}
-
-function DeliveryPages({ client, first }: { client: ApiClient; first: DeliveriesData["deliveries"] }) {
-  const [deliveries, setDeliveries] = useState(first.deliveries);
-  const [cursor, setCursor] = useState(first.next_cursor);
-  const [loading, setLoading] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
-
-  async function loadMore() {
-    if (cursor === null) return;
-    setLoading(true);
-    setFailure(null);
-    const next = await loadDeliveries(client, { cursor });
-    switch (next.kind) {
-      case "ready":
-        setDeliveries((current) => [...current, ...next.data.deliveries]);
-        setCursor(next.data.next_cursor);
-        setLoading(false);
-        return;
-      case "error":
-        setFailure(next.message);
-        setLoading(false);
-        return;
-      case "notFound":
-        setFailure("配信の記録を読み込めませんでした");
-        setLoading(false);
-        return;
-      case "redirecting":
-        // The move to the login page has started; the button stays disabled.
-        return;
-    }
-  }
-
+// The bot of a subscription as a value of the facts, or why it receives nothing.
+function BotValue({ subscription }: { subscription: Subscription }) {
+  if (subscription.bot !== null) return <>{subscription.bot.name}</>;
+  if (subscription.status !== "active") return <>なし</>;
   return (
     <>
-      {deliveries.length === 0 ? (
-        <p className="notice">配信の記録はまだありません。</p>
-      ) : (
-        <DeliveryList deliveries={deliveries} showEvent />
-      )}
-      {cursor !== null && (
-        <div className="actions list-more">
-          <button type="button" onClick={() => void loadMore()} disabled={loading}>
-            {loading ? "読み込み中…" : "さらに読み込む"}
-          </button>
-          {failure !== null && <p role="alert">{failure}</p>}
-        </div>
-      )}
+      <span className="warning-note">割り当てなし（イベントは届きません）</span>
+      <Link to="/bots" className="button button-small">
+        Bot に割り当てる
+      </Link>
     </>
   );
 }
 
-const DELIVERY_BADGE_CLASSES: Record<Delivery["status"], string> = {
-  pending: "badge badge-off",
-  delivered: "badge",
-  failed: "badge badge-error",
-};
-
-// Deliveries (webhooks and entries of polling queues), newest first. showEvent adds a link to the event of each one.
-export function DeliveryList({ deliveries, showEvent }: { deliveries: Delivery[]; showEvent: boolean }) {
-  return (
-    <ul className="list deliveries">
-      {deliveries.map((delivery) => {
-        const result = lastResult(delivery);
-        return (
-          <li key={delivery.id} className="delivery">
-            <span className="delivery-head">
-              <span className="delivery-host">{deliveryDestination(delivery)}</span>
-              <span className={DELIVERY_BADGE_CLASSES[delivery.status]}>{deliveryStatusLabel(delivery)}</span>
-            </span>
-            {showEvent && (
-              <Link to={`/events/${delivery.event_id}`} className="delivery-event">
-                <code>{delivery.event_id}</code>
-              </Link>
-            )}
-            <span className="delivery-meta">
-              <time dateTime={new Date(delivery.created_at).toISOString()}>{formatDateTime(delivery.created_at)}</time>
-              <span>{attemptsLabel(delivery)}</span>
-              {result !== null && <span>{result}</span>}
-            </span>
-          </li>
-        );
-      })}
-    </ul>
-  );
-}

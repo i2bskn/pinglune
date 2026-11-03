@@ -11,59 +11,42 @@ import {
   relatedIds,
 } from "../flow";
 import { Link } from "../Link";
-import { type ApiClient, type FlowData, loadFlow, useView } from "../load";
+import type { Subscription } from "../../../src/api/types";
+import type { FlowData } from "../load";
 
-// The flow of events on the home screen: sources → bots → destinations, and where it stops.
+// The flow of events on the overview screen: sources → bots → destinations, and where it stops.
 // Wide screens draw three columns with lines between the cards; phones list each bot with its sources and destination.
-export function FlowMap({ client }: { client: ApiClient }) {
-  const [state, reload] = useView(() => loadFlow(client), "flow");
-  const [collapsed, setCollapsed] = useState(false);
+export function FlowMap({ data, unassigned = [] }: { data: FlowData; unassigned?: Subscription[] }) {
   // useId may contain characters that are awkward in url(#…) references.
   const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const headingId = `${uid}-heading`;
-  const bodyId = `${uid}-body`;
-
-  let body: ReactNode;
-  switch (state.kind) {
-    case "loading":
-      body = (
-        <p className="muted" role="status">
-          読み込み中…
-        </p>
-      );
-      break;
-    case "redirecting":
-      // The move to the login page has started.
-      body = null;
-      break;
-    case "notFound":
-    case "error":
-      body = (
-        <div role="alert">
-          <p>配信の流れを読み込めませんでした: {state.kind === "error" ? state.message : "見つかりません"}</p>
-          <button type="button" onClick={reload}>
-            再読み込み
-          </button>
-        </div>
-      );
-      break;
-    case "ready":
-      body = <FlowContent data={state.data} collapsed={collapsed} uid={uid} />;
-      break;
-  }
-
   return (
     <section className="flow" aria-labelledby={headingId}>
       <div className="flow-head">
         <h2 id={headingId}>配信の流れ</h2>
-        <button type="button" aria-expanded={!collapsed} aria-controls={bodyId} onClick={() => setCollapsed((c) => !c)}>
-          {collapsed ? "開く" : "閉じる"}
-        </button>
+        <p className="flow-legend">
+          <span className="flow-legend-item">
+            <span className="flow-legend-line" aria-hidden="true" />
+            届く経路
+          </span>
+          <span className="flow-legend-item">
+            <span className="flow-legend-line is-dashed" aria-hidden="true" />
+            止まっている経路
+          </span>
+        </p>
       </div>
-      {/* Kept in the DOM while closed, so that aria-controls points at it. */}
-      <div id={bodyId} hidden={collapsed}>
-        {body}
-      </div>
+      <FlowContent data={data} collapsed={false} uid={uid} />
+      {unassigned.length > 0 && (
+        <div className="callout flow-orphans">
+          <p className="warning-note">
+            どの Bot にも割り当てられていない配信先には、イベントが届きません:{" "}
+            {unassigned.map((subscription) => subscriptionName(subscription)).join("、")}
+          </p>
+          <Link to="/bots" className="button button-primary">
+            Bot に割り当てる
+          </Link>
+        </div>
+      )}
     </section>
   );
 }
@@ -111,7 +94,7 @@ function Badges({ badges }: { badges: FlowBadge[] }) {
   return (
     <span className="flow-badges">
       {badges.map((badge) => (
-        <span key={badge.label} className={badge.tone === "error" ? "badge badge-error" : "badge badge-off"}>
+        <span key={badge.label} className={badge.tone === "warning" ? "badge badge-warning" : "badge badge-off"}>
           {badge.label}
         </span>
       ))}
@@ -124,7 +107,7 @@ function DeliveryBody({ delivery }: { delivery: FlowDelivery }) {
     <>
       <span className="flow-kind">{delivery.kindLabel}</span>
       {delivery.primary !== null && <span className="flow-name">{delivery.primary}</span>}
-      {delivery.badge !== null && <Badges badges={[{ label: delivery.badge, tone: "error" }]} />}
+      {delivery.badge !== null && <Badges badges={[{ label: delivery.badge, tone: "warning" }]} />}
       {delivery.note !== null && <span className="flow-note">{delivery.note}</span>}
     </>
   );
@@ -145,11 +128,33 @@ function FlowDiagram({ model, collapsed, uid }: { model: FlowModel; collapsed: b
     // Not laid out: closed, or a phone, where the diagram is not shown.
     if (origin.width === 0) return;
     const next: Record<string, string> = {};
+    // The lines that share a card are spread around its anchor, 12px apart, ordered by the height of their other ends,
+    // so that they leave and enter without crossing each other at the card.
+    const top = (id: string) => nodes.current.get(id)?.getBoundingClientRect().top ?? 0;
+    const outgoing = new Map<string, string[]>();
+    const incoming = new Map<string, string[]>();
+    for (const edge of model.edges) {
+      outgoing.set(edge.from, [...(outgoing.get(edge.from) ?? []), edge.id]);
+      incoming.set(edge.to, [...(incoming.get(edge.to) ?? []), edge.id]);
+    }
+    const ends = new Map(model.edges.map((edge) => [edge.id, edge]));
+    for (const ids of outgoing.values()) ids.sort((a, b) => top(ends.get(a)?.to ?? "") - top(ends.get(b)?.to ?? ""));
+    for (const ids of incoming.values()) ids.sort((a, b) => top(ends.get(a)?.from ?? "") - top(ends.get(b)?.from ?? ""));
+    const spread = (ids: string[] | undefined, id: string) => {
+      if (ids === undefined || ids.length < 2) return 0;
+      return (ids.indexOf(id) - (ids.length - 1) / 2) * 12;
+    };
     for (const edge of model.edges) {
       const from = nodes.current.get(edge.from);
       const to = nodes.current.get(edge.to);
       if (from === undefined || to === undefined) continue;
-      next[edge.id] = edgePath(from.getBoundingClientRect(), to.getBoundingClientRect(), origin);
+      next[edge.id] = edgePath(
+        from.getBoundingClientRect(),
+        to.getBoundingClientRect(),
+        origin,
+        spread(outgoing.get(edge.from), edge.id),
+        spread(incoming.get(edge.to), edge.id),
+      );
     }
     setPaths(next);
   }, [model]);
@@ -252,12 +257,20 @@ function FlowDiagram({ model, collapsed, uid }: { model: FlowModel; collapsed: b
           if (d === undefined) return null;
           const on = focused !== null && related.has(edge.id);
           return (
-            <path
-              key={edge.id}
-              d={d}
-              className={`flow-edge${edge.dashed ? " is-dashed" : ""}${stateClass(edge.id)}`}
-              markerEnd={`url(#${on ? arrowOn : arrow})`}
-            />
+            <Fragment key={edge.id}>
+              <path
+                d={d}
+                className={`flow-edge${edge.dashed ? " is-dashed" : ""}${stateClass(edge.id)}`}
+                markerEnd={`url(#${on ? arrowOn : arrow})`}
+              />
+              {/* A dot that travels along the edges events take, to show the direction. Hidden when motion is
+                  reduced (styles.css), since SMIL ignores the setting. */}
+              {!edge.dashed && (
+                <circle r="3" className={`flow-pulse${stateClass(edge.id)}`}>
+                  <animateMotion dur="2.4s" repeatCount="indefinite" path={d} />
+                </circle>
+              )}
+            </Fragment>
           );
         })}
       </svg>
@@ -276,57 +289,69 @@ function FlowStack({ model }: { model: FlowModel }) {
         <ul className="flow-stack-list">
           {model.bots.map((bot) => (
             <li key={bot.id} className="flow-stack-item">
-              <p>
-                {bot.sources.length === 0 ? (
-                  <span className="badge badge-error">送信元なし</span>
-                ) : (
-                  <>
-                    送信元:{" "}
-                    {bot.sources.map((source, index) => (
-                      <Fragment key={source.id}>
-                        {index > 0 && ", "}
-                        <Link to={`/sources/${source.sourceId}`}>{flowSourceName(source)}</Link>
-                      </Fragment>
-                    ))}
-                  </>
-                )}
-              </p>
-              <span className="flow-stack-arrow" aria-hidden="true">
-                ↓
-              </span>
-              <p>
-                <span className="sr-only">Bot: </span>
-                <Link to="/bots" className="flow-name">
-                  {bot.name}
-                </Link>
-              </p>
-              <span className="flow-stack-arrow" aria-hidden="true">
-                ↓
-              </span>
-              <p className="flow-stack-delivery">
-                <span className="sr-only">配信先: </span>
-                <Link to="/deliveries">
-                  {bot.delivery.kindLabel}
-                  {bot.delivery.primary !== null && ` ${bot.delivery.primary}`}
-                </Link>
-                {bot.delivery.badge !== null && <span className="badge badge-error">{bot.delivery.badge}</span>}
-                {bot.delivery.note !== null && <span className="flow-note">{bot.delivery.note}</span>}
-              </p>
+              <ol className="flow-steps">
+                <li className="flow-step">
+                  <span className="flow-step-label">送信元</span>
+                  <span className="flow-step-value">
+                    {bot.sources.length === 0 ? (
+                      <span className="badge badge-warning">送信元なし</span>
+                    ) : (
+                      // One inline run, so that the commas sit right after the names (the value is a flex row).
+                      <span>
+                        {bot.sources.map((source, index) => (
+                          <Fragment key={source.id}>
+                            {index > 0 && "、"}
+                            <Link to={`/sources/${source.sourceId}`}>{flowSourceName(source)}</Link>
+                          </Fragment>
+                        ))}
+                      </span>
+                    )}
+                  </span>
+                </li>
+                <li className="flow-step">
+                  <span className="flow-step-label">Bot</span>
+                  <span className="flow-step-value">
+                    <Link to="/bots" className="flow-name">
+                      {bot.name}
+                    </Link>
+                  </span>
+                </li>
+                <li className={`flow-step${bot.delivery.badge !== null ? " is-stopped" : ""}`}>
+                  <span className="flow-step-label">配信先</span>
+                  <span className="flow-step-value">
+                    <span className="kind-chip">{bot.delivery.kindLabel}</span>
+                    {bot.delivery.primary !== null && <Link to="/deliveries">{bot.delivery.primary}</Link>}
+                    {bot.delivery.badge !== null && <span className="badge badge-warning">{bot.delivery.badge}</span>}
+                  </span>
+                  {bot.delivery.note !== null && <span className="flow-note">{bot.delivery.note}</span>}
+                </li>
+              </ol>
             </li>
           ))}
         </ul>
       )}
       {unlinked.length > 0 && (
-        <p className="flow-unlinked">
-          どの Bot にも届かない送信元:{" "}
-          {unlinked.map((source, index) => (
-            <Fragment key={source.id}>
-              {index > 0 && ", "}
-              <Link to={`/sources/${source.sourceId}`}>{flowSourceName(source)}</Link>
-            </Fragment>
-          ))}
-        </p>
+        <div className="callout flow-unlinked">
+          <p className="warning-note">
+            <span>
+              どの Bot にも届かない送信元:{" "}
+              {unlinked.map((source, index) => (
+                <Fragment key={source.id}>
+                  {index > 0 && "、"}
+                  <Link to={`/sources/${source.sourceId}`}>{flowSourceName(source)}</Link>
+                </Fragment>
+              ))}
+            </span>
+          </p>
+        </div>
       )}
     </div>
+  );
+}
+
+// A destination as the warning names it: its name, or the app of its connection, or its host.
+function subscriptionName(subscription: Subscription): string {
+  return (
+    subscription.name ?? subscription.connection?.client_name ?? subscription.callback_host ?? subscription.id
   );
 }

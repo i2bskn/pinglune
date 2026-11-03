@@ -8,6 +8,7 @@ import {
   conversationStatusLabel,
   participantDestinationLabel,
   participantDestinationStatus,
+  participantStopReason,
   subscriptionLabel,
 } from "./conversations";
 import { errorLabel } from "./deliveries";
@@ -29,23 +30,23 @@ describe("conversation labels", () => {
   it("shows the destination of a participant and its state", () => {
     const participant: ConversationParticipant = {
       name: "dot",
-      bot: { id: "bot_01JC9Z7H2K4M6N8P0Q2R4S6T8V", name: "dot", deleted: false },
+      bot: { id: "bot_01JC9Z7H2K4M6N8P0Q2R4S6T8V", name: "dot", deleted: false, delivery_kind: "webhook" },
       connection_client_name: "dot",
       destination: { kind: "webhook", name: "dot", callback_host: "hooks.example.com", status: "unsubscribed" },
     };
     expect(participantDestinationLabel(participant)).toBe("Webhook: dot");
     expect(participantDestinationStatus(participant)).toBe("終了済み");
-    expect(participantDestinationLabel({ ...participant, destination: null })).toBe("通知先なし");
-    expect(participantDestinationStatus({ ...participant, destination: null })).toBe("なし");
+    expect(participantDestinationLabel({ ...participant, destination: null })).toBe("配信先なし");
+    expect(participantDestinationStatus({ ...participant, destination: null })).toBe("配信先なし");
   });
 
   it("shows a bot with its state and warns when it is not ready", () => {
-    expect(botOptionLabel({ name: "Dot", status: "ready" })).toBe("Dot（準備OK）");
-    expect(botOptionLabel({ name: "Grok Bot", status: "no_connection" })).toBe("Grok Bot（接続なし）");
-    expect(botOptionLabel({ name: "Muse", status: "no_delivery" })).toBe("Muse（通知先なし）");
+    expect(botOptionLabel({ name: "Dot", status: "ready" })).toBe("Dot（準備完了）");
+    expect(botOptionLabel({ name: "Grok Bot", status: "no_connection" })).toBe("Grok Bot（未接続）");
+    expect(botOptionLabel({ name: "Muse", status: "no_delivery" })).toBe("Muse（配信先なし）");
     expect(botWarning({ status: "ready" })).toBeNull();
     expect(botWarning({ status: "no_connection" })).toMatch(/MCP 接続がありません/);
-    expect(botWarning({ status: "no_delivery" })).toMatch(/通知先がありません/);
+    expect(botWarning({ status: "no_delivery" })).toMatch(/配信先がありません/);
   });
 
   it("describes a delivery failed by a stop", () => {
@@ -90,5 +91,17 @@ describe("conversationRequest", () => {
       ok: false,
       message: "同じ Bot は選べません",
     });
+  });
+});
+
+describe("participantStopReason", () => {
+  const base = { name: "a", connection_client_name: null };
+  it("explains a missing destination by the kind of the bot", () => {
+    const bot = { id: "bot_1", name: "a", deleted: false };
+    expect(participantStopReason({ ...base, bot: { ...bot, delivery_kind: "mcp" }, destination: null })).toBe("未購読");
+    expect(participantStopReason({ ...base, bot: { ...bot, delivery_kind: "webhook" }, destination: null })).toBe("配信先なし");
+    const expired = { kind: "mcp" as const, name: null, callback_host: "ai.example.com", status: "expired" as const };
+    expect(participantStopReason({ ...base, bot: { ...bot, delivery_kind: "mcp" }, destination: expired })).toBe("未購読（期限切れ）");
+    expect(participantStopReason({ ...base, bot: null, destination: { ...expired, status: "active" } })).toBeNull();
   });
 });

@@ -10,10 +10,16 @@ import type {
 } from "../../src/api/types";
 
 export const BOT_STATUS_LABELS: Record<BotStatus, string> = {
-  ready: "準備OK",
-  no_connection: "接続なし",
-  no_delivery: "通知先なし",
+  ready: "準備完了",
+  no_connection: "未接続",
+  no_delivery: "配信先なし",
 };
+
+// The state of a bot in the shared words of the screens: an mcp bot without a subscription is 未購読.
+export function botStatusLabel(bot: Pick<Bot, "status" | "delivery_kind">): string {
+  if (bot.status === "no_delivery" && bot.delivery_kind === "mcp") return "未購読";
+  return BOT_STATUS_LABELS[bot.status];
+}
 
 export const DELIVERY_KIND_LABELS: Record<BotDeliveryKind, string> = {
   mcp: "MCP Event",
@@ -22,9 +28,9 @@ export const DELIVERY_KIND_LABELS: Record<BotDeliveryKind, string> = {
 };
 
 export const DELIVERY_KIND_DESCRIPTIONS: Record<BotDeliveryKind, string> = {
-  mcp: "ChatGPT など、Pinglune に購読を作る AI。通知先は AI の接続から自動で決まります",
-  webhook: "配信画面で作った Webhook 配信先に送ります（Grok Bot など）",
-  queue: "配信画面で作ったポーリング用キューに入れます（Muse など）",
+  mcp: "ChatGPT など、Pinglune に購読を作る AI。配信先は AI の接続から自動で決まります",
+  webhook: "配信先画面で作った Webhook 配信先に送ります（チャットボットなど）",
+  queue: "配信先画面で作ったポーリング用キューに入れます（外から呼び出せない AI など）",
 };
 
 export const DELIVERY_KINDS: BotDeliveryKind[] = ["mcp", "webhook", "queue"];
@@ -51,7 +57,7 @@ export function botForm(bot: Bot): BotForm {
 
 type FormResult<T> = { ok: true; value: T } | { ok: false; message: string };
 
-const CHOOSE_DESTINATION_MESSAGE = "通知先を選んでください";
+const CHOOSE_DESTINATION_MESSAGE = "配信先を選んでください";
 export const SOURCES_UNAVAILABLE_MESSAGE = "送信元を読み込めませんでした";
 
 // The request of the creation form. The server checks the name. sourcesLoaded is false when the sources could not be

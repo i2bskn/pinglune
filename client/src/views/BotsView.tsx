@@ -2,20 +2,18 @@ import { type FormEvent, useState } from "react";
 import type { Bot, BotDeliveryKind, McpConnection, Source, Subscription } from "../../../src/api/types";
 import { assignMcpConnection, createBot, deleteBot, revokeMcpConnection, updateBot } from "../actions";
 import {
-  BOT_STATUS_LABELS,
   type BotForm,
   CONNECTION_KIND_LABELS,
   DELIVERY_KINDS,
   DELIVERY_KIND_DESCRIPTIONS,
   DELIVERY_KIND_LABELS,
+  botStatusLabel,
   EMPTY_BOT_FORM,
   MCP_DELIVERY_PENDING_MESSAGE,
   SOURCES_UNAVAILABLE_MESSAGE,
   availableDestinations,
   botConnectionExpired,
-  botDeliveryLabel,
   botForm,
-  botSourcesLabel,
   connectionLabel,
   createBotRequest,
   replacementWarning,
@@ -74,11 +72,12 @@ function BotsContent({
 }) {
   return (
     <main className="main">
-      <h1>Bot</h1>
-      <p className="lead">
-        Bot は会話に参加する AI です。名前・MCP 接続・通知先・受け取る送信元をまとめて管理します。AI から Pinglune
-        に接続するとき、どの Bot として接続するかを選びます。送信元のイベントは、その送信元を紐づけた Bot の通知先にだけ届きます。
-      </p>
+      <header className="page-head">
+        <h1>Bot</h1>
+        <p className="lead">
+          Bot は、イベントを受け取る AI です。受け取る送信元と配信先を決め、AI から接続するときにどの Bot として接続するかを選びます。
+        </p>
+      </header>
       {notice !== null && (
         <p className="notice" role="status">
           {notice}
@@ -226,7 +225,7 @@ function BotFormFields({
       </fieldset>
       {form.deliveryKind !== "mcp" && (
         <label>
-          通知先
+          配信先
           <select
             value={form.deliverySubscriptionId}
             onChange={(event) => onChange({ ...form, deliverySubscriptionId: event.target.value })}
@@ -244,9 +243,9 @@ function BotFormFields({
       )}
       {form.deliveryKind !== "mcp" && choices.length === 0 && (
         <p className="muted">
-          選べる通知先がありません。<Link to="/deliveries">配信</Link>で
+          選べる配信先がありません。<Link to="/deliveries">配信</Link>で
           {form.deliveryKind === "webhook" ? " Webhook 配信先" : "ポーリング用キュー"}
-          を登録してください（ほかの Bot が使っている通知先は選べません）。
+          を登録してください（ほかの Bot が使っている配信先は選べません）。
         </p>
       )}
       <SourceFields form={form} onChange={onChange} sources={sources} disabled={disabled} />
@@ -396,8 +395,8 @@ function BotItem({ client, bot, data, onDone }: { client: ApiClient; bot: Bot; d
     <li className="subscription">
       <span className="delivery-head">
         <span className="delivery-host">{bot.name}</span>
-        <span className={bot.status === "ready" ? "badge" : "badge badge-off"}>{BOT_STATUS_LABELS[bot.status]}</span>
-        {expired && <span className="badge badge-error">接続の期限切れ</span>}
+        <span className={bot.status === "ready" ? "badge badge-ok" : "badge badge-warning"}>{botStatusLabel(bot)}</span>
+        {expired && <span className="badge badge-warning">接続の期限切れ</span>}
         {mode === "view" && (
           <span className="item-actions">
             <button type="button" onClick={() => open("edit")}>
@@ -409,20 +408,37 @@ function BotItem({ client, bot, data, onDone }: { client: ApiClient; bot: Bot; d
           </span>
         )}
       </span>
-      <span className="delivery-conditions">
-        MCP 接続: {bot.connection === null ? "なし" : connectionLabel(bot.connection)}
-      </span>
-      <span className="delivery-conditions">
-        通知先: {botDeliveryLabel(bot)}
-        {bot.delivery !== null && bot.delivery.status !== "active" ? "（無効）" : ""}
-      </span>
-      <span className="delivery-conditions">{botSourcesLabel(bot)}</span>
+      <dl className="facts">
+        <div>
+          <dt>受け取る送信元</dt>
+          <dd>
+            {bot.sources.length === 0 ? (
+              <span className="warning-note">なし（イベントは届きません）</span>
+            ) : (
+              bot.sources.map((source) => `${source.name}${source.enabled ? "" : "（無効）"}`).join("、")
+            )}
+          </dd>
+        </div>
+        <div>
+          <dt>配信先</dt>
+          <dd>
+            <span className="kind-chip">{DELIVERY_KIND_LABELS[bot.delivery_kind]}</span>
+            {botDeliveryValue(bot)}
+            {bot.delivery === null && bot.connection !== null && bot.delivery_kind === "mcp" && (
+              <span className="badge badge-warning">未購読</span>
+            )}
+            {bot.delivery === null && bot.delivery_kind !== "mcp" && <span className="badge badge-warning">配信先なし</span>}
+          </dd>
+        </div>
+        <div>
+          <dt>MCP 接続</dt>
+          <dd>{bot.connection === null ? "なし" : connectionLabel(bot.connection)}</dd>
+        </div>
+      </dl>
       {bot.status === "no_connection" && (
-        <span className="delivery-conditions">AI から Pinglune に接続するとき、この Bot を選んでください。</span>
+        <p className="hint">AI から Pinglune に接続するとき、この Bot を選んでください。</p>
       )}
-      {bot.status === "no_delivery" && bot.delivery_kind === "mcp" && (
-        <span className="delivery-conditions">{MCP_DELIVERY_PENDING_MESSAGE}</span>
-      )}
+      {bot.status === "no_delivery" && bot.delivery_kind === "mcp" && <p className="hint">{MCP_DELIVERY_PENDING_MESSAGE}</p>}
       {bot.connection !== null && (
         <span className="delivery-meta">
           <time dateTime={new Date(bot.connection.created_at).toISOString()}>
@@ -454,7 +470,7 @@ function BotItem({ client, bot, data, onDone }: { client: ApiClient; bot: Bot; d
         <form className="folder-form" aria-label={`Bot「${bot.name}」を削除`} onSubmit={(event) => void onDelete(event)}>
           <p>
             Bot「{bot.name}」を削除します。会話の参加者には残りますが、発言も通知もできなくなります。MCP
-            接続は切断せず、Bot に割り当てない接続として残ります。通知先（Webhook 配信先・キュー）は終了しませんが、イベントは届かなくなります。
+            接続は切断せず、Bot に割り当てない接続として残ります。配信先（Webhook 配信先・キュー）は終了しませんが、イベントは届かなくなります。
           </p>
           <div className="folder-form-actions">
             <button type="submit" className="button-danger" disabled={sending}>
@@ -649,4 +665,25 @@ function ConnectionItem({
       {pending === null && !revoking && failure !== null && <p role="alert">{failure}</p>}
     </li>
   );
+}
+
+// The destination of a bot without its kind (shown as a chip next to it): "なし" when there is none.
+function botDeliveryValue(bot: Bot): string {
+  const delivery = bot.delivery;
+  // An MCP Event bot is shown by the app of its connection, as the flow map shows it.
+  if (bot.delivery_kind === "mcp") {
+    // Without a connection the status badge already says 未接続.
+    if (bot.connection === null) return "なし";
+    const app = bot.connection.client_name;
+    if (delivery === null) return app;
+    return `${app}（${delivery.callback_host ?? "不明な宛先"}）${delivery.status === "active" ? "" : "（無効）"}`;
+  }
+  if (delivery === null) return "なし";
+  const inactive = delivery.status === "active" ? "" : "（無効）";
+  switch (bot.delivery_kind) {
+    case "webhook":
+      return `${delivery.name ?? "（名前なし）"}${delivery.callback_host === null ? "" : `（${delivery.callback_host}）`}${inactive}`;
+    case "queue":
+      return `${delivery.name ?? "（名前なし）"}${inactive}`;
+  }
 }

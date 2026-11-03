@@ -1,5 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ApiKey, Bot, ConversationDetail, EmailAddress, Source, Subscription, User } from "../../src/api/types";
+import type {
+  ApiKey,
+  Bot,
+  ConversationDetail,
+  DeliveryListItem,
+  EmailAddress,
+  Source,
+  Subscription,
+  User,
+} from "../../src/api/types";
 import {
   assignMcpConnection,
   changeUserRole,
@@ -17,6 +26,7 @@ import {
   issueEmailAddress,
   postConversationMessage,
   resetUserPassword,
+  retryDelivery,
   revokeApiKey,
   revokeEmailAddress,
   revokeMcpConnection,
@@ -708,5 +718,53 @@ describe("stopMcpSubscription", () => {
   it("is not found on 404", async () => {
     const { client } = setup(apiError(404, "配信先が見つかりません"), 401, `/api/v1/subscriptions/${ID}/delete`);
     expect(await stopMcpSubscription(client, ID)).toEqual({ kind: "notFound" });
+  });
+});
+
+describe("retryDelivery", () => {
+  const id = "dlv_01JC9Z7H2K4M6N8P0Q2R4S6T8V";
+  const url = `/api/v1/deliveries/${id}/retry`;
+  const DELIVERY: DeliveryListItem = {
+    id,
+    event_id: "evt_01JC9Z7H2K4M6N8P0Q2R4S6T8V",
+    subscription_id: "sub_00000000000000000000000000000001",
+    callback_host: "hooks.example.com",
+    destination_kind: "webhook",
+    destination_name: "hook",
+    status: "pending",
+    attempts: 0,
+    last_attempt_at: null,
+    last_http_status: null,
+    last_error: null,
+    delivered_at: null,
+    created_at: 1,
+    event: { type: "alert.observed", summary: "s", source_name: "app" },
+  };
+
+  it("returns the delivery the server returned", async () => {
+    const { client, fetch } = setup(() => Response.json(DELIVERY), 204, url);
+    expect(await retryDelivery(client, id)).toEqual({ kind: "ok", delivery: DELIVERY });
+    expect(fetch.mock.calls[0]?.[1]?.method).toBe("POST");
+  });
+
+  it.each([
+    [409, "失敗した配信だけを再送できます"],
+    [503, "再送を受け付けられませんでした。しばらくしてからもう一度お試しください"],
+    [404, "配信が見つかりません"],
+  ])("shows the message of %i", async (status, message) => {
+    const { client } = setup(apiError(status, message), 204, url);
+    expect(await retryDelivery(client, id)).toEqual({ kind: "error", message });
+  });
+
+  it("is redirecting when login is required", async () => {
+    const { client, redirectToLogin } = setup(apiError(401, "ログインしてください"), 401, url);
+    expect(await retryDelivery(client, id)).toEqual({ kind: "redirecting" });
+    expect(redirectToLogin).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not send an invalid ID", async () => {
+    const { client, fetch } = setup(() => Response.json(DELIVERY), 204, url);
+    expect(await retryDelivery(client, "a/b")).toEqual({ kind: "error", message: "配信が見つかりません" });
+    expect(fetch).not.toHaveBeenCalled();
   });
 });

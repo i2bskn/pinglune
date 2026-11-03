@@ -28,9 +28,9 @@ export function subscriptionLabel(subscription: Pick<Subscription, "kind" | "nam
   }
 }
 
-// The destination of a participant, in the same form. "通知先なし" when it has none.
+// The destination of a participant, in the same form. "配信先なし" when it has none.
 export function participantDestinationLabel(participant: ConversationParticipant): string {
-  if (participant.destination === null) return "通知先なし";
+  if (participant.destination === null) return "配信先なし";
   return subscriptionLabel(participant.destination);
 }
 
@@ -44,11 +44,11 @@ export function participantDestinationStatus(participant: ConversationParticipan
     case "unsubscribed":
       return "終了済み";
     case undefined:
-      return "なし";
+      return "配信先なし";
   }
 }
 
-// A bot as the select of the form shows it: "Dot（準備OK）".
+// A bot as the select of the form shows it: "Dot（準備完了）".
 export function botOptionLabel(bot: Pick<Bot, "name" | "status">): string {
   return `${bot.name}（${BOT_STATUS_LABELS[bot.status]}）`;
 }
@@ -61,7 +61,7 @@ export function botWarning(bot: Pick<Bot, "status">): string | null {
     case "no_connection":
       return "この Bot には MCP 接続がありません。発言できるのは、AI から接続して Bot を選んだあとです";
     case "no_delivery":
-      return "この Bot には通知先がありません。通知先ができるまで、発言は届きません";
+      return "この Bot には配信先がありません。配信先ができるまで、発言は届きません";
   }
 }
 
@@ -102,4 +102,18 @@ export function conversationRequest(
 // again after a failure does not add a second message.
 export function newIdempotencyKey(): string {
   return crypto.randomUUID();
+}
+
+// Why a participant receives nothing, in the words of the other screens; null when its destination is active.
+export function participantStopReason(participant: ConversationParticipant): string | null {
+  const destination = participant.destination;
+  if (destination === null) return participant.bot?.delivery_kind === "mcp" ? "未購読" : "配信先なし";
+  switch (destination.status) {
+    case "active":
+      return null;
+    case "expired":
+      return "未購読（期限切れ）";
+    case "unsubscribed":
+      return "配信先が終了";
+  }
 }

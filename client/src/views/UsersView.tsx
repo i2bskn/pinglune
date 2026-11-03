@@ -28,7 +28,7 @@ export function UsersView({ client, currentUserId }: { client: ApiClient; curren
   // The result of the last operation, shown above the list until the next one. It stays across the reload
   // that follows, which may remove the row the operation was opened from.
   const [notice, setNotice] = useState<string | null>(null);
-  useDocumentTitle(viewTitle(state, () => "ユーザー管理"));
+  useDocumentTitle(viewTitle(state, () => "ユーザー"));
 
   if (state.kind !== "ready") {
     return <ViewStatus state={state} notFoundMessage="ページが見つかりません" onReload={reload} />;
@@ -37,7 +37,10 @@ export function UsersView({ client, currentUserId }: { client: ApiClient; curren
 
   return (
     <main className="main">
-      <h1>ユーザー管理</h1>
+      <header className="page-head">
+        <h1>ユーザー</h1>
+        <p className="lead">この Pinglune にログインできる人です。管理者は、ユーザーの追加と権限の変更ができます。</p>
+      </header>
       {notice !== null && (
         <p className="notice" role="status">
           {notice}
@@ -330,11 +333,11 @@ function UserRow({
                   disabled={sending}
                 />
               </label>
-              <p>このユーザーはすべての端末でログアウトし、MCP&nbsp;の接続も切れます。登録したWebhook配信先とポーリング用キューも止まります。</p>
+              <p>このユーザーはすべての端末でログアウトし、MCP&nbsp;の接続も切れます。登録したWebhook 配信先とポーリング用キューも止まります。</p>
             </>
           )}
           {open === "logout" && (
-            <p>このユーザーをすべての端末でログアウトさせます。MCP&nbsp;の接続も切れ、登録したWebhook配信先とポーリング用キューも止まります。</p>
+            <p>このユーザーをすべての端末でログアウトさせます。MCP&nbsp;の接続も切れ、登録したWebhook 配信先とポーリング用キューも止まります。</p>
           )}
           {open === "delete" && (
             <>

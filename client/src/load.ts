@@ -6,6 +6,7 @@ import type {
   ConversationList,
   ConversationMessageList,
   DeliveryList,
+  DeliveryStatus,
   EmailAddressList,
   EventDetail,
   EventList,
@@ -15,6 +16,7 @@ import type {
   User,
   UserList,
 } from "../../src/api/types";
+import { type EventFilterValues, eventsQuery } from "./events";
 import { isValidId } from "./router";
 import {
   LoginRequiredError,
@@ -41,7 +43,8 @@ export const CONNECTION_ERROR = "サーバーに接続できませんでした";
 type Result<T> =
   | { kind: "ok"; value: T }
   | { kind: "notFound"; message: string }
-  | { kind: "error"; message: string }
+  // status is null when there was no response.
+  | { kind: "error"; message: string; status: number | null }
   | { kind: "redirecting" };
 
 type JsonResponse = { ok: boolean; status: number; json(): Promise<unknown> };
@@ -65,12 +68,12 @@ async function request<R extends JsonResponse>(call: () => Promise<R>): Promise<
     res = await call();
   } catch (error) {
     if (error instanceof LoginRequiredError) return { kind: "redirecting" };
-    return { kind: "error", message: CONNECTION_ERROR };
+    return { kind: "error", message: CONNECTION_ERROR, status: null };
   }
   if (res.status === 404) return { kind: "notFound", message: await responseErrorMessage(res) };
-  if (!res.ok) return { kind: "error", message: await responseErrorMessage(res) };
+  if (!res.ok) return { kind: "error", message: await responseErrorMessage(res), status: res.status };
   const body = await readJson(res);
-  if (body === null) return { kind: "error", message: unexpectedResponseMessage(res.status) };
+  if (body === null) return { kind: "error", message: unexpectedResponseMessage(res.status), status: res.status };
   // res.ok is true here, so the body is one of the ok bodies.
   return { kind: "ok", value: body as OkJson<R> };
 }
@@ -105,15 +108,48 @@ export async function loadUsersView(client: ApiClient): Promise<Loaded<UsersData
   return { kind: "ready", data: { users: list.value.users, authMode: list.value.auth_mode } };
 }
 
-// A page of the event list. cursor is the next_cursor of the previous page.
-export async function loadEvents(client: ApiClient, cursor?: string): Promise<Loaded<EventList>> {
-  const list = await request(() =>
-    client.api.v1.events.$get({ query: cursor === undefined ? {} : { cursor } }),
-  );
+const NO_FILTER: EventFilterValues = { type: "", sourceId: "" };
+
+// A page of the event list. cursor is the next_cursor of the previous page; filter limits it to a type and a source
+// (empty values are not sent).
+export async function loadEvents(
+  client: ApiClient,
+  cursor?: string,
+  filter: EventFilterValues = NO_FILTER,
+): Promise<Loaded<EventList>> {
+  const list = await request(() => client.api.v1.events.$get({ query: eventsQuery(filter, cursor) }));
   if (list.kind === "redirecting") return list;
   // The list itself is never missing; a 404 here is an unexpected response.
   if (list.kind === "notFound" || list.kind === "error") return { kind: "error", message: list.message };
   return { kind: "ready", data: list.value };
+}
+
+export type EventsViewData = {
+  // null with eventsError set when the filter was rejected (400): the screen keeps the form to fix it.
+  events: EventList | null;
+  eventsError: string | null;
+  // The sources of the filter. Empty with sourcesError set when they cannot be read; the events are shown anyway.
+  sources: Source[];
+  sourcesError: string | null;
+};
+
+// The first page of the event list with the filter, and the sources to choose from.
+export async function loadEventsView(client: ApiClient, filter: EventFilterValues): Promise<Loaded<EventsViewData>> {
+  const [events, sources] = await Promise.all([
+    request(() => client.api.v1.events.$get({ query: eventsQuery(filter) })),
+    request(() => client.api.v1.sources.$get()),
+  ]);
+  if (events.kind === "redirecting" || sources.kind === "redirecting") return { kind: "redirecting" };
+  const sourceData = {
+    sources: sources.kind === "ok" ? sources.value.sources : [],
+    sourcesError: sources.kind === "ok" ? null : sources.message,
+  };
+  if (events.kind === "error" && events.status === 400) {
+    return { kind: "ready", data: { events: null, eventsError: events.message, ...sourceData } };
+  }
+  // The list itself is never missing; a 404 here is an unexpected response.
+  if (events.kind !== "ok") return { kind: "error", message: events.message };
+  return { kind: "ready", data: { events: events.value, eventsError: null, ...sourceData } };
 }
 
 export async function loadEventDetail(client: ApiClient, id: string): Promise<Loaded<EventDetail>> {
@@ -123,14 +159,16 @@ export async function loadEventDetail(client: ApiClient, id: string): Promise<Lo
   return { kind: "ready", data: event.value };
 }
 
-// A page of the delivery list. cursor is the next_cursor of the previous page; eventId limits it to one event.
+// A page of the delivery list. cursor is the next_cursor of the previous page; eventId limits it to one event and
+// status to one status.
 export async function loadDeliveries(
   client: ApiClient,
-  options: { cursor?: string; eventId?: string } = {},
+  options: { cursor?: string; eventId?: string; status?: DeliveryStatus } = {},
 ): Promise<Loaded<DeliveryList>> {
-  const query: { cursor?: string; event_id?: string } = {};
+  const query: { cursor?: string; event_id?: string; status?: DeliveryStatus } = {};
   if (options.cursor !== undefined) query.cursor = options.cursor;
   if (options.eventId !== undefined) query.event_id = options.eventId;
+  if (options.status !== undefined) query.status = options.status;
   const list = await request(() => client.api.v1.deliveries.$get({ query }));
   if (list.kind === "redirecting") return list;
   // The list itself is never missing; a 404 here is an unexpected response.
@@ -138,19 +176,45 @@ export async function loadDeliveries(
   return { kind: "ready", data: list.value };
 }
 
-export type DeliveriesData = { subscriptions: Subscription[]; deliveries: DeliveryList };
+export type DeliveriesData = { subscriptions: Subscription[] };
 
-// The subscriptions and the first page of the deliveries.
+// The destinations: the subscriptions of every kind. The deliveries are on the delivery history.
 export async function loadDeliveriesView(client: ApiClient): Promise<Loaded<DeliveriesData>> {
-  const [subscriptions, deliveries] = await Promise.all([
-    request(() => client.api.v1.subscriptions.$get()),
-    request(() => client.api.v1.deliveries.$get({ query: {} })),
-  ]);
-  if (subscriptions.kind === "redirecting" || deliveries.kind === "redirecting") return { kind: "redirecting" };
-  // Neither list is ever missing; a 404 here is an unexpected response.
+  const subscriptions = await request(() => client.api.v1.subscriptions.$get());
+  if (subscriptions.kind === "redirecting") return subscriptions;
+  // The list is never missing; a 404 here is an unexpected response.
   if (subscriptions.kind !== "ok") return { kind: "error", message: subscriptions.message };
-  if (deliveries.kind !== "ok") return { kind: "error", message: deliveries.message };
-  return { kind: "ready", data: { subscriptions: subscriptions.value.subscriptions, deliveries: deliveries.value } };
+  return { kind: "ready", data: { subscriptions: subscriptions.value.subscriptions } };
+}
+
+// The bots that receive the events of a source, by name.
+export async function loadSourceBots(client: ApiClient, sourceId: string): Promise<Loaded<Bot[]>> {
+  const bots = await request(() => client.api.v1.bots.$get());
+  if (bots.kind === "redirecting") return bots;
+  // The list is never missing; a 404 here is an unexpected response.
+  if (bots.kind !== "ok") return { kind: "error", message: bots.message };
+  return { kind: "ready", data: bots.value.bots.filter((bot) => bot.sources.some((source) => source.id === sourceId)) };
+}
+
+export type DataResult = { kind: "ok"; blob: Blob } | { kind: "error"; message: string } | { kind: "redirecting" };
+
+// The contents of the body or an attachment of an event, through the API client (so that an expired access token is
+// refreshed). Never rejects.
+export async function fetchEventData(client: ApiClient, eventId: string, dataRef: string): Promise<DataResult> {
+  if (!isValidId(eventId) || !isValidId(dataRef)) return { kind: "error", message: "データが見つかりません" };
+  let res: Awaited<ReturnType<(typeof client.api.v1.events)[":id"]["data"][":dataRef"]["$get"]>>;
+  try {
+    res = await client.api.v1.events[":id"].data[":dataRef"].$get({ param: { id: eventId, dataRef } });
+  } catch (error) {
+    if (error instanceof LoginRequiredError) return { kind: "redirecting" };
+    return { kind: "error", message: CONNECTION_ERROR };
+  }
+  if (!res.ok) return { kind: "error", message: await responseErrorMessage(res) };
+  try {
+    return { kind: "ok", blob: await res.blob() };
+  } catch {
+    return { kind: "error", message: CONNECTION_ERROR };
+  }
 }
 
 export async function loadSources(client: ApiClient): Promise<Loaded<Source[]>> {
@@ -173,6 +237,44 @@ export async function loadFlow(client: ApiClient): Promise<Loaded<FlowData>> {
   if (sources.kind !== "ok") return { kind: "error", message: sources.message };
   if (bots.kind !== "ok") return { kind: "error", message: bots.message };
   return { kind: "ready", data: { sources: sources.value.sources, bots: bots.value.bots } };
+}
+export type OverviewData = FlowData & { events: EventList; deliveries: DeliveryList; subscriptions: Subscription[] };
+
+// The overview screen: the sources and bots (for the flow map), and the first page of the events and of the
+// deliveries (the newest ones).
+export async function loadOverview(client: ApiClient): Promise<Loaded<OverviewData>> {
+  const [sources, bots, events, deliveries, subscriptions] = await Promise.all([
+    request(() => client.api.v1.sources.$get()),
+    request(() => client.api.v1.bots.$get()),
+    request(() => client.api.v1.events.$get({ query: {} })),
+    request(() => client.api.v1.deliveries.$get({ query: {} })),
+    request(() => client.api.v1.subscriptions.$get()),
+  ]);
+  if (
+    sources.kind === "redirecting" ||
+    bots.kind === "redirecting" ||
+    events.kind === "redirecting" ||
+    deliveries.kind === "redirecting" ||
+    subscriptions.kind === "redirecting"
+  ) {
+    return { kind: "redirecting" };
+  }
+  // None of the lists is ever missing; a 404 here is an unexpected response.
+  if (sources.kind !== "ok") return { kind: "error", message: sources.message };
+  if (bots.kind !== "ok") return { kind: "error", message: bots.message };
+  if (events.kind !== "ok") return { kind: "error", message: events.message };
+  if (deliveries.kind !== "ok") return { kind: "error", message: deliveries.message };
+  if (subscriptions.kind !== "ok") return { kind: "error", message: subscriptions.message };
+  return {
+    kind: "ready",
+    data: {
+      sources: sources.value.sources,
+      bots: bots.value.bots,
+      events: events.value,
+      deliveries: deliveries.value,
+      subscriptions: subscriptions.value.subscriptions,
+    },
+  };
 }
 
 export type SourceDetailData = { source: Source; apiKeys: ApiKey[]; emailAddresses: EmailAddressList };

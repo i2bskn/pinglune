@@ -1,62 +1,79 @@
 /*
   Pinglune: the admin screens for receiving events and relaying them to AI agents.
-  Paper-toned background, serif headings, one deep green accent.
+  LUNAR: the deep blue of the logo's crescent on cool paper by day and on a night sky in dark mode. One sans-serif
+  family with tight Japanese spacing, monospace for machine values (event types, IDs, hosts), and status colors
+  (ok / warning / error) kept apart from the brand blue.
   The tokens are repeated in client/public/server-pages.css (the login and consent screens); keep them in sync.
 */
 
 :root {
   color-scheme: light dark;
 
-  --font-sans: system-ui, -apple-system, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic UI",
-    "Meiryo", sans-serif;
-  --font-serif: "Hiragino Mincho ProN", "Yu Mincho", "YuMincho", "Noto Serif JP", "Noto Serif CJK JP", serif;
+  --font-sans: "Avenir Next", "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", system-ui, -apple-system,
+    "Yu Gothic UI", "Meiryo", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  /* Kept for the server pages' shared vocabulary; the admin screens no longer use a serif. */
+  --font-serif: var(--font-sans);
 
-  --bg: #f4f5f2;
+  --bg: #f3f5f9;
   --surface: #ffffff;
-  --surface-2: #ecede8;
-  --ink: #222e34;
-  --ink-2: #4a555b;
-  --ink-3: #606b70;
-  --line: #dfe2dc;
-  --line-strong: #c5cbc6;
-  --accent: #218271;
-  --accent-strong: #1a6a5c;
-  --accent-soft: #e0f0ec;
+  --surface-2: #edf0f6;
+  --surface-sunken: #e7ebf3;
+  --ink: #1b2433;
+  --ink-2: #465267;
+  --ink-3: #5f6b82;
+  --line: #e0e5ee;
+  --line-strong: #c6cedc;
+  --accent: #3655a0;
+  --accent-strong: #2a4483;
+  --accent-soft: #e6ecf8;
   --on-accent: #ffffff;
-  --link: #1b6e60;
-  --focus: #218271;
+  --link: #2f4c93;
+  --focus: #3655a0;
+  --ok: #1d7a4c;
+  --ok-soft: #e1f3e8;
+  --warning: #8f5500;
+  --warning-soft: #fbefd9;
   --danger: #b3261e;
   --danger-soft: #fbeceb;
-  --shadow: 0 1px 2px rgb(34 46 52 / 0.05), 0 8px 24px rgb(34 46 52 / 0.08);
+  --shadow-sm: 0 1px 2px rgb(27 36 51 / 0.06);
+  --shadow: 0 1px 2px rgb(27 36 51 / 0.05), 0 10px 28px -12px rgb(27 36 51 / 0.18);
 
   /* The brand name: the text color, or white on dark backgrounds. */
   --logo-text: #222e34;
 
-  --radius: 0.625rem;
-  --radius-lg: 1rem;
-  --measure: 46rem;
+  --radius-sm: 0.375rem;
+  --radius: 0.5rem;
+  --radius-lg: 0.875rem;
+  --measure: 52rem;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #121617;
-    --surface: #192022;
-    --surface-2: #212a2c;
-    --ink: #e6ebec;
-    --ink-2: #b8c2c4;
-    --ink-3: #93a0a4;
-    --line: #283235;
-    --line-strong: #3a4649;
-    --accent: #5ec2ae;
-    --accent-strong: #85d6c6;
-    --accent-soft: #183430;
-    --on-accent: #0b211d;
-    --link: #7ccfbf;
-    --focus: #7ccfbf;
+    --bg: #0c111c;
+    --surface: #131a28;
+    --surface-2: #1a2233;
+    --surface-sunken: #0f1522;
+    --ink: #e8ecf4;
+    --ink-2: #b6c0d3;
+    --ink-3: #8f9bb3;
+    --line: #222c40;
+    --line-strong: #34405a;
+    --accent: #8ea7ee;
+    --accent-strong: #b2c3f5;
+    --accent-soft: #1b2645;
+    --on-accent: #0c1430;
+    --link: #a4b8f3;
+    --focus: #a4b8f3;
+    --ok: #5cc98c;
+    --ok-soft: #12301f;
+    --warning: #f0b45a;
+    --warning-soft: #33260e;
     --danger: #f08b80;
     --danger-soft: #3a1f1c;
     --logo-text: #ffffff;
-    --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 12px 32px rgb(0 0 0 / 0.4);
+    --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.3);
+    --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 16px 36px -16px rgb(0 0 0 / 0.6);
   }
 }
 
@@ -87,8 +104,12 @@ h1,
 h2,
 h3 {
   font-feature-settings: "palt";
-  letter-spacing: 0.02em;
+  letter-spacing: 0.01em;
   text-wrap: balance;
+}
+
+body {
+  font-feature-settings: "palt";
 }
 
 /* Japanese wraps between phrases where the browser can tell them; a word that does not fit still breaks
@@ -148,10 +169,10 @@ button,
   justify-content: center;
   gap: 0.4rem;
   min-height: 2.5rem;
-  padding: 0 0.95rem;
+  padding: 0 1rem;
   font: inherit;
   font-size: 0.9375rem;
-  font-weight: 500;
+  font-weight: 600;
   line-height: 1.2;
   color: var(--ink);
   text-decoration: none;
@@ -160,6 +181,7 @@ button,
   background: var(--surface);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
   transition:
     background-color 0.15s,
     border-color 0.15s,
@@ -348,9 +370,18 @@ p[role="alert"] {
 }
 
 @media (width >= 900px) {
+  /* The sidebar's column is painted on the shell, so that it reaches the bottom of long screens. */
   .app-shell {
     display: grid;
     grid-template-columns: 15rem minmax(0, 1fr);
+    min-height: 100vh;
+    background: linear-gradient(
+      to right,
+      var(--surface) calc(15rem - 1px),
+      var(--line) calc(15rem - 1px),
+      var(--line) 15rem,
+      transparent 15rem
+    );
   }
 
   .sidebar {
@@ -360,8 +391,6 @@ p[role="alert"] {
     height: 100vh;
     height: 100dvh;
     overflow-y: auto;
-    background: var(--surface);
-    border-right: 1px solid var(--line);
   }
 
 }
@@ -478,15 +507,15 @@ p[role="alert"] {
 .nav {
   display: flex;
   flex-direction: column;
-  gap: 1.25rem;
+  gap: 1rem;
 }
 
 .nav-group-label {
   margin: 0 0 0.25rem;
   padding: 0 0.75rem;
-  font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0.08em;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
   color: var(--ink-3);
 }
 
@@ -500,12 +529,13 @@ p[role="alert"] {
 }
 
 .nav-link {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 0.625rem;
   padding: 0.5rem 0.75rem;
   font-size: 0.9375rem;
-  font-weight: 500;
+  font-weight: 600;
   line-height: 1.4;
   color: var(--ink-2);
   text-decoration: none;
@@ -528,6 +558,18 @@ p[role="alert"] {
 
 .nav-link[aria-current] {
   background: var(--accent-soft);
+}
+
+/* The current item: a short bar of the brand blue at the left edge. */
+.nav-link[aria-current]::before {
+  position: absolute;
+  top: 0.5rem;
+  bottom: 0.5rem;
+  left: 0;
+  width: 3px;
+  content: "";
+  background: var(--accent);
+  border-radius: 999px;
 }
 
 @media (pointer: coarse) {
@@ -602,7 +644,7 @@ p[role="alert"] {
 
 .main {
   width: 100%;
-  max-width: calc(var(--measure) + 2.5rem);
+  max-width: calc(64rem + 2.5rem);
   margin: 0 auto;
   padding: 2rem 1.25rem 5rem;
   animation: rise 0.32s ease-out both;
@@ -620,12 +662,23 @@ p[role="alert"] {
   }
 }
 
-.main > h1 {
-  margin: 0.25rem 0 0.75rem;
-  font-family: var(--font-serif);
-  font-size: clamp(1.625rem, 1.3rem + 1.2vw, 2rem);
-  font-weight: 600;
-  line-height: 1.35;
+.main > h1,
+.page-head h1 {
+  margin: 0 0 0.5rem;
+  font-size: clamp(1.5rem, 1.25rem + 1vw, 1.875rem);
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: 0;
+}
+
+/* The title of a screen and what it is for. */
+.page-head {
+  margin: 0.25rem 0 1.75rem;
+}
+
+.page-head .lead {
+  margin: 0;
+  max-width: 42rem;
 }
 
 .status {
@@ -648,10 +701,11 @@ p[role="alert"] {
 
 .notice {
   margin: 0 0 1.5rem;
-  padding: 0.75rem 1rem;
+  padding: 0.875rem 1.125rem;
   color: var(--ink-2);
   background: var(--accent-soft);
-  border-radius: var(--radius);
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  border-radius: var(--radius-lg);
 }
 
 .notice p {
@@ -812,10 +866,9 @@ p[role="alert"] {
 /* ---------- Events and sources ---------- */
 
 .main > h2 {
-  margin: 2rem 0 0.75rem;
-  font-family: var(--font-serif);
-  font-size: 1.25rem;
-  font-weight: 600;
+  margin: 2.25rem 0 0.75rem;
+  font-size: 1.0625rem;
+  font-weight: 700;
   line-height: 1.4;
 }
 
@@ -840,6 +893,7 @@ p[role="alert"] {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
 }
 
 .list > li {
@@ -853,20 +907,29 @@ p[role="alert"] {
 
 /* A whole row that links to a screen. */
 .event-link,
-.source-link {
+.source-link,
+.failure-link {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
-  padding: 0.875rem 1rem;
+  gap: 0.3rem;
+  padding: 0.875rem 1.125rem;
   color: var(--ink);
   text-decoration: none;
-  border-radius: var(--radius-lg);
+}
+
+.list > li:first-child > :is(.event-link, .source-link, .failure-link) {
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+
+.list > li:last-child > :is(.event-link, .source-link, .failure-link):last-child {
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
 }
 
 .event-link:hover,
-.source-link:hover {
+.source-link:hover,
+.failure-link:hover {
   text-decoration: none;
-  background: var(--surface-2);
+  background: color-mix(in srgb, var(--accent-soft) 55%, transparent);
 }
 
 .event-head,
@@ -878,15 +941,43 @@ p[role="alert"] {
   min-width: 0;
 }
 
-.event-type,
 .source-name {
   min-width: 0;
+  font-weight: 700;
+}
+
+/* Event types are machine values: monospace, on a blue chip. */
+.event-type {
+  min-width: 0;
+  padding: 0.0625rem 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
   font-weight: 600;
+  color: var(--link);
+  background: var(--accent-soft);
+  border-radius: var(--radius-sm);
 }
 
 .event-source {
   font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.event-time {
+  margin-left: auto;
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
   color: var(--ink-3);
+}
+
+.event-summary,
+.hint,
+.failure-reason,
+.delivery-result,
+.flow-note,
+.delivery-event-summary {
+  word-break: auto-phrase;
 }
 
 .event-summary {
@@ -910,7 +1001,7 @@ p[role="alert"] {
 }
 
 .events .labels {
-  padding: 0 1rem 0.875rem;
+  padding: 0 1.125rem 0.875rem;
 }
 
 .labels {
@@ -965,6 +1056,111 @@ p[role="alert"] {
   background: var(--danger-soft);
 }
 
+.badge-ok {
+  color: var(--ok);
+  background: var(--ok-soft);
+}
+
+.badge-warning {
+  color: var(--warning);
+  background: var(--warning-soft);
+}
+
+/* Facts of an item as label and value pairs: small gray labels, values in the text color. */
+.facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.375rem 1.25rem;
+  margin: 0.5rem 0 0;
+}
+
+.facts > div {
+  display: contents;
+}
+
+.facts dt {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.7rem;
+  color: var(--ink-3);
+}
+
+.facts dd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.5rem;
+  min-width: 0;
+  margin: 0;
+  font-size: 0.9375rem;
+}
+
+@media (max-width: 479px) {
+  .facts {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+
+  .facts dd + dt,
+  .facts > div + div dt {
+    margin-top: 0.5rem;
+  }
+}
+
+/* The kind of a destination (MCP Event, Webhook, キュー) next to its name. */
+.kind-chip {
+  padding: 0 0.4rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--ink-2);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+/* A short explanation under an item: gray, at a readable width. */
+.hint {
+  max-width: 36rem;
+  margin: 0.5rem 0 0;
+  font-size: 0.875rem;
+  color: var(--ink-3);
+}
+
+/* A line that says events do not reach: the warning color, with a mark. */
+/* Inline, so that a sentence with a link wraps as one paragraph; a paragraph of its own stays a block. */
+.warning-note {
+  display: inline;
+  font-weight: 600;
+  color: var(--warning);
+}
+
+p.warning-note {
+  display: block;
+}
+
+/* The mark of a warning: an exclamation in a small round badge of the warning color. */
+.warning-note::before {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 1rem;
+  height: 1rem;
+  font-size: 0.6875rem;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--surface);
+  content: "!";
+  background: var(--warning);
+  margin-right: 0.375rem;
+  vertical-align: -0.15em;
+  border-radius: 999px;
+}
+
+/* Numbers with their units, dates and codes that must not be split across lines. */
+.nowrap {
+  white-space: nowrap;
+}
+
 .event-title {
   overflow-wrap: anywhere;
 }
@@ -1013,7 +1209,7 @@ p[role="alert"] {
 }
 
 code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 0.875em;
   overflow-wrap: anywhere;
 }
@@ -1199,6 +1395,7 @@ textarea {
 }
 
 /* The ID of a polling queue: the code takes the rest of the line, and the button wraps below on narrow screens. */
+/* An ID with its copy button: the ID scrolls sideways, the button stays at its right. */
 .copyable-id {
   display: flex;
   flex-wrap: wrap;
@@ -1207,8 +1404,18 @@ textarea {
   min-width: 0;
 }
 
+.copyable-id code {
+  overflow-x: auto;
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+
+.copyable-id button {
+  flex: none;
+}
+
 .copyable-id .copyable {
-  flex: 1 1 16rem;
+  flex: 1 1 0;
   min-width: 0;
 }
 
@@ -1240,6 +1447,287 @@ textarea {
   font-size: 0.8125rem;
   color: var(--ink-3);
   overflow-wrap: anywhere;
+}
+
+/* The delivery history: status, destination and time on the first line, the event on the second, the result and the
+   retry button on the third. */
+.delivery-history .delivery-head {
+  gap: 0.25rem 0.75rem;
+}
+
+.delivery-destination {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.5rem;
+  min-width: 0;
+}
+
+.delivery-time {
+  margin-left: auto;
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+}
+
+.delivery-event-line {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  max-width: 100%;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.delivery-event-line:hover .delivery-event-summary {
+  text-decoration: underline;
+}
+
+.delivery-event-line .event-type {
+  flex: none;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.delivery-event-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.delivery-result {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 1rem;
+  min-width: 0;
+  font-size: 0.875rem;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+/* The result of a failed or pending delivery, with the retry button at its right. */
+.delivery-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.75rem;
+  min-width: 0;
+}
+
+.delivery-foot .delivery-result {
+  flex: 1 1 16rem;
+}
+
+.delivery-foot p {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.delivery .delivery-retry {
+  flex: none;
+  min-height: 2.25rem;
+  margin-left: auto;
+  font-size: 0.875rem;
+}
+
+.delivery .hint {
+  margin: 0;
+  font-size: 0.8125rem;
+}
+
+.delivery p[role] {
+  margin: 0;
+}
+
+.delivery-notice {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--ok);
+}
+
+@media (max-width: 479px) {
+  /* Phones: the time goes below the destination instead of to the right. */
+  .delivery-time {
+    flex-basis: 100%;
+    margin-left: 0;
+  }
+
+  .delivery-event-line {
+    flex-wrap: wrap;
+  }
+
+  .delivery-event-line .event-type {
+    max-width: 100%;
+  }
+}
+
+/* ---------- Filters ---------- */
+
+/* Links that switch the filter of a list; the current one has aria-current. */
+.filter-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  margin: 0 0 1rem;
+}
+
+.filter-tab {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.25rem;
+  padding: 0 0.875rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--ink-2);
+  text-decoration: none;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+}
+
+.filter-tab:hover {
+  text-decoration: none;
+  background: var(--surface-2);
+}
+
+.filter-tab[aria-current="page"] {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+@media (pointer: coarse), (max-width: 639px) {
+  .filter-tab {
+    min-height: 2.75rem;
+  }
+}
+
+.filter-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem 1rem;
+  margin: 0 0 1.25rem;
+  padding: 0.875rem 1rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+}
+
+.filter-form label {
+  display: flex;
+  flex: 1 1 12rem;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.filter-form input,
+.filter-form select {
+  width: 100%;
+}
+
+.filter-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.filter-form-actions a {
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.filter-form + .hint {
+  margin: -0.75rem 0 1.25rem;
+}
+
+/* The deliveries of an event in the event list, at the end of its meta line. */
+.event-deliveries {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-left: auto;
+}
+
+/* ---------- Event data ---------- */
+
+.data-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.75rem;
+  min-width: 0;
+}
+
+.data-head .data-name {
+  overflow-wrap: anywhere;
+}
+
+.data-download {
+  min-height: 2.25rem;
+  margin-left: auto;
+  font-size: 0.875rem;
+}
+
+.data-list p[role] {
+  margin: 0;
+}
+
+.data-preview {
+  margin: 0.375rem 0 0;
+}
+
+.data-preview > summary {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--link);
+  cursor: pointer;
+}
+
+.data-preview pre {
+  max-height: 24rem;
+  margin: 0.5rem 0 0;
+  padding: 0.75rem 0.875rem;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  /* Long values scroll sideways instead of breaking the structure. */
+  white-space: pre;
+  overflow-wrap: normal;
+  overflow-wrap: anywhere;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.data-image {
+  display: block;
+  max-width: 100%;
+  max-height: 20rem;
+  margin: 0.5rem 0 0;
+  object-fit: contain;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+/* The sections of a source: the bots that receive its events and its newest events. */
+.source-section {
+  margin: 2.25rem 0 0;
+}
+
+.source-section .list {
+  margin-bottom: 0;
 }
 
 /* ---------- Conversations ---------- */
@@ -1305,6 +1793,47 @@ textarea {
   border-radius: var(--radius-lg);
 }
 
+/* The speakers' hues: a bar on the left and the avatar. */
+.chat-message[class*="speaker-"] {
+  border-left: 3px solid var(--speaker);
+}
+
+.speaker-0 { --speaker: #3655a0; }
+.speaker-1 { --speaker: #5b4bb7; }
+.speaker-2 { --speaker: #2c6e8f; }
+.speaker-3 { --speaker: #7a3e9d; }
+.speaker-4 { --speaker: #0f6f86; }
+.speaker-5 { --speaker: #6a5a8c; }
+
+@media (prefers-color-scheme: dark) {
+  .speaker-0 { --speaker: #8ea7ee; }
+  .speaker-1 { --speaker: #a99cf0; }
+  .speaker-2 { --speaker: #7cc0e3; }
+  .speaker-3 { --speaker: #c79be6; }
+  .speaker-4 { --speaker: #62c6dd; }
+  .speaker-5 { --speaker: #b9a8de; }
+}
+
+.chat-avatar {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  align-self: center;
+  width: 1.375rem;
+  height: 1.375rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #fff;
+  background: var(--speaker, var(--accent));
+  border-radius: 999px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .chat-avatar {
+    color: #0c111c;
+  }
+}
+
 .chat-message-user {
   align-self: flex-end;
   background: var(--accent-soft);
@@ -1348,31 +1877,72 @@ textarea {
 /* Sources → bots → destinations: three columns with lines between the cards on wide screens, one card per bot on
    phones. Both are in the DOM; the one not shown is display: none. */
 .flow {
-  margin: 0 0 1.25rem;
-  padding: 0.75rem 1rem 1rem;
-  background: var(--surface);
+  margin: 0 0 2rem;
+  padding: 1.125rem 1.25rem 1.375rem;
+  background:
+    radial-gradient(120% 90% at 100% 0%, color-mix(in srgb, var(--accent-soft) 70%, transparent) 0%, transparent 55%),
+    var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
 }
 
 .flow-head {
   display: flex;
-  align-items: center;
+  flex-wrap: wrap;
+  align-items: baseline;
   justify-content: space-between;
-  gap: 0.5rem;
+  gap: 0.25rem 1rem;
+  margin-bottom: 1rem;
 }
 
 .flow-head h2 {
   min-width: 0;
   margin: 0;
-  font-family: var(--font-serif);
-  font-size: 1.125rem;
-  font-weight: 600;
+  font-size: 1.0625rem;
+  font-weight: 700;
   line-height: 1.4;
 }
 
-.flow-head + div {
-  margin-top: 0.75rem;
+/* What the two kinds of lines mean. */
+.flow .flow-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--ink-3);
+}
+
+.flow-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.flow-legend-line {
+  width: 1.5rem;
+  border-top: 2px solid var(--accent);
+}
+
+.flow-legend-line.is-dashed {
+  border-top: 2px dashed var(--ink-3);
+}
+
+/* The dot travelling along an edge events take. */
+.flow-pulse {
+  fill: var(--accent);
+  transition: opacity 0.15s;
+}
+
+.flow-pulse.is-dimmed {
+  opacity: 0.2;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flow-pulse {
+    display: none;
+  }
 }
 
 .flow p {
@@ -1400,8 +1970,8 @@ textarea {
 
 .flow-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.5rem 2.5rem;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1fr) minmax(0, 1.1fr);
+  gap: 0.5rem 4.5rem;
   align-items: start;
 }
 
@@ -1424,9 +1994,19 @@ textarea {
 .flow-rows {
   grid-column: 2 / 4;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.5rem 2.5rem;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+  gap: 0.5rem 4.5rem;
   min-width: 0;
+}
+
+/* A bot is as tall as its content; its destination sets the height of the row. */
+.flow-rows > .flow-node:nth-child(odd) {
+  align-self: start;
+}
+
+.flow-card:hover {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  background: var(--surface);
 }
 
 .flow-node {
@@ -1561,30 +2141,82 @@ textarea {
   border-radius: var(--radius);
 }
 
-.flow .flow-stack-item p {
-  max-width: 100%;
-  min-width: 0;
+/* Each bot as three steps on a line: sources, the bot, its destination. */
+.flow-steps {
   margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
-.flow-stack-arrow {
-  padding-left: 0.25rem;
-  line-height: 1;
+.flow-step {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-width: 0;
+  padding: 0 0 0.75rem 1.25rem;
+}
+
+.flow-step:last-child {
+  padding-bottom: 0;
+}
+
+/* The dot of the step. */
+.flow-step::before {
+  position: absolute;
+  top: 0.4rem;
+  left: 0;
+  width: 0.5rem;
+  height: 0.5rem;
+  content: "";
+  background: var(--accent);
+  border-radius: 999px;
+}
+
+/* The line to the next step. */
+.flow-step:not(:last-child)::after {
+  position: absolute;
+  top: 1rem;
+  bottom: 0.1rem;
+  left: calc(0.25rem - 1px);
+  width: 2px;
+  content: "";
+  background: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.flow-step:has(+ .flow-step.is-stopped)::after {
+  background: none;
+  border-left: 2px dashed var(--line-strong);
+}
+
+.flow-step.is-stopped::before {
+  background: var(--warning);
+}
+
+.flow-step-label {
+  font-size: 0.75rem;
+  font-weight: 600;
   color: var(--ink-3);
 }
 
-.flow .flow-stack-delivery {
+.flow-step-value {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0.125rem 0.5rem;
+  min-width: 0;
 }
 
 .flow-unlinked {
   font-size: 0.875rem;
 }
 
-@media (max-width: 639px) {
+/* The lines need room: below 760px of the map's own width, each bot is listed with its sources instead. */
+.flow {
+  container-type: inline-size;
+}
+
+@container (width < 760px) {
   .flow-canvas {
     display: none;
   }
@@ -1592,6 +2224,358 @@ textarea {
   .flow-stack {
     display: block;
   }
+}
+
+/* ---------- Overview ---------- */
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin: 0 0 1.25rem;
+  padding: 0;
+  list-style: none;
+}
+
+.stat {
+  min-width: 0;
+}
+
+.stat-link {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  height: 100%;
+  padding: 0.875rem 1rem 1rem;
+  color: var(--ink);
+  text-decoration: none;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+
+/* An arrow at the top right: each figure opens its screen. */
+.stat-link {
+  position: relative;
+}
+
+.stat-link::after {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.875rem;
+  font-size: 0.9375rem;
+  line-height: 1;
+  color: var(--ink-3);
+  content: "→";
+  transition:
+    color 0.15s,
+    transform 0.15s;
+}
+
+.stat-link:hover::after {
+  color: var(--accent);
+  transform: translateX(2px);
+}
+
+.stat-link:hover {
+  text-decoration: none;
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  box-shadow: var(--shadow);
+}
+
+.stat-label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--ink-3);
+}
+
+.stat-value {
+  font-size: 1.75rem;
+  font-weight: 700;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.stat-value-text {
+  font-size: 1.0625rem;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+.stat-unit {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.stat-note {
+  font-size: 0.8125rem;
+  color: var(--ink-2);
+  word-break: auto-phrase;
+}
+
+.stat-value {
+  white-space: nowrap;
+}
+
+.stat-value.is-error {
+  color: var(--danger);
+}
+
+.stat-note.is-error {
+  font-weight: 600;
+  color: var(--danger);
+}
+
+.stat-note.is-warning {
+  font-weight: 600;
+  color: var(--warning);
+}
+
+.overview-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 1.5rem;
+  align-items: start;
+}
+
+.overview-section {
+  min-width: 0;
+}
+
+.section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.25rem 1rem;
+  margin: 0 0 0.75rem;
+}
+
+.section-head h2 {
+  margin: 0;
+  font-size: 1.0625rem;
+  font-weight: 700;
+}
+
+.section-head a {
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.empty-note {
+  margin: 0;
+  padding: 1rem 1.125rem;
+  color: var(--ink-2);
+  background: var(--surface);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-lg);
+}
+
+.failure-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0 0.75rem;
+}
+
+.failure-destination {
+  min-width: 0;
+  font-weight: 700;
+}
+
+.failure-head time {
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+}
+
+.failure-reason {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--danger);
+}
+
+@media (width < 1100px) {
+  .stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .overview-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 479px) {
+  /* The time keeps one place on phones: a line of its own under the type and the source. */
+  .event-time {
+    flex-basis: 100%;
+    margin-left: 0;
+  }
+
+  .delivery-event-summary {
+    display: -webkit-box;
+    overflow: hidden;
+    white-space: normal;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+  }
+
+  .stats {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.5rem;
+  }
+
+  .stat-link {
+    padding: 0.75rem 0.875rem;
+  }
+
+  .stat-value {
+    font-size: 1.5rem;
+  }
+
+}
+
+
+/* ---------- Round 3 refinements ---------- */
+
+/* A quiet button for operations that can be undone (stopping a subscription the AI can make again). */
+/* A small button inside a line of facts. */
+.button-small {
+  min-height: 2rem;
+  padding: 0 0.75rem;
+  font-size: 0.8125rem;
+}
+
+.button-quiet {
+  color: var(--ink-2);
+}
+
+/* A warning with the action that fixes it. */
+.callout {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  padding: 0.875rem 1.125rem;
+  background: var(--warning-soft);
+  border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
+  border-radius: var(--radius-lg);
+}
+
+.callout p {
+  margin: 0;
+}
+
+.event-title-type {
+  margin: 0 0 0.375rem;
+}
+
+.delivery-no-retry {
+  margin-left: auto;
+  font-size: 0.8125rem;
+  color: var(--ink-3);
+}
+
+.list-end {
+  margin: 0.5rem 0 0;
+  font-size: 0.8125rem;
+  text-align: center;
+  color: var(--ink-3);
+}
+
+.failure-destination {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.5rem;
+}
+
+/* The reason of a failure in the text color: the badge carries the red. */
+.failure-reason {
+  font-weight: 400;
+  color: var(--ink-2);
+}
+
+/* Shadows at the edges of a preview that scrolls, so that more content is visibly there. */
+.data-preview pre {
+  background:
+    linear-gradient(var(--surface-2) 30%, transparent) top / 100% 1.5rem no-repeat local,
+    linear-gradient(transparent, var(--surface-2) 70%) bottom / 100% 1.5rem no-repeat local,
+    radial-gradient(farthest-side at 50% 0, rgb(0 0 0 / 0.14), transparent) top / 100% 0.625rem no-repeat scroll,
+    radial-gradient(farthest-side at 50% 100%, rgb(0 0 0 / 0.14), transparent) bottom / 100% 0.625rem no-repeat scroll,
+    var(--surface-2);
+}
+
+@media (max-width: 479px) {
+  .stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .stat-value-text {
+    font-size: 0.9375rem;
+    white-space: normal;
+  }
+}
+
+
+/* ---------- Round 4 refinements ---------- */
+
+/* The operations of a card sit at its top right; on phones, on a line of their own under the title. */
+.delivery-head > .item-actions,
+.delivery-head > button {
+  display: inline-flex;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+@media (max-width: 479px) {
+  .delivery-head > .item-actions,
+  .delivery-head > button {
+    flex-basis: 100%;
+    margin-left: 0;
+  }
+
+  .delivery-head > button {
+    flex-basis: auto;
+  }
+}
+
+/* The filter fields line up: the same height for inputs, selects and the button, quiet placeholders. */
+.filter-form input,
+.filter-form select,
+.filter-form button {
+  height: 2.5rem;
+  min-height: 2.5rem;
+}
+
+::placeholder {
+  font-weight: 400;
+  color: var(--ink-3);
+  opacity: 1;
+}
+
+.chat-text {
+  word-break: auto-phrase;
+}
+
+/* The failure list: the time always on the second line, under the destination. */
+.failure-head {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.125rem;
+}
+
+.flow-orphans {
+  margin-top: 1rem;
 }
 
 @media (prefers-reduced-motion: reduce) {

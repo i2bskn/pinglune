@@ -1,19 +1,37 @@
 import { Hono } from "hono";
 import { validator } from "hono/validator";
-import type { DeliveryList } from "../api/types";
-import { apiError, requireUser } from "../auth/middleware";
-import { listWorkspaceDeliveries } from "../deliveries/queries";
+import type { Delivery, DeliveryList, DeliveryListItem, DeliveryStatus } from "../api/types";
+import { apiError, describeError, requireUser } from "../auth/middleware";
+import { clock } from "../clock";
+import type { Db } from "../db/client";
+import {
+  findWorkspaceDelivery,
+  listWorkspaceDeliveries,
+  resetFailedDelivery,
+  revertRetry,
+  toApiDeliveries,
+} from "../deliveries/queries";
 import type { AppEnv } from "../env";
+import { findWorkspaceEventsByIds } from "../events/queries";
 import { DELIVERY_ID_PATTERN, EVENT_ID_PATTERN } from "../ids";
+import { findSubscriptionById, isActiveSubscription } from "../subscriptions/queries";
 import { requirePersonalWorkspace } from "./workspace";
 
-type ListQuery = { cursor?: string; event_id?: string };
+const deliveryNotFound = "配信が見つかりません";
 
-// cursor: the last delivery id of the previous page. event_id: only the deliveries of that event. Any other
-// value, including "", is 400.
+const DELIVERY_STATUSES: readonly DeliveryStatus[] = ["pending", "delivered", "failed"];
+
+function isDeliveryStatus(value: string): value is DeliveryStatus {
+  return (DELIVERY_STATUSES as readonly string[]).includes(value);
+}
+
+type ListQuery = { cursor?: string; event_id?: string; status?: DeliveryStatus };
+
+// cursor: the last delivery id of the previous page. event_id: only the deliveries of that event. status: only the
+// deliveries in that status. Any other value, including "" and a repeated parameter, is 400.
 const listQuery = validator("query", (value: Record<string, string | string[]>, c) => {
   const query: ListQuery = {};
-  const { cursor, event_id: eventId } = value;
+  const { cursor, event_id: eventId, status } = value;
   if (cursor !== undefined) {
     if (typeof cursor !== "string" || !DELIVERY_ID_PATTERN.test(cursor)) {
       return apiError(c, 400, "invalid_cursor", "cursor が正しくありません");
@@ -26,20 +44,94 @@ const listQuery = validator("query", (value: Record<string, string | string[]>, 
     }
     query.event_id = eventId;
   }
+  if (status !== undefined) {
+    if (typeof status !== "string" || !isDeliveryStatus(status)) {
+      return apiError(c, 400, "invalid_status", "状態が正しくありません");
+    }
+    query.status = status;
+  }
   return query;
 });
+
+// Adds the type, the summary and the source name of the event of each delivery, in one query for the events (and
+// one for the names of their sources). The messages of conversations are found too.
+async function withEvents(db: Db, workspaceId: string, deliveries: Delivery[]): Promise<DeliveryListItem[]> {
+  const events = await findWorkspaceEventsByIds(
+    db,
+    workspaceId,
+    deliveries.map((delivery) => delivery.event_id),
+  );
+  const byId = new Map(events.map((event) => [event.event_id, event]));
+  return deliveries.map((delivery) => {
+    const event = byId.get(delivery.event_id);
+    return {
+      ...delivery,
+      event: event === undefined ? null : { type: event.type, summary: event.summary, source_name: event.source.name },
+    };
+  });
+}
 
 const deliveriesApi = new Hono<AppEnv>()
   .use("*", requireUser, requirePersonalWorkspace)
   .get("/", listQuery, async (c) => {
-    const { cursor, event_id: eventId } = c.req.valid("query");
+    const { cursor, event_id: eventId, status } = c.req.valid("query");
+    const db = c.get("db");
+    const workspaceId = c.get("workspace").id;
     // Scoped to the workspace: an event of another workspace gives an empty list.
-    const { deliveries, nextCursor } = await listWorkspaceDeliveries(c.get("db"), c.get("workspace").id, {
-      cursor,
-      eventId,
-    });
-    const body: DeliveryList = { deliveries, next_cursor: nextCursor };
+    const { deliveries, nextCursor } = await listWorkspaceDeliveries(db, workspaceId, { cursor, eventId, status });
+    const body: DeliveryList = { deliveries: await withEvents(db, workspaceId, deliveries), next_cursor: nextCursor };
     return c.json(body, 200);
+  })
+  // Sends a failed delivery to a webhook destination or an MCP Events subscription again, from the first try. Allowed
+  // whatever the bots link now and whether the conversation is stopped: the same delivery goes to the same
+  // destination again. The consumer still checks that the destination is active when it sends.
+  .post("/:id/retry", async (c) => {
+    const id = c.req.param("id");
+    if (!DELIVERY_ID_PATTERN.test(id)) return apiError(c, 404, "not_found", deliveryNotFound);
+    const db = c.get("db");
+    const d1 = c.env.DB;
+    const workspaceId = c.get("workspace").id;
+    const row = await findWorkspaceDelivery(db, workspaceId, id);
+    if (!row) return apiError(c, 404, "not_found", deliveryNotFound);
+    const subscription = await findSubscriptionById(db, row.subscriptionId);
+    if (!subscription) {
+      return apiError(c, 409, "not_retryable", "配信先が見つからないため再送できません");
+    }
+    if (subscription.kind === "queue") {
+      return apiError(c, 409, "not_retryable", "ポーリング用キューの配信は再送できません");
+    }
+    if (row.status !== "failed") return apiError(c, 409, "not_retryable", "失敗した配信だけを再送できます");
+    const now = clock.now();
+    if (!isActiveSubscription(subscription, now)) {
+      return apiError(c, 409, "not_retryable", "配信先が終了しているため再送できません");
+    }
+    // A retry at the same time (or a change of the status since the read above) updates nothing.
+    if (!(await resetFailedDelivery(d1, workspaceId, id, now))) {
+      return apiError(c, 409, "not_retryable", "失敗した配信だけを再送できます");
+    }
+    try {
+      await c.env.DELIVERY_QUEUE.send({ delivery_id: id });
+    } catch (error) {
+      console.error("enqueueing a retried delivery failed", { deliveryId: id, ...describeError(error) });
+      try {
+        await revertRetry(d1, id, clock.now());
+      } catch (revertError) {
+        // Left pending without a message; see "配信の再送" in docs/api.md. The error goes to onError (500).
+        console.error("reverting a retried delivery failed", { deliveryId: id, ...describeError(revertError) });
+        throw revertError;
+      }
+      return apiError(
+        c,
+        503,
+        "temporarily_unavailable",
+        "再送を受け付けられませんでした。しばらくしてからもう一度お試しください",
+      );
+    }
+    const updated = await findWorkspaceDelivery(db, workspaceId, id);
+    if (!updated) return apiError(c, 404, "not_found", deliveryNotFound);
+    const [delivery] = await withEvents(db, workspaceId, await toApiDeliveries(db, [updated]));
+    if (!delivery) return apiError(c, 404, "not_found", deliveryNotFound);
+    return c.json(delivery, 200);
   });
 
 export default deliveriesApi;

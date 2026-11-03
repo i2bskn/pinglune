@@ -18,8 +18,11 @@ import {
   loadConversationForm,
   loadConversationMessages,
   loadConversations,
+  loadDeliveries,
   loadDeliveriesView,
   loadEvents,
+  loadEventsView,
+  loadSourceBots,
   loadFlow,
   loadSourceDetail,
   loadUsersView,
@@ -249,6 +252,70 @@ describe("loadEvents", () => {
   });
 });
 
+describe("loadEvents with a filter", () => {
+  const page = { events: [], next_cursor: null };
+
+  it("sends the type and the source, leaving out empty values", async () => {
+    const { client, calls } = setup({
+      "/api/v1/events?type=alert.observed&source_id=src_1&cursor=evt_1": [json(200, page)],
+      "/api/v1/events?source_id=src_1": [json(200, page)],
+    });
+    expect(await loadEvents(client, "evt_1", { type: "alert.observed", sourceId: "src_1" })).toEqual({
+      kind: "ready",
+      data: page,
+    });
+    expect(await loadEvents(client, undefined, { type: " ", sourceId: "src_1" })).toEqual({ kind: "ready", data: page });
+    expect(calls("/api/v1/events?source_id=src_1")).toBe(1);
+  });
+});
+
+describe("loadEventsView", () => {
+  const page = { events: [], next_cursor: null };
+  const SOURCE: Source = { id: "src_1", name: "app", enabled: true, created_at: 1, updated_at: 1, active_key_count: 1 };
+
+  it("loads the events with the filter and the sources", async () => {
+    const { client } = setup({
+      "/api/v1/events?type=t": [json(200, page)],
+      "/api/v1/sources": [json(200, { sources: [SOURCE] })],
+    });
+    expect(await loadEventsView(client, { type: "t", sourceId: "" })).toEqual({
+      kind: "ready",
+      data: { events: page, eventsError: null, sources: [SOURCE], sourcesError: null },
+    });
+  });
+
+  it("keeps the screen when the filter is rejected or the sources fail", async () => {
+    const { client } = setup({
+      "/api/v1/events?type=T": [apiError(400, "種類が正しくありません")],
+      "/api/v1/sources": [apiError(500, "サーバーでエラーが発生しました")],
+    });
+    expect(await loadEventsView(client, { type: "T", sourceId: "" })).toEqual({
+      kind: "ready",
+      data: { events: null, eventsError: "種類が正しくありません", sources: [], sourcesError: "サーバーでエラーが発生しました" },
+    });
+  });
+
+  it("is an error when the events fail otherwise", async () => {
+    const { client } = setup({
+      "/api/v1/events": [apiError(500, "サーバーでエラーが発生しました")],
+      "/api/v1/sources": [json(200, { sources: [SOURCE] })],
+    });
+    expect(await loadEventsView(client, { type: "", sourceId: "" })).toEqual({
+      kind: "error",
+      message: "サーバーでエラーが発生しました",
+    });
+  });
+});
+
+describe("loadSourceBots", () => {
+  it("returns the bots linked to the source", async () => {
+    const linked: Bot = { ...BOT, id: "bot_1", sources: [{ id: "src_1", name: "app", enabled: true }] };
+    const other: Bot = { ...BOT, id: "bot_2", sources: [{ id: "src_2", name: "other", enabled: true }] };
+    const { client } = setup({ "/api/v1/bots": [json(200, { bots: [linked, other, BOT] })] });
+    expect(await loadSourceBots(client, "src_1")).toEqual({ kind: "ready", data: [linked] });
+  });
+});
+
 describe("loadSourceDetail", () => {
   const SOURCE: Source = { id: "src_1", name: "app", enabled: true, created_at: 1, updated_at: 1, active_key_count: 1 };
   const KEY: ApiKey = { key_id: "abcdefghij012345", created_at: 1, last_used_at: null, revoked_at: null };
@@ -349,28 +416,39 @@ describe("loadDeliveriesView", () => {
         last_error: null,
         delivered_at: null,
         created_at: 1,
+        event: { type: "alert.observed", summary: "s", source_name: "app" },
       },
     ],
     next_cursor: null,
   };
 
-  it("passes the subscriptions of every kind and the deliveries as they are", async () => {
-    const { client } = setup({
+  // The deliveries moved to the delivery history: this screen reads the subscriptions only.
+  it("passes the subscriptions of every kind as they are", async () => {
+    const { client, calls } = setup({
       "/api/v1/subscriptions": [json(200, { subscriptions: [MCP, WEBHOOK, QUEUE] })],
-      "/api/v1/deliveries": [json(200, DELIVERIES)],
     });
     expect(await loadDeliveriesView(client)).toEqual({
       kind: "ready",
-      data: { subscriptions: [MCP, WEBHOOK, QUEUE], deliveries: DELIVERIES },
+      data: { subscriptions: [MCP, WEBHOOK, QUEUE] },
     });
+    expect(calls("/api/v1/deliveries")).toBe(0);
   });
 
   it("is an error with the API message when the subscriptions fail", async () => {
     const { client } = setup({
       "/api/v1/subscriptions": [apiError(500, "サーバーでエラーが発生しました")],
-      "/api/v1/deliveries": [json(200, DELIVERIES)],
     });
     expect(await loadDeliveriesView(client)).toEqual({ kind: "error", message: "サーバーでエラーが発生しました" });
+  });
+
+  it("loads the delivery history with the status and the cursor", async () => {
+    const { client, calls } = setup({
+      "/api/v1/deliveries?status=failed": [json(200, DELIVERIES)],
+      "/api/v1/deliveries?cursor=dlv_1&status=failed": [json(200, DELIVERIES)],
+    });
+    expect(await loadDeliveries(client, { status: "failed" })).toEqual({ kind: "ready", data: DELIVERIES });
+    expect(await loadDeliveries(client, { cursor: "dlv_1", status: "failed" })).toEqual({ kind: "ready", data: DELIVERIES });
+    expect(calls("/api/v1/deliveries?cursor=dlv_1&status=failed")).toBe(1);
   });
 });
 
@@ -386,7 +464,7 @@ describe("conversations", () => {
     participants: [
       {
         name: "dot",
-        bot: { id: "bot_01JC9Z7H2K4M6N8P0Q2R4S6T8V", name: "dot", deleted: false },
+        bot: { id: "bot_01JC9Z7H2K4M6N8P0Q2R4S6T8V", name: "dot", deleted: false, delivery_kind: "webhook" },
         connection_client_name: "dot",
         destination: { kind: "webhook", name: "dot", callback_host: "hooks.example.com", status: "active" },
       },

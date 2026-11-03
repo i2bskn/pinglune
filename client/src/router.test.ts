@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type ClickEvent, matchRoute, navigate, shouldHandleClick } from "./router";
+import { type ClickEvent, matchRoute, navigate, searchParams, shouldHandleClick } from "./router";
 
 describe("matchRoute", () => {
   it("matches the screens", () => {
     expect(matchRoute("/")).toEqual({ name: "home" });
+    expect(matchRoute("/events")).toEqual({ name: "events" });
   });
 
   it("matches the users screen exactly", () => {
@@ -26,6 +27,13 @@ describe("matchRoute", () => {
     expect(matchRoute(`/sources/${sourceId}`)).toEqual({ name: "source", id: sourceId });
   });
 
+  it("matches the delivery history screen", () => {
+    expect(matchRoute("/deliveries/history")).toEqual({ name: "deliveryHistory" });
+    expect(matchRoute("/deliveries/history?status=failed")).toEqual({ name: "deliveryHistory" });
+    expect(matchRoute("/deliveries/history/")).toEqual({ name: "notFound" });
+    expect(matchRoute("/deliveries/other")).toEqual({ name: "notFound" });
+  });
+
   it("matches the bots screen", () => {
     expect(matchRoute("/bots")).toEqual({ name: "bots" });
     expect(matchRoute("/bots?x=1")).toEqual({ name: "bots" });
@@ -43,7 +51,6 @@ describe("matchRoute", () => {
   });
 
   it.each([
-    "/events",
     "/events/",
     "/events/a/b",
     "/events/a.b",
@@ -66,6 +73,15 @@ describe("matchRoute", () => {
       expect(matchRoute(path)).toEqual({ name: "notFound" });
     },
   );
+});
+
+describe("searchParams", () => {
+  it("reads the query of a path", () => {
+    expect(searchParams("/events?type=a.b&source_id=src_1").get("type")).toBe("a.b");
+    expect(searchParams("/events?type=a.b&source_id=src_1").get("source_id")).toBe("src_1");
+    expect(searchParams("/events").toString()).toBe("");
+    expect(searchParams("/events?").toString()).toBe("");
+  });
 });
 
 describe("navigate", () => {

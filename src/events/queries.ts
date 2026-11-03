@@ -71,6 +71,9 @@ export type ListEventsOptions = {
   // Defaults to EVENT_PAGE_SIZE.
   limit?: number;
   filter?: EventFilter;
+  // Only the events of these sources, by ID. The caller makes sure they are sources of the workspace; events of other
+  // workspaces are never listed anyway. An empty array gives an empty list.
+  sourceIds?: string[];
   // UNIX ms: only events received at or after it.
   receivedSince?: number;
 };
@@ -94,12 +97,16 @@ export async function listWorkspaceEvents(
   workspaceId: string,
   options: ListEventsOptions = {},
 ): Promise<{ events: EventSummary[]; nextCursor: string | null }> {
-  const { cursor, filter, receivedSince } = options;
+  const { cursor, filter, receivedSince, sourceIds } = options;
   const limit = options.limit ?? EVENT_PAGE_SIZE;
   const conditions: SQL[] = [eq(events.workspaceId, workspaceId), isNull(events.conversationId)];
   if (cursor !== undefined) conditions.push(lt(events.id, cursor));
   if (receivedSince !== undefined) conditions.push(gte(events.receivedAt, receivedSince));
   if (filter?.types !== undefined) conditions.push(inArray(events.type, [...new Set(filter.types)]));
+  if (sourceIds !== undefined) {
+    if (sourceIds.length === 0) return { events: [], nextCursor: null };
+    conditions.push(inArray(events.sourceId, [...new Set(sourceIds)]));
+  }
   if (filter?.sources !== undefined) {
     const sourceIds = await workspaceSourceIds(db, workspaceId, filter.sources);
     if (sourceIds.length === 0) return { events: [], nextCursor: null };
@@ -171,4 +178,29 @@ export function findWorkspaceEventData(db: Db, workspaceId: string, dataRef: str
     .from(eventData)
     .where(and(eq(eventData.id, dataRef), eq(eventData.workspaceId, workspaceId)))
     .get();
+}
+
+// One data item only if it belongs to the event and the event to the workspace (the data rows carry the workspace of
+// their event). Used by the download of the management screen.
+export function findEventDataOfEvent(
+  db: Db,
+  workspaceId: string,
+  eventId: string,
+  dataRef: string,
+): Promise<EventDataRow | undefined> {
+  return db
+    .select()
+    .from(eventData)
+    .where(and(eq(eventData.id, dataRef), eq(eventData.eventId, eventId), eq(eventData.workspaceId, workspaceId)))
+    .get();
+}
+
+// Whether the source is a source of programs in the workspace.
+export async function isWorkspaceProgramSource(db: Db, workspaceId: string, sourceId: string): Promise<boolean> {
+  const row = await db
+    .select({ id: sources.id })
+    .from(sources)
+    .where(and(eq(sources.id, sourceId), eq(sources.workspaceId, workspaceId), eq(sources.kind, "program")))
+    .get();
+  return row !== undefined;
 }

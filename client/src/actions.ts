@@ -9,6 +9,7 @@ import type {
   CreateUserRequest,
   CreateWebhookDestinationRequest,
   CreatedApiKey,
+  DeliveryListItem,
   EmailAddress,
   PostConversationMessageRequest,
   Source,
@@ -392,4 +393,23 @@ export async function revokeMcpConnection(
   target: { connection_id: string } | { grant_id: string },
 ): Promise<ResourceActionResult> {
   return resourceActionResult(await send(() => client.api.v1["mcp-connections"].revoke.$post({ json: target })));
+}
+
+export type RetryDeliveryResult = { kind: "ok"; delivery: DeliveryListItem } | SendFailure;
+
+const INVALID_DELIVERY_ID = { kind: "error", message: "配信が見つかりません" } as const;
+
+// Sends a failed delivery again. Returns the delivery as it is now (pending). Errors, including not_retryable (409),
+// temporarily_unavailable (503) and the 404 of a delivery that is gone, are shown with the server's message. Never
+// rejects.
+export async function retryDelivery(client: ApiClient, deliveryId: string): Promise<RetryDeliveryResult> {
+  if (!isValidId(deliveryId)) return INVALID_DELIVERY_ID;
+  const sent = await send(() => client.api.v1.deliveries[":id"].retry.$post({ param: { id: deliveryId } }));
+  if (sent.kind !== "response") return sent;
+  const { res } = sent;
+  if (res.ok) {
+    const body = await okJson<DeliveryListItem>(res);
+    return body.kind === "ok" ? { kind: "ok", delivery: body.value } : body;
+  }
+  return { kind: "error", message: await responseErrorMessage(res) };
 }

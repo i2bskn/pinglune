@@ -3,7 +3,15 @@ import type { Route } from "./router";
 
 // The items of the main navigation. No JSX here, so that the tests can load it in Node; the icons are mapped in
 // views/Sidebar.tsx.
-export type NavItemId = "events" | "sources" | "deliveries" | "bots" | "conversations" | "users";
+export type NavItemId =
+  | "overview"
+  | "events"
+  | "sources"
+  | "deliveries"
+  | "deliveryHistory"
+  | "bots"
+  | "conversations"
+  | "users";
 
 export type NavItem = {
   id: NavItemId;
@@ -15,17 +23,24 @@ export type NavItem = {
 
 export type NavGroup = {
   id: string;
-  label: string;
+  // null: the group is shown without a label (the overview at the top).
+  label: string | null;
   items: readonly NavItem[];
 };
 
 // In the order they are shown.
+// The groups follow the way events go: received from sources, then relayed by bots to their destinations.
 export const NAV_GROUPS: readonly NavGroup[] = [
+  {
+    id: "home",
+    label: null,
+    items: [{ id: "overview", label: "概要", to: "/" }],
+  },
   {
     id: "intake",
     label: "受信",
     items: [
-      { id: "events", label: "イベント", to: "/" },
+      { id: "events", label: "イベント", to: "/events" },
       { id: "sources", label: "送信元", to: "/sources" },
     ],
   },
@@ -33,8 +48,9 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     id: "delivery",
     label: "配信",
     items: [
-      { id: "deliveries", label: "配信", to: "/deliveries" },
       { id: "bots", label: "Bot", to: "/bots" },
+      { id: "deliveries", label: "配信先", to: "/deliveries" },
+      { id: "deliveryHistory", label: "配信履歴", to: "/deliveries/history" },
       { id: "conversations", label: "会話", to: "/conversations" },
     ],
   },
@@ -57,6 +73,8 @@ export function navGroupsFor(role: User["role"]): NavGroup[] {
 export function currentNavItem(route: Route): NavItemId | null {
   switch (route.name) {
     case "home":
+      return "overview";
+    case "events":
     case "event":
       return "events";
     case "sources":
@@ -64,6 +82,8 @@ export function currentNavItem(route: Route): NavItemId | null {
       return "sources";
     case "deliveries":
       return "deliveries";
+    case "deliveryHistory":
+      return "deliveryHistory";
     case "bots":
       return "bots";
     case "conversations":
@@ -78,9 +98,11 @@ export function currentNavItem(route: Route): NavItemId | null {
 
 // The top screen of each item.
 const TOP_SCREEN: Record<NavItemId, Route["name"]> = {
-  events: "home",
+  overview: "home",
+  events: "events",
   sources: "sources",
   deliveries: "deliveries",
+  deliveryHistory: "deliveryHistory",
   bots: "bots",
   conversations: "conversations",
   users: "users",

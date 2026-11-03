@@ -38,7 +38,7 @@ const invalidSourceIdsMessage = "受け取る送信元の指定が正しくあ�
 const sourceNotFound = "送信元が見つかりません";
 const BOT_FIELDS = ["name", "delivery_kind", "delivery_subscription_id", "source_ids"];
 const invalidDeliveryMessage =
-  "通知先が見つからないか、終了しているか、配信方式と合いません。MCP Event では通知先を指定せず、Webhook とキューでは配信画面で作った通知先を選んでください";
+  "配信先が見つからないか、終了しているか、配信方式と合いません。MCP Event では配信先を指定せず、Webhook とキューでは配信先画面で作った配信先を選んでください";
 
 function isDeliveryKind(value: unknown): value is BotDeliveryKind {
   return typeof value === "string" && (DELIVERY_KINDS as readonly string[]).includes(value);
@@ -222,7 +222,7 @@ async function conflict(c: AppContext, workspaceId: string, name: string, except
     .bind(workspaceId, name, exceptId ?? "")
     .first<{ id: string }>();
   if (sameName !== null) return apiError(c, 409, "name_conflict", "同じ名前の Bot があります");
-  return apiError(c, 409, "delivery_in_use", "この通知先は別の Bot が使っています");
+  return apiError(c, 409, "delivery_in_use", "この配信先は別の Bot が使っています");
 }
 
 async function findBot(c: AppContext, includeDeleted: boolean): Promise<BotRow | undefined> {

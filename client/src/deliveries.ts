@@ -25,6 +25,8 @@ export function isQueueDelivery(delivery: Delivery): boolean {
 }
 
 export function deliveryStatusLabel(delivery: Delivery): string {
+  // A webhook or MCP delivery that has been tried and will be tried again.
+  if (!isQueueDelivery(delivery) && delivery.status === "pending" && delivery.attempts > 0) return "未配信（再試行待ち）";
   return (isQueueDelivery(delivery) ? QUEUE_DELIVERY_STATUS_LABELS : DELIVERY_STATUS_LABELS)[delivery.status];
 }
 
@@ -33,7 +35,13 @@ export function deliveryDestination(delivery: Delivery): string {
   if (isQueueDelivery(delivery)) {
     return delivery.destination_name === null ? "キュー" : `キュー: ${delivery.destination_name}`;
   }
-  return delivery.callback_host ?? "不明な宛先";
+  return delivery.destination_name ?? delivery.callback_host ?? "不明な宛先";
+}
+
+// The destination of a delivery next to its kind: the name of a webhook destination or a polling queue, otherwise the
+// callback host.
+export function destinationLabel(delivery: Delivery): string {
+  return delivery.destination_name ?? delivery.callback_host ?? "不明な宛先";
 }
 
 // The number of tries, e.g. "試行 2 回"; for a polling queue, the number of times it was taken.
@@ -61,9 +69,10 @@ const ERROR_LABELS: Record<string, string> = {
   payload_too_large: "イベントが大きすぎます",
   secret_unavailable: "鍵を読めませんでした",
   dead_lettered: "処理を完了できませんでした",
-  not_acknowledged: "処理済みの連絡がないまま 5 回取得された",
+  not_acknowledged: "処理済みの連絡がないまま、取得できる回数の上限に達しました",
   expired: "7 日間処理されなかった",
   conversation_stopped: "会話が停止された",
+  retry_enqueue_failed: "再送を受け付けられませんでした",
 };
 
 export function errorLabel(error: string): string {
@@ -77,10 +86,46 @@ export function lastResult(delivery: Delivery): string | null {
     if (delivery.last_error !== null) return errorLabel(delivery.last_error);
     return delivery.status === "delivered" ? "処理済み" : null;
   }
-  const status = delivery.last_http_status === null ? "" : `（HTTP ${delivery.last_http_status}）`;
+  const status = delivery.last_http_status === null ? "" : `（HTTP\u00a0${delivery.last_http_status}）`;
   if (delivery.last_error !== null) return `${errorLabel(delivery.last_error)}${status}`;
   if (delivery.status === "delivered") return `成功${status}`;
   return null;
+}
+
+// Whether the screen offers to send a delivery again: failed deliveries to webhook destinations and MCP Events
+// subscriptions. The server checks it again, along with whether the destination is still active.
+export function canRetry(delivery: Delivery): boolean {
+  if (delivery.status !== "failed") return false;
+  // A webhook destination that had ended never comes back (an MCP Events subscription may be made again).
+  if (delivery.destination_kind === "webhook") return delivery.last_error !== "subscription_inactive";
+  return delivery.destination_kind === "mcp";
+}
+
+// Why the screen offers no retry for a failed delivery, or null when it does (or the delivery has not failed).
+export function noRetryReason(delivery: Delivery): string | null {
+  if (delivery.status !== "failed" || canRetry(delivery)) return null;
+  if (delivery.destination_kind === "queue") return "キューの配信は再送できません";
+  if (delivery.destination_kind === "webhook") return "配信先が終了しているため再送できません";
+  return "配信先が見つからないため再送できません";
+}
+
+// The filters of the delivery history, in the order they are shown. null shows every delivery.
+export const DELIVERY_STATUS_FILTERS: readonly { status: DeliveryStatus | null; label: string }[] = [
+  { status: null, label: "すべて" },
+  { status: "failed", label: "失敗" },
+  { status: "pending", label: "未配信" },
+  { status: "delivered", label: "配信済み" },
+];
+
+// The status in the query of the delivery history; null without one or for an unknown value (every delivery is shown).
+export function statusFilterOf(params: URLSearchParams): DeliveryStatus | null {
+  const status = params.get("status");
+  return status === "pending" || status === "delivered" || status === "failed" ? status : null;
+}
+
+// The path of the delivery history, with the status filter if any.
+export function deliveryHistoryPath(status: DeliveryStatus | null): string {
+  return status === null ? "/deliveries/history" : `/deliveries/history?status=${status}`;
 }
 
 function stringList(value: unknown): string[] | null {

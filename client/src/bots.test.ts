@@ -72,7 +72,7 @@ describe("bot requests", () => {
     });
     expect(createBotRequest({ name: "Muse", deliveryKind: "queue", deliverySubscriptionId: "", sourceIds: [] })).toEqual({
       ok: false,
-      message: "通知先を選んでください",
+      message: "配信先を選んでください",
     });
   });
 

@@ -2,11 +2,13 @@ import { useSyncExternalStore } from "react";
 
 export type Route =
   | { name: "home" }
+  | { name: "events" }
   | { name: "event"; id: string }
   | { name: "sources" }
   | { name: "source"; id: string }
   | { name: "users" }
   | { name: "deliveries" }
+  | { name: "deliveryHistory" }
   | { name: "bots" }
   | { name: "conversations" }
   | { name: "conversation"; id: string }
@@ -26,9 +28,11 @@ export function matchRoute(path: string): Route {
   const index = path.indexOf("?");
   const pathname = index === -1 ? path : path.slice(0, index);
   if (pathname === "/") return { name: "home" };
+  if (pathname === "/events") return { name: "events" };
   if (pathname === "/users") return { name: "users" };
   if (pathname === "/sources") return { name: "sources" };
   if (pathname === "/deliveries") return { name: "deliveries" };
+  if (pathname === "/deliveries/history") return { name: "deliveryHistory" };
   if (pathname === "/bots") return { name: "bots" };
   if (pathname === "/conversations") return { name: "conversations" };
   const event = /^\/events\/([^/]+)$/.exec(pathname);
@@ -38,6 +42,12 @@ export function matchRoute(path: string): Route {
   const conversation = /^\/conversations\/([^/]+)$/.exec(pathname);
   if (conversation?.[1] !== undefined && isValidId(conversation[1])) return { name: "conversation", id: conversation[1] };
   return { name: "notFound" };
+}
+
+// The query of a path (the part after "?"), empty without one.
+export function searchParams(path: string): URLSearchParams {
+  const index = path.indexOf("?");
+  return new URLSearchParams(index === -1 ? "" : path.slice(index + 1));
 }
 
 // Notified by navigate(); popstate covers the back and forward buttons.

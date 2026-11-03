@@ -6,6 +6,7 @@ import type {
   ConversationDetail,
   ConversationList,
   ConversationMessageList,
+  DeliveryList,
   EventDetail,
   EventList,
   McpConnectionList,
@@ -314,13 +315,13 @@ describe("POST /api/v1/conversations", () => {
       participants: [
         {
           name: "dot",
-          bot: { id: dotBot.id, name: "dot", deleted: false },
+          bot: { id: dotBot.id, name: "dot", deleted: false, delivery_kind: "webhook" },
           connection_client_name: "dot",
           destination: { kind: "webhook", name: "dot", callback_host: "hooks.example.com", status: "active" },
         },
         {
           name: "Grok",
-          bot: { id: grokBot.id, name: "Grok", deleted: false },
+          bot: { id: grokBot.id, name: "Grok", deleted: false, delivery_kind: "queue" },
           connection_client_name: "Grok Bot",
           destination: { kind: "queue", name: "grok", callback_host: null, status: "active" },
         },
@@ -448,7 +449,7 @@ describe("POST /api/v1/conversations", () => {
     const lonely = await createBot("lonely", "mcp", null);
     const created = await createConversation({ participants: [{ bot_id: lonely.id }] });
     expect(created.participants).toEqual([
-      { name: "lonely", bot: { id: lonely.id, name: "lonely", deleted: false }, connection_client_name: null, destination: null },
+      { name: "lonely", bot: { id: lonely.id, name: "lonely", deleted: false, delivery_kind: "mcp" }, connection_client_name: null, destination: null },
     ]);
     expect(await countTable("events")).toBe(1);
     expect(await listDeliveries()).toEqual([]);
@@ -1122,5 +1123,39 @@ describe("deleting the user", () => {
     expect(await countTable("conversation_participants")).toBe(0);
     expect(await countTable("events")).toBe(0);
     expect(await countTable("sources")).toBe(0);
+  });
+});
+
+describe("the messages of conversations on the management screen", () => {
+  it("serves the body of a message and shows its event in the delivery history", async () => {
+    const created = await createConversation();
+    const [message] = (await messages(created.id)).messages;
+    if (!message) throw new Error("no message");
+    const detail = (await (await send(`/api/v1/events/${message.event_id}`, { cookies: aliceCookies })).json()) as EventDetail;
+    const [body] = detail.data;
+    if (!body) throw new Error("no body");
+
+    const res = await send(`/api/v1/events/${message.event_id}/data/${body.data_ref}`, { cookies: aliceCookies });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("text/plain; charset=utf-8");
+    expect(res.headers.get("Content-Disposition")).toBe("attachment; filename*=UTF-8''message.txt");
+    expect(await res.text()).toBe("こんにちは。\n今週の予定を相談しましょう。");
+    // Not readable from another workspace.
+    const theirs = await send(`/api/v1/events/${message.event_id}/data/${body.data_ref}`, {
+      cookies: await login(bob.email),
+    });
+    expect(theirs.status).toBe(404);
+
+    const list = (await (
+      await send(`/api/v1/deliveries?event_id=${message.event_id}`, { cookies: aliceCookies })
+    ).json()) as DeliveryList;
+    expect(list.deliveries.length).toBeGreaterThan(0);
+    for (const delivery of list.deliveries) {
+      expect(delivery.event).toEqual({
+        type: "conversation.message",
+        summary: expect.any(String),
+        source_name: CONVERSATION_SOURCE_NAME,
+      });
+    }
   });
 });

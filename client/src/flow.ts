@@ -4,7 +4,8 @@ import { DELIVERY_KIND_LABELS } from "./bots";
 // The model of the flow map of the home screen: the sources, the bots and their destinations, and the lines between
 // them. Node IDs are "source:{sourceId}", "bot:{botId}" and "delivery:{botId}"; edge IDs are "{from}->{to}".
 
-export type FlowBadge = { label: string; tone: "error" | "off" };
+// warning: events do not reach (something to set up). off: ended or disabled.
+export type FlowBadge = { label: string; tone: "warning" | "off" };
 
 export type FlowSourceNode = {
   id: string;
@@ -50,7 +51,7 @@ export type FlowEdge = {
 };
 
 export type FlowModel = {
-  // Sources linked to a bot first, in the order of their top bot; the others last.
+  // Sources linked to a bot first, by the average position of their bots (fewer crossings); the others last.
   sources: FlowSourceNode[];
   // In the order of the API (by name). The destination of each bot is on its row.
   bots: FlowBotNode[];
@@ -93,10 +94,10 @@ function flowDelivery(bot: Bot): FlowDelivery {
   switch (bot.delivery_kind) {
     case "mcp":
       if (bot.connection === null) {
-        return { ...base, primary: null, note: "AI から接続するとき、この Bot を選んでください", badge: "接続なし" };
+        return { ...base, primary: null, note: "AI から接続するとき、この Bot を選んでください", badge: "未接続" };
       }
       // Only the newest subscription of the connection is shown, though the server delivers to all of them.
-      if (!active) return { ...base, primary: bot.connection.client_name, note: "AI が購読すると届きます", badge: "購読なし" };
+      if (!active) return { ...base, primary: bot.connection.client_name, note: "AI が購読すると届きます", badge: "未購読" };
       return { ...base, primary: bot.connection.client_name, note: null, badge: null };
     case "webhook":
     case "queue":
@@ -110,10 +111,17 @@ function flowDelivery(bot: Bot): FlowDelivery {
   }
 }
 
+// The average of the indexes; unlinked sources (no indexes) go last.
+function barycenter(indexes: number[] | undefined): number {
+  if (indexes === undefined || indexes.length === 0) return Number.POSITIVE_INFINITY;
+  return indexes.reduce((sum, index) => sum + index, 0) / indexes.length;
+}
+
 export function buildFlow(sources: Source[], bots: Bot[]): FlowModel {
   const byId = new Map(sources.map((source) => [source.id, source]));
-  // The index of the top bot that receives each source.
-  const topBot = new Map<string, number>();
+  // The indexes of the bots that receive each source. Sources are ordered by the average of them (the barycenter),
+  // which keeps the lines between the two columns from crossing more than they must.
+  const botIndexes = new Map<string, number[]>();
   const edges: FlowEdge[] = [];
 
   const botNodes = bots.map((bot, index): FlowBotNode => {
@@ -124,7 +132,7 @@ export function buildFlow(sources: Source[], bots: Bot[]): FlowModel {
       const source = byId.get(ref.id);
       if (source === undefined) continue;
       botSources.push({ id: sourceNodeId(source.id), sourceId: source.id, name: source.name, enabled: source.enabled });
-      if (!topBot.has(source.id)) topBot.set(source.id, index);
+      botIndexes.set(source.id, [...(botIndexes.get(source.id) ?? []), index]);
       edges.push({ id: edgeId(sourceNodeId(source.id), id), from: sourceNodeId(source.id), to: id, dashed: !source.enabled });
     }
     const delivery = flowDelivery(bot);
@@ -135,7 +143,7 @@ export function buildFlow(sources: Source[], bots: Bot[]): FlowModel {
       botId: bot.id,
       name: bot.name,
       sources: botSources,
-      badges: botSources.length === 0 ? [{ label: "送信元なし", tone: "error" }] : [],
+      badges: botSources.length === 0 ? [{ label: "送信元なし", tone: "warning" }] : [],
       delivery,
       description: `受け取る送信元: ${sourceNames}。配信先: ${delivery.kindLabel} ${delivery.primary ?? delivery.badge ?? ""}`,
     };
@@ -143,16 +151,16 @@ export function buildFlow(sources: Source[], bots: Bot[]): FlowModel {
 
   const sourceNodes = [...sources]
     .sort((a, b) => {
-      const ta = topBot.get(a.id) ?? Number.POSITIVE_INFINITY;
-      const tb = topBot.get(b.id) ?? Number.POSITIVE_INFINITY;
+      const ta = barycenter(botIndexes.get(a.id));
+      const tb = barycenter(botIndexes.get(b.id));
       if (ta !== tb) return ta < tb ? -1 : 1;
       return compareByName(a, b);
     })
     .map((source): FlowSourceNode => {
-      const linked = topBot.has(source.id);
+      const linked = botIndexes.has(source.id);
       const badges: FlowBadge[] = [];
       if (!source.enabled) badges.push({ label: "無効", tone: "off" });
-      if (!linked) badges.push({ label: "どの Bot にも届きません", tone: "error" });
+      if (!linked) badges.push({ label: "どの Bot にも届きません", tone: "warning" });
       return { id: sourceNodeId(source.id), sourceId: source.id, name: source.name, enabled: source.enabled, linked, badges };
     });
 
@@ -165,11 +173,15 @@ function round(n: number): number {
 
 // The line from the middle of the right side of from to the middle of the left side of to: a cubic Bézier curve that
 // leaves and arrives horizontally. The coordinates are relative to origin.
-export function edgePath(from: Rect, to: Rect, origin: Rect): string {
+// The line leaves and enters each card at the height of its title (at most half the card), so that arrows meet the
+// cards at the same place; fromOffset and toOffset (px) spread the lines that share a card.
+export const EDGE_ANCHOR = 22;
+
+export function edgePath(from: Rect, to: Rect, origin: Rect, fromOffset = 0, toOffset = 0): string {
   const x1 = round(from.left + from.width - origin.left);
-  const y1 = round(from.top + from.height / 2 - origin.top);
+  const y1 = round(from.top + Math.min(from.height / 2, EDGE_ANCHOR) + fromOffset - origin.top);
   const x2 = round(to.left - origin.left);
-  const y2 = round(to.top + to.height / 2 - origin.top);
+  const y2 = round(to.top + Math.min(to.height / 2, EDGE_ANCHOR) + toOffset - origin.top);
   const bend = round((x2 - x1) / 2);
   return `M ${x1} ${y1} C ${round(x1 + bend)} ${y1}, ${round(x2 - bend)} ${y2}, ${x2} ${y2}`;
 }

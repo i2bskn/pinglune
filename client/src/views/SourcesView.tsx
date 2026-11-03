@@ -21,10 +21,12 @@ export function SourcesView({ client }: { client: ApiClient }) {
 
   return (
     <main className="main">
-      <h1>送信元</h1>
-      <p className="lead">
-        イベントを送るプログラムです。送信元ごとにAPIキーを発行するか、Service Bindingsで送信元IDを指定して送ります。
-      </p>
+      <header className="page-head">
+        <h1>送信元</h1>
+        <p className="lead">
+          イベントを送るプログラムです。送信元ごとに API キーを発行するか、Service Bindings で送信元 ID を指定して送ります。
+        </p>
+      </header>
       <CreateSourceForm client={client} />
       {sources.length === 0 ? (
         <p className="notice">送信元はまだありません。</p>
@@ -35,10 +37,10 @@ export function SourcesView({ client }: { client: ApiClient }) {
               <Link to={`/sources/${source.id}`} className="source-link">
                 <span className="source-head">
                   <span className="source-name">{source.name}</span>
-                  <span className={source.enabled ? "badge" : "badge badge-off"}>{source.enabled ? "有効" : "無効"}</span>
+                  <span className={source.enabled ? "badge badge-ok" : "badge badge-off"}>{source.enabled ? "有効" : "無効"}</span>
                 </span>
                 <span className="source-meta">
-                  <span>有効なAPIキー {source.active_key_count} 個</span>
+                  <span>有効なAPI キー {source.active_key_count} 個</span>
                   <time dateTime={new Date(source.created_at).toISOString()}>作成: {formatDateTime(source.created_at)}</time>
                 </span>
               </Link>

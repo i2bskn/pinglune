@@ -5,10 +5,10 @@ import {
   aiMessagesLabel,
   conversationStatusLabel,
   newIdempotencyKey,
-  participantDestinationLabel,
-  participantDestinationStatus,
+  participantStopReason,
 } from "../conversations";
-import { formatDateTime } from "../format";
+import { formatDateTime, keepNumbersWithUnits } from "../format";
+import { DELIVERY_KIND_LABELS } from "../bots";
 import { Link } from "../Link";
 import {
   type ApiClient,
@@ -93,7 +93,16 @@ function ConversationContent({
       <h2>メッセージ</h2>
       <MessageTimeline client={client} conversationId={conversation.id} first={data.messages} />
       {open ? (
-        <MessageForm client={client} conversationId={conversation.id} onDone={onDone} />
+        <MessageForm
+          client={client}
+          conversationId={conversation.id}
+          stopped={conversation.participants.flatMap((p) => {
+            const reason = participantStopReason(p);
+            return reason === null ? [] : [{ name: p.name, reason }];
+          })}
+          total={conversation.participants.length}
+          onDone={onDone}
+        />
       ) : (
         <p className="muted">会話は停止しています。発言できません。</p>
       )}
@@ -236,16 +245,25 @@ function MessageTimeline({
 
 // The text is rendered as text (React escapes it), with its line breaks kept by CSS.
 function ChatMessage({ message }: { message: ConversationMessage }) {
+  // Each sender keeps one of six hues, so that the speakers can be told apart at a glance.
+  const tone = message.is_user ? null : speakerTone(message.sender);
   return (
-    <li className={message.is_user ? "chat-message chat-message-user" : "chat-message"}>
+    <li
+      className={message.is_user ? "chat-message chat-message-user" : `chat-message speaker-${tone}`}
+    >
       <span className="chat-head">
+        {!message.is_user && (
+          <span className="chat-avatar" aria-hidden="true">
+            {Array.from(message.sender)[0]?.toUpperCase()}
+          </span>
+        )}
         <span className="chat-sender">
           {message.sender}
           {message.is_user && <span className="chat-sender-kind">（あなた）</span>}
         </span>
         <time dateTime={new Date(message.created_at).toISOString()}>{formatDateTime(message.created_at)}</time>
       </span>
-      <span className="chat-text">{message.text}</span>
+      <span className="chat-text">{keepNumbersWithUnits(message.text)}</span>
     </li>
   );
 }
@@ -253,10 +271,15 @@ function ChatMessage({ message }: { message: ConversationMessage }) {
 function MessageForm({
   client,
   conversationId,
+  stopped,
+  total,
   onDone,
 }: {
   client: ApiClient;
   conversationId: string;
+  // The participants that receive nothing now, with the reason, of all of them.
+  stopped: { name: string; reason: string }[];
+  total: number;
   onDone: (message: string | null) => void;
 }) {
   const [text, setText] = useState("");
@@ -293,7 +316,7 @@ function MessageForm({
   return (
     <form className="folder-form chat-form" aria-label="メッセージを送る" onSubmit={(event) => void onSubmit(event)}>
       <label>
-        メッセージ（すべての AI に届きます）
+        メッセージ（届く AI: {total - stopped.length} / {total} 人）
         <textarea
           value={text}
           onChange={(event) => {
@@ -305,6 +328,12 @@ function MessageForm({
           disabled={sending}
         />
       </label>
+      {stopped.length > 0 && (
+        <p className="warning-note">
+          {stopped.map((p) => `${p.name}（${p.reason}）`).join("、")}には届きません。<Link to="/bots">Bot 画面</Link>
+          で確かめてください。
+        </p>
+      )}
       <div className="folder-form-actions">
         <button type="submit" disabled={sending}>
           送信
@@ -326,21 +355,47 @@ function ParticipantList({ conversation }: { conversation: ConversationDetail })
             <span className="delivery-head">
               <span className="delivery-host">{participant.name}</span>
               {bot?.deleted === true && <span className="badge badge-off">削除済み</span>}
-              <span className={active ? "badge" : "badge badge-off"}>
-                通知先: {participantDestinationStatus(participant)}
+              <span className={active ? "badge badge-ok" : "badge badge-warning"}>
+                {active ? "届く" : `届かない（${participantStopReason(participant)}）`}
               </span>
             </span>
-            {bot !== null && bot.name !== participant.name && (
-              <span className="delivery-conditions">Bot: {bot.name}</span>
-            )}
-            {bot === null && <span className="delivery-conditions">以前の参加者（Bot ではありません）</span>}
-            <span className="delivery-conditions">
-              MCP 接続: {participant.connection_client_name ?? "なし"}
-            </span>
-            <span className="delivery-conditions">通知先: {participantDestinationLabel(participant)}</span>
+            <dl className="facts">
+              {(bot === null || bot.name !== participant.name) && (
+                <div>
+                  <dt>Bot</dt>
+                  <dd>{bot === null ? "以前の参加者（Bot ではありません）" : bot.name}</dd>
+                </div>
+              )}
+              <div>
+                <dt>MCP 接続</dt>
+                <dd>{participant.connection_client_name ?? "未接続"}</dd>
+              </div>
+              <div>
+                <dt>配信先</dt>
+                <dd>
+                  {participant.destination === null ? (
+                    "なし"
+                  ) : (
+                    <>
+                      <span className="kind-chip">{DELIVERY_KIND_LABELS[participant.destination.kind]}</span>
+                      {participant.destination.kind === "mcp"
+                        ? (participant.connection_client_name ?? participant.destination.callback_host ?? "不明な宛先")
+                        : (participant.destination.name ?? participant.destination.callback_host ?? "（名前なし）")}
+                    </>
+                  )}
+                </dd>
+              </div>
+            </dl>
           </li>
         );
       })}
     </ul>
   );
+}
+
+// One of six hues for a sender, the same for the same name.
+function speakerTone(name: string): number {
+  let hash = 0;
+  for (const char of name) hash = (hash * 31 + (char.codePointAt(0) ?? 0)) >>> 0;
+  return hash % 6;
 }

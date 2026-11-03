@@ -195,7 +195,7 @@ async function conversationDetail(c: AppContext, row: ConversationRow): Promise<
       const deleted = bot === undefined || bot.deletedAt !== null;
       return {
         name: p.name,
-        bot: { id: p.botId, name: bot?.name ?? p.name, deleted },
+        bot: { id: p.botId, name: bot?.name ?? p.name, deleted, delivery_kind: bot?.deliveryKind ?? null },
         connection_client_name: deleted ? null : (connections.get(p.botId)?.clientName ?? null),
         destination: toDestination(deliveries.get(p.botId), now),
       };

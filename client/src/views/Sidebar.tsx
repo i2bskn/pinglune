@@ -8,8 +8,10 @@ import {
   ConversationsIcon,
   DeliveriesIcon,
   EventsIcon,
+  HistoryIcon,
   LogoutIcon,
   MenuIcon,
+  OverviewIcon,
   SourcesIcon,
   UsersIcon,
 } from "../icons";
@@ -22,9 +24,11 @@ import type { Route } from "../router";
 const WIDE_QUERY = "(width >= 900px)";
 
 const ICONS: Record<NavItemId, () => ReactNode> = {
+  overview: OverviewIcon,
   events: EventsIcon,
   sources: SourcesIcon,
   deliveries: DeliveriesIcon,
+  deliveryHistory: HistoryIcon,
   bots: BotsIcon,
   conversations: ConversationsIcon,
   users: UsersIcon,
@@ -171,10 +175,12 @@ function SidebarContent({ user, route }: { user: User; route: Route }) {
           const labelId = `${baseId}-${group.id}`;
           return (
             <div key={group.id} className="nav-group">
-              <p className="nav-group-label" id={labelId}>
-                {group.label}
-              </p>
-              <ul className="nav-list" aria-labelledby={labelId}>
+              {group.label !== null && (
+                <p className="nav-group-label" id={labelId}>
+                  {group.label}
+                </p>
+              )}
+              <ul className="nav-list" aria-labelledby={group.label !== null ? labelId : undefined}>
                 {group.items.map((item) => {
                   const ItemIcon = ICONS[item.id];
                   return (

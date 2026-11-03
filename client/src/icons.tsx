@@ -48,6 +48,18 @@ export function LogoutIcon() {
 }
 
 // Events: an inbox tray.
+// Overview: a gauge of four tiles.
+export function OverviewIcon() {
+  return (
+    <Icon>
+      <rect x="4" y="4" width="7" height="7" rx="1.5" />
+      <rect x="13" y="4" width="7" height="4.5" rx="1.5" />
+      <rect x="13" y="11" width="7" height="9" rx="1.5" />
+      <rect x="4" y="13.5" width="7" height="6.5" rx="1.5" />
+    </Icon>
+  );
+}
+
 export function EventsIcon() {
   return (
     <Icon>
@@ -74,6 +86,16 @@ export function DeliveriesIcon() {
     <Icon>
       <path d="M20.5 3.5 3.5 10.5l7 3 3 7z" />
       <path d="m20.5 3.5-10 10" />
+    </Icon>
+  );
+}
+
+// Delivery history: a clock.
+export function HistoryIcon() {
+  return (
+    <Icon>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 7.5V12l3 2" />
     </Icon>
   );
 }

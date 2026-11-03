@@ -111,7 +111,16 @@ export type EventSummary = {
   data_count: number;
 };
 
-export type EventList = { events: EventSummary[]; next_cursor: string | null };
+// The number of deliveries of an event by status.
+export type DeliverySummary = { delivered: number; pending: number; failed: number };
+
+// An event of GET /api/v1/events. The MCP tools and the polling queues return EventSummary, without the deliveries.
+// An interface rather than an intersection, so that hono's JSON typing of the response keeps labels as they are.
+export interface EventListItem extends EventSummary {
+  delivery_summary: DeliverySummary;
+}
+
+export type EventList = { events: EventListItem[]; next_cursor: string | null };
 
 export type EventData = {
   data_ref: string;
@@ -195,7 +204,8 @@ export type Delivery = {
   subscription_id: string;
   // null for queue, and when the subscription is not found.
   callback_host: string | null;
-  // The kind and the name of the subscription; both null when it is not found.
+  // The kind and the name of the subscription; both null when it is not found. For mcp, the name is the app of the
+  // connection that subscribed (null for a connection made before connections were recorded).
   destination_kind: SubscriptionKind | null;
   destination_name: string | null;
   // For queue: pending until acknowledged (claimed or not), delivered once acknowledged.
@@ -212,7 +222,15 @@ export type Delivery = {
   created_at: number;
 };
 
-export type DeliveryList = { deliveries: Delivery[]; next_cursor: string | null };
+// The event of a delivery, as the lists of the management screen show it. source_name is the name of the source of
+// the event (for the messages of conversations, the source of the conversations).
+export type DeliveryEvent = { type: string; summary: string; source_name: string };
+
+// A delivery of GET /api/v1/deliveries and of POST /api/v1/deliveries/:id/retry. event is null when the event is not
+// found.
+export type DeliveryListItem = Delivery & { event: DeliveryEvent | null };
+
+export type DeliveryList = { deliveries: DeliveryListItem[]; next_cursor: string | null };
 
 export type ConversationStatus = "open" | "stopped";
 
@@ -241,7 +259,9 @@ export type ConversationParticipant = {
   // The name when the conversation was created.
   name: string;
   // name is the current name of the bot.
-  bot: { id: string; name: string; deleted: boolean } | null;
+  // delivery_kind: how the bot is notified (null when the bot row is gone), so that a missing destination can be
+  // explained (an mcp bot without an active subscription is 未購読).
+  bot: { id: string; name: string; deleted: boolean; delivery_kind: BotDeliveryKind | null } | null;
   // Bots: the client_name of the active MCP connection of the bot (null without one).
   connection_client_name: string | null;
   // Bots: the destination resolved now (null without one). Nothing is delivered to a destination that is not active.

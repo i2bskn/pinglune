@@ -1,5 +1,5 @@
 import { type FormEvent, useState } from "react";
-import type { ApiKey, EmailAddress, Source } from "../../../src/api/types";
+import type { ApiKey, Bot, EmailAddress, EventList, Source } from "../../../src/api/types";
 import {
   type SourceActionResult,
   issueApiKey,
@@ -11,15 +11,21 @@ import {
 import { formatDateTime } from "../format";
 import { PlusIcon } from "../icons";
 import { Link } from "../Link";
-import { type ApiClient, loadSourceDetail, useView } from "../load";
+import { eventsPath } from "../events";
+import { type ApiClient, type ViewState, loadEvents, loadSourceBots, loadSourceDetail, useView } from "../load";
 import { ViewStatus, useDocumentTitle, viewTitle } from "./common";
+import { EventRow } from "./EventsView";
+import { CopyableId } from "./DeliveriesView";
 import { UNKNOWN_RESULT_MESSAGE } from "./SourcesView";
 
 const GONE_MESSAGE = "この送信元は見つかりません";
-const KEY_GONE_MESSAGE = "このAPIキーは見つかりません";
+const KEY_GONE_MESSAGE = "このAPI キーは見つかりません";
 const ADDRESS_GONE_MESSAGE = "このメールアドレスは見つかりません";
 
-// One source: rename, enable or disable, its ID for Service Bindings, its API keys and its email addresses.
+const RECENT_EVENTS = 5;
+
+// One source: rename, enable or disable, the bots that receive its events, its newest events, its ID for Service
+// Bindings, its API keys and its email addresses.
 export function SourceDetailView({ client, id }: { client: ApiClient; id: string }) {
   const [state, reload] = useView(() => loadSourceDetail(client, id), `source:${id}`);
   // The result of the last operation, kept across the reload that follows.
@@ -38,7 +44,10 @@ export function SourceDetailView({ client, id }: { client: ApiClient; id: string
       <p className="breadcrumb">
         <Link to="/sources">送信元</Link>
       </p>
-      <h1>{source.name}</h1>
+      <header className="page-head">
+        <h1>{source.name}</h1>
+        <p className="lead">この送信元から受け取ったイベントは、紐づけた Bot の配信先に届きます。</p>
+      </header>
       {notice !== null && (
         <p className="notice" role="status">
           {notice}
@@ -53,22 +62,22 @@ export function SourceDetailView({ client, id }: { client: ApiClient; id: string
         }}
       />
 
-      <h2>Service Bindings</h2>
-      <p>
-        同じCloudflareアカウントのWorkerから送るときは、バインディングの <code>props</code> に次の送信元IDを指定します。
-      </p>
-      <p className="copyable">
-        <code>{source.id}</code>
-      </p>
+      <SourceBots client={client} sourceId={source.id} />
 
-      <h2>APIキー</h2>
+      <h2>送信元 ID（Service Bindings 用）</h2>
+      <p>
+        同じ Cloudflare アカウントの Worker から送るときは、バインディングの <code>props</code> に次の送信元 ID を指定します。
+      </p>
+      <CopyableId id={source.id} />
+
+      <h2>API キー</h2>
       <p>
         HTTP（<code>POST /ingest/v1/events</code>）で送るときに <code>Authorization: Bearer</code> ヘッダーで使います。
       </p>
       {issued !== null && (
         <div className="issued-key" role="status">
           <p>
-            <strong>APIキーを発行しました。このキーは今だけ表示されます。この画面を離れると二度と表示されません。</strong>
+            <strong>API キーを発行しました。このキーは今だけ表示されます。この画面を離れると二度と表示されません。</strong>
             安全な場所に保存してください。
           </p>
           <p className="copyable">
@@ -93,7 +102,7 @@ export function SourceDetailView({ client, id }: { client: ApiClient; id: string
         }}
       />
       {apiKeys.length === 0 ? (
-        <p className="muted">APIキーはまだありません。</p>
+        <p className="muted">API キーはまだありません。</p>
       ) : (
         <ul className="list api-keys">
           {apiKeys.map((apiKey) => (
@@ -152,8 +161,94 @@ export function SourceDetailView({ client, id }: { client: ApiClient; id: string
           )}
         </>
       )}
+
+      <SourceEvents client={client} sourceId={source.id} />
     </main>
   );
+}
+
+// The bots linked to the source, which its events reach. A failure is shown in this section only.
+function SourceBots({ client, sourceId }: { client: ApiClient; sourceId: string }) {
+  const [state] = useView(() => loadSourceBots(client, sourceId), `source-bots:${sourceId}`);
+  return (
+    <section className="source-section" aria-labelledby="source-bots">
+      <div className="section-head">
+        <h2 id="source-bots">受け取る Bot</h2>
+      </div>
+      <SourceBotsBody state={state} />
+    </section>
+  );
+}
+
+function SourceBotsBody({ state }: { state: ViewState<Bot[]> }) {
+  switch (state.kind) {
+    case "loading":
+      return <p className="muted">読み込み中…</p>;
+    case "redirecting":
+      return null;
+    case "notFound":
+      return <p role="alert">Bot を読み込めませんでした</p>;
+    case "error":
+      return <p role="alert">{state.message}</p>;
+    case "ready":
+      return state.data.length === 0 ? (
+        <>
+          <div className="callout">
+            <p className="warning-note">どの Bot にも紐づいていないため、イベントは届きません</p>
+            <Link to="/bots" className="button button-primary">
+              Bot 画面で紐づける
+            </Link>
+          </div>
+        </>
+      ) : (
+        <ul className="list source-bots">
+          {state.data.map((bot) => (
+            <li key={bot.id}>
+              <Link to="/bots" className="source-link">
+                <span className="source-name">{bot.name}</span>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      );
+  }
+}
+
+// The newest events of the source. A failure is shown in this section only.
+function SourceEvents({ client, sourceId }: { client: ApiClient; sourceId: string }) {
+  const [state] = useView(() => loadEvents(client, undefined, { type: "", sourceId }), `source-events:${sourceId}`);
+  return (
+    <section className="source-section" aria-labelledby="source-events">
+      <div className="section-head">
+        <h2 id="source-events">最近のイベント</h2>
+        <Link to={eventsPath({ type: "", sourceId })}>すべて見る</Link>
+      </div>
+      <SourceEventsBody state={state} />
+    </section>
+  );
+}
+
+function SourceEventsBody({ state }: { state: ViewState<EventList> }) {
+  switch (state.kind) {
+    case "loading":
+      return <p className="muted">読み込み中…</p>;
+    case "redirecting":
+      return null;
+    case "notFound":
+      return <p role="alert">イベントを読み込めませんでした</p>;
+    case "error":
+      return <p role="alert">{state.message}</p>;
+    case "ready":
+      return state.data.events.length === 0 ? (
+        <p className="empty-note">まだイベントはありません。</p>
+      ) : (
+        <ul className="list events">
+          {state.data.events.slice(0, RECENT_EVENTS).map((event) => (
+            <EventRow key={event.event_id} event={event} />
+          ))}
+        </ul>
+      );
+  }
 }
 
 function resultMessage(result: Exclude<SourceActionResult, { kind: "ok" }>, gone: string): string | null {
@@ -211,7 +306,7 @@ function SourceSettings({
       <dl className="details">
         <dt>状態</dt>
         <dd>
-          <span className={source.enabled ? "badge" : "badge badge-off"}>{source.enabled ? "有効" : "無効"}</span>
+          <span className={source.enabled ? "badge badge-ok" : "badge badge-off"}>{source.enabled ? "有効" : "無効"}</span>
           {!source.enabled && <span className="muted">（HTTP・Service Bindings・メールのいずれからも受け付けません）</span>}
         </dd>
         <dt>作成日時</dt>
@@ -315,7 +410,7 @@ function IssueKeyButton({
     <div className="actions">
       <button type="button" className="button-primary" onClick={() => void issue()} disabled={sending}>
         <PlusIcon />
-        APIキーを発行
+        API キーを発行
       </button>
       {failure !== null && <p role="alert">{failure}</p>}
     </div>
@@ -347,7 +442,7 @@ function ApiKeyRow({
     setSending(false);
     if (result.kind === "ok") {
       setConfirming(false);
-      onDone(`APIキー ${apiKey.key_id} を失効させました`);
+      onDone(`API キー ${apiKey.key_id} を失効させました`);
       return;
     }
     if (result.kind === "notFound") {
@@ -362,7 +457,7 @@ function ApiKeyRow({
     <li className={revoked ? "api-key api-key-revoked" : "api-key"}>
       <div className="api-key-head">
         <code className="api-key-id">{apiKey.key_id}</code>
-        {revoked && <span className="badge badge-off">失効</span>}
+        {revoked && <span className="badge badge-off">失効済み</span>}
         {!revoked && (
           <button
             type="button"
@@ -373,7 +468,7 @@ function ApiKeyRow({
             }}
             disabled={sending}
           >
-            失効
+            失効させる…
           </button>
         )}
       </div>
@@ -383,9 +478,9 @@ function ApiKeyRow({
         {apiKey.revoked_at !== null && <span>失効: {formatDateTime(apiKey.revoked_at)}</span>}
       </div>
       {confirming && (
-        <form className="folder-form" aria-label="APIキーを失効" onSubmit={(event) => void onSubmit(event)}>
+        <form className="folder-form" aria-label="API キーを失効" onSubmit={(event) => void onSubmit(event)}>
           <p>
-            APIキー <code>{apiKey.key_id}</code> を失効させます。このキーを使っている送信は 401 になります。元に戻せません。
+            API キー <code>{apiKey.key_id}</code> を失効させます。このキーを使っている送信は 401 になります。元に戻せません。
           </p>
           <div className="folder-form-actions">
             <button type="submit" className="button-danger" disabled={sending}>
@@ -495,7 +590,7 @@ function EmailAddressRow({
     <li className={revoked ? "api-key api-key-revoked" : "api-key"}>
       <div className="api-key-head">
         <code className="api-key-id email-address">{shown}</code>
-        <span className={revoked ? "badge badge-off" : "badge"}>{revoked ? "無効化済み" : "有効"}</span>
+        <span className={revoked ? "badge badge-off" : "badge badge-ok"}>{revoked ? "無効化済み" : "有効"}</span>
         {!revoked && (
           <button
             type="button"
@@ -506,7 +601,7 @@ function EmailAddressRow({
             }}
             disabled={sending}
           >
-            無効にする
+            無効化する…
           </button>
         )}
       </div>

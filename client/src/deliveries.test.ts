@@ -3,14 +3,19 @@ import type { Delivery, Subscription } from "../../src/api/types";
 import {
   INVALID_LABELS_MESSAGE,
   attemptsLabel,
+  canRetry,
+  noRetryReason,
   deliveryDestination,
+  deliveryHistoryPath,
   deliveryStatusLabel,
   describeArguments,
+  destinationLabel,
   errorLabel,
   lastResult,
   parseLabelLines,
   queueRequest,
   splitList,
+  statusFilterOf,
   subscriptionBotLabel,
   webhookDestinationRequest,
 } from "./deliveries";
@@ -82,6 +87,67 @@ describe("error labels", () => {
   it("does not depend on the kind of destination", () => {
     expect(errorLabel("secret_unavailable")).toBe("鍵を読めませんでした");
     expect(errorLabel("subscription_inactive")).toBe("配信先が終了しています");
+  });
+
+  it("describes a retry that could not be enqueued", () => {
+    expect(errorLabel("retry_enqueue_failed")).toBe("再送を受け付けられませんでした");
+  });
+});
+
+describe("the delivery history", () => {
+  const base: Delivery = {
+    id: "dlv_1",
+    event_id: "evt_1",
+    subscription_id: "sub_1",
+    callback_host: "hooks.example.com",
+    destination_kind: "webhook",
+    destination_name: "hook",
+    status: "failed",
+    attempts: 6,
+    last_attempt_at: 1,
+    last_http_status: 503,
+    last_error: "http_5xx",
+    delivered_at: null,
+    created_at: 1,
+  };
+
+  it("offers a retry only for failed deliveries to webhook destinations and MCP Events subscriptions", () => {
+    expect(canRetry(base)).toBe(true);
+    expect(canRetry({ ...base, destination_kind: "mcp" })).toBe(true);
+    expect(canRetry({ ...base, destination_kind: "queue" })).toBe(false);
+    expect(canRetry({ ...base, destination_kind: null })).toBe(false);
+    expect(canRetry({ ...base, status: "pending" })).toBe(false);
+    expect(canRetry({ ...base, status: "delivered" })).toBe(false);
+    // An ended webhook destination never comes back; an MCP Events subscription may be made again.
+    expect(canRetry({ ...base, last_error: "subscription_inactive" })).toBe(false);
+    expect(canRetry({ ...base, destination_kind: "mcp", last_error: "subscription_inactive" })).toBe(true);
+  });
+
+  it("says why a failed delivery cannot be retried", () => {
+    expect(noRetryReason(base)).toBeNull();
+    expect(noRetryReason({ ...base, status: "delivered" })).toBeNull();
+    expect(noRetryReason({ ...base, destination_kind: "queue" })).toBe("キューの配信は再送できません");
+    expect(noRetryReason({ ...base, last_error: "subscription_inactive" })).toBe("配信先が終了しているため再送できません");
+    expect(noRetryReason({ ...base, destination_kind: null })).toBe("配信先が見つからないため再送できません");
+  });
+
+  it("names the destination by its name, or its host", () => {
+    expect(destinationLabel(base)).toBe("hook");
+    expect(destinationLabel({ ...base, destination_name: null })).toBe("hooks.example.com");
+    expect(destinationLabel({ ...base, destination_name: null, callback_host: null })).toBe("不明な宛先");
+  });
+
+  it("reads the status filter from the query, ignoring unknown values", () => {
+    expect(statusFilterOf(new URLSearchParams("status=failed"))).toBe("failed");
+    expect(statusFilterOf(new URLSearchParams("status=pending"))).toBe("pending");
+    expect(statusFilterOf(new URLSearchParams("status=delivered"))).toBe("delivered");
+    expect(statusFilterOf(new URLSearchParams("status=FAILED"))).toBeNull();
+    expect(statusFilterOf(new URLSearchParams(""))).toBeNull();
+  });
+
+  it("builds the path of each filter", () => {
+    expect(deliveryHistoryPath(null)).toBe("/deliveries/history");
+    expect(deliveryHistoryPath("failed")).toBe("/deliveries/history?status=failed");
   });
 });
 
@@ -167,12 +233,13 @@ describe("the display of a delivery", () => {
     delivered_at: null,
   };
 
-  it("shows a webhook delivery by its host, with the HTTP status", () => {
-    expect(deliveryDestination(WEBHOOK)).toBe("hooks.example.com");
-    expect(deliveryDestination({ ...WEBHOOK, callback_host: null })).toBe("不明な宛先");
+  it("shows a webhook delivery by its name (else its host), with the HTTP status", () => {
+    expect(deliveryDestination(WEBHOOK)).toBe("Grok Bot");
+    expect(deliveryDestination({ ...WEBHOOK, destination_name: null })).toBe("hooks.example.com");
+    expect(deliveryDestination({ ...WEBHOOK, destination_name: null, callback_host: null })).toBe("不明な宛先");
     expect(deliveryStatusLabel(WEBHOOK)).toBe("配信済み");
     expect(attemptsLabel(WEBHOOK)).toBe("試行 2 回");
-    expect(lastResult(WEBHOOK)).toBe("成功（HTTP 204）");
+    expect(lastResult(WEBHOOK)).toBe("成功（HTTP\u00a0204）");
   });
 
   it("shows a queue delivery by the queue's name, counting the times it was taken", () => {
@@ -189,7 +256,29 @@ describe("the display of a delivery", () => {
     expect(lastResult(processed)).toBe("処理済み");
     const failed: Delivery = { ...QUEUE, status: "failed", attempts: 5, last_error: "not_acknowledged" };
     expect(deliveryStatusLabel(failed)).toBe("失敗");
-    expect(lastResult(failed)).toBe("処理済みの連絡がないまま 5 回取得された");
+    expect(lastResult(failed)).toBe("処理済みの連絡がないまま、取得できる回数の上限に達しました");
     expect(lastResult({ ...failed, last_error: "expired" })).toBe("7 日間処理されなかった");
+  });
+});
+
+describe("deliveryStatusLabel of a retried delivery", () => {
+  it("says a webhook delivery that was tried and will be tried again is waiting to retry", () => {
+    expect(
+      deliveryStatusLabel({
+        id: "dlv_1",
+        event_id: "evt_1",
+        subscription_id: "sub_1",
+        callback_host: "hooks.example.com",
+        destination_kind: "webhook",
+        destination_name: "hook",
+        status: "pending",
+        attempts: 2,
+        last_attempt_at: 0,
+        last_http_status: 502,
+        last_error: "http_5xx",
+        delivered_at: null,
+        created_at: 0,
+      }),
+    ).toBe("未配信（再試行待ち）");
   });
 });
