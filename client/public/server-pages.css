@@ -110,12 +110,15 @@ a {
   border-radius: var(--radius);
 }
 
-/* The name as text until a logo exists. */
-.brand-name {
-  font-size: 2.25rem;
-  font-weight: 700;
-  line-height: 1.2;
-  letter-spacing: 0.01em;
+/* The horizontal logo: the height sets the size, the width follows the SVG's aspect ratio. */
+.brand-logo {
+  display: block;
+}
+
+.brand-logo img {
+  display: block;
+  width: auto;
+  height: 3rem;
 }
 
 .card {

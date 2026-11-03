@@ -1,4 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="14" fill="#218271"/>
-  <text x="32" y="45" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="38" font-weight="700" fill="#ffffff">R</text>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="Pinglune"><g color="#3655A0"><g fill="none" stroke="currentColor" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"><path d="M78 21C49 14 23 35 23 64C23 93 49 114 78 107C58 99 47 84 47 64C47 44 58 29 78 21Z" fill="currentColor" stroke="none"/><circle cx="88" cy="64" r="10" fill="currentColor" stroke="none"/><path d="M104 44Q122 64 104 84" stroke-width="9"/></g></g></svg>
