@@ -272,6 +272,8 @@ describe("GET /authorize", () => {
     expect(consent.html).toContain("client.example");
     expect(consent.html).toContain(member.email);
     expect(consent.html).not.toContain("このパソコン上のアプリ");
+    expect(consent.html).toContain("イベント・データ・会話を読み取り、ポーリング用のキューからイベントを取り出して処理済みにできます");
+    expect(consent.html).toContain("別の Bot との会話を始めることもできます");
     const res = await send(authorizeUrl(ORIGIN, consent.clientId, (await pkce()).challenge), {
       cookies: memberCookies,
     });
@@ -689,7 +691,7 @@ describe("bots and MCP connections", () => {
     await authorizeClient(memberCookies, { clientId, botId: dot });
     const one = await openConsent(memberCookies, { clientId });
     expect(one.html).toMatch(new RegExp(`value="${dot}" selected`));
-    expect(one.html).toContain("Bot を選ぶと、この接続がその Bot として会話に参加します");
+    expect(one.html).toContain("Bot を選ぶと、この接続がその Bot として会話に参加し、発言できます");
 
     const dot2 = await createBot("Dot2");
     await authorizeClient(memberCookies, { clientId, botId: dot2 });

@@ -33,8 +33,10 @@ export function ConsentPage(props: {
         </p>
       ) : null}
       <p>ログイン中のユーザー: {props.email}</p>
-      {/* TODO: Revisit this description when tools that write data are added. */}
-      <p>許可すると、このアプリはあなたとして、Pingluneに保存されたイベントとデータを読み取ります。</p>
+      {/* Keep this in line with the tools of src/mcp/tools.ts. */}
+      <p>
+        許可すると、このアプリはあなたとして、Pingluneに保存されたイベント・データ・会話を読み取り、ポーリング用のキューからイベントを取り出して処理済みにできます。
+      </p>
       <form method="post" action="/authorize">
         <input type="hidden" name="handle" value={props.handle} />
         {props.bots.length === 0 ? (
@@ -63,7 +65,8 @@ export function ConsentPage(props: {
           </>
         )}
         <p>
-          Bot を選ぶと、この接続がその Bot として会話に参加します。その Bot の以前の接続は切断されます。Bot は管理画面の『Bot』で作れます。
+          Bot を選ぶと、この接続がその Bot として会話に参加し、発言できます。その Bot に管理画面で『会話の開始』を許可している場合は、別の Bot
+          との会話を始めることもできます。その Bot の以前の接続は切断されます。Bot は管理画面の『Bot』で作れます。
         </p>
         <div class="buttons">
           <button type="submit" name="decision" value="approve" class="primary">
