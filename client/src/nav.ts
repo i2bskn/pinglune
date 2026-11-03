@@ -7,10 +7,10 @@ export type NavItemId =
   | "overview"
   | "events"
   | "sources"
-  | "deliveries"
   | "deliveryHistory"
   | "bots"
   | "conversations"
+  | "connections"
   | "users";
 
 export type NavItem = {
@@ -49,7 +49,6 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     label: "配信",
     items: [
       { id: "bots", label: "Bot", to: "/bots" },
-      { id: "deliveries", label: "配信先", to: "/deliveries" },
       { id: "deliveryHistory", label: "配信履歴", to: "/deliveries/history" },
       { id: "conversations", label: "会話", to: "/conversations" },
     ],
@@ -57,7 +56,10 @@ export const NAV_GROUPS: readonly NavGroup[] = [
   {
     id: "settings",
     label: "設定",
-    items: [{ id: "users", label: "ユーザー", to: "/users", adminOnly: true }],
+    items: [
+      { id: "connections", label: "AI の接続", to: "/connections" },
+      { id: "users", label: "ユーザー", to: "/users", adminOnly: true },
+    ],
   },
 ];
 
@@ -80,12 +82,16 @@ export function currentNavItem(route: Route): NavItemId | null {
     case "sources":
     case "source":
       return "sources";
+    // The former destinations screen moves on to the bots.
     case "deliveries":
-      return "deliveries";
+    case "bots":
+    case "botNew":
+    case "bot":
+      return "bots";
     case "deliveryHistory":
       return "deliveryHistory";
-    case "bots":
-      return "bots";
+    case "connections":
+      return "connections";
     case "conversations":
     case "conversation":
       return "conversations";
@@ -101,10 +107,10 @@ const TOP_SCREEN: Record<NavItemId, Route["name"]> = {
   overview: "home",
   events: "events",
   sources: "sources",
-  deliveries: "deliveries",
   deliveryHistory: "deliveryHistory",
   bots: "bots",
   conversations: "conversations",
+  connections: "connections",
   users: "users",
 };
 

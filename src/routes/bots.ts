@@ -1,8 +1,9 @@
 import type { Context } from "hono";
 import { Hono } from "hono";
-import type { Bot, BotDeliveryKind, BotList, CreateBotRequest, UpdateBotRequest } from "../api/types";
+import type { Bot, BotDeliveryKind, BotDetail, BotList, CreateBotRequest, UpdateBotRequest } from "../api/types";
 import { apiError, requireUser } from "../auth/middleware";
 import { isUniqueViolation } from "../auth/users";
+import { isJsonObject } from "../auth/validate";
 import {
   activeConnectionsByBot,
   countActiveBots,
@@ -17,15 +18,32 @@ import {
 import { clock } from "../clock";
 import type { Db } from "../db/client";
 import type { BotRow, McpConnectionRow, SubscriptionRow } from "../db/schema";
+import { canonicalJson } from "../canonical-json";
 import { callbackHost } from "../deliveries/queries";
 import type { AppEnv } from "../env";
-import { BOT_ID_PATTERN, newBotId, SOURCE_ID_PATTERN, SUBSCRIPTION_ID_PATTERN } from "../ids";
+import type { EventFilter } from "../events/filter";
+import { BOT_ID_PATTERN, newBotId, newRandomSubscriptionId, SOURCE_ID_PATTERN, SUBSCRIPTION_ID_PATTERN } from "../ids";
 import { redirectHost } from "../mcp/connections";
 import { listWorkspaceSources } from "../sources/queries";
-import { findWorkspaceDestination, isActiveSubscription } from "../subscriptions/queries";
+import {
+  endDestinationStatements,
+  findWorkspaceDestination,
+  insertSubscriptionStatement,
+  isActiveSubscription,
+  type StatementGuard,
+} from "../subscriptions/queries";
 import { jsonBody } from "./api";
 import { invalidNameMessage, MAX_SOURCES_PER_WORKSPACE, normalizeDisplayName, unknownField } from "./sources";
-import { statusOf } from "./subscriptions";
+import {
+  checkWebhookTarget,
+  destinationLimitResponse,
+  FILTER_FIELDS,
+  invalidFilterMessage,
+  newDestinationRow,
+  parseArguments,
+  parseDestinationFilter,
+  statusOf,
+} from "./subscriptions";
 import { requirePersonalWorkspace } from "./workspace";
 
 type AppContext = Context<AppEnv>;
@@ -36,9 +54,17 @@ const botNotFound = "Bot が見つかりません";
 const invalidDeliveryKindMessage = "配信方式は mcp・webhook・queue のどれかにしてください";
 const invalidSourceIdsMessage = "受け取る送信元の指定が正しくありません";
 const sourceNotFound = "送信元が見つかりません";
-const BOT_FIELDS = ["name", "delivery_kind", "delivery_subscription_id", "source_ids"];
+const BOT_FIELDS = ["name", "delivery_kind", "delivery_subscription_id", "webhook", "conditions", "source_ids"];
+const WEBHOOK_FIELDS = ["url", "token"];
 const invalidDeliveryMessage =
-  "配信先が見つからないか、終了しているか、配信方式と合いません。MCP Event では配信先を指定せず、Webhook とキューでは配信先画面で作った配信先を選んでください";
+  "配信先が見つからないか、終了しているか、配信方式と合いません。MCP Event では配信先を指定せず、Webhook とキューでは Bot に割り当てられていない有効な配信先を選ぶか、新しく作ってください";
+const mcpConditionsMessage = "MCP Event の条件は AI 側で決まります";
+const mcpDestinationFieldsMessage = "MCP Event では webhook・conditions を指定できません";
+const webhookWithIdMessage = "webhook と delivery_subscription_id は同時に指定できません";
+const webhookKindMessage = "webhook は配信方式が Webhook のときだけ指定できます";
+const conditionsWithIdMessage = "conditions は新しく作る配信先にだけ指定できます";
+const destinationEndedMessage = "配信先が終了しています";
+const botChangedMessage = "Bot がほかの操作で変わりました。読み込み直してください";
 
 function isDeliveryKind(value: unknown): value is BotDeliveryKind {
   return typeof value === "string" && (DELIVERY_KINDS as readonly string[]).includes(value);
@@ -102,10 +128,40 @@ function parseSourceIds(value: unknown): string[] | null {
   return ids.length <= MAX_SOURCES_PER_WORKSPACE ? ids : null;
 }
 
+type WebhookTarget = { url: URL; token: string };
+
+// The webhook field: { url, token }, checked as the registration of a webhook destination checks them.
+function parseWebhookField(c: AppContext, value: unknown): WebhookTarget | Response {
+  if (!isJsonObject(value)) return apiError(c, 400, "invalid_request", "webhook の形式が正しくありません");
+  const unknown = unknownField(value, WEBHOOK_FIELDS);
+  if (unknown !== null) return apiError(c, 400, "unknown_field", `未知の項目があります: webhook.${unknown}`);
+  const target = checkWebhookTarget(c, value.url, value.token);
+  if (target instanceof Response) return target;
+  return { url: target.url, token: target.token };
+}
+
+// The conditions field: { types?, labels? }, checked as the registration of a destination checks them. {} is no
+// condition (every event).
+function parseConditionsField(c: AppContext, value: unknown): EventFilter | Response {
+  if (!isJsonObject(value)) return apiError(c, 400, "invalid_filter", invalidFilterMessage);
+  const unknown = unknownField(value, [...FILTER_FIELDS]);
+  if (unknown !== null) return apiError(c, 400, "unknown_field", `未知の項目があります: conditions.${unknown}`);
+  const filter = parseDestinationFilter(value);
+  if (filter === null) return apiError(c, 400, "invalid_filter", invalidFilterMessage);
+  return filter;
+}
+
+// The destination of a new bot: none (mcp), an existing destination, or a new webhook destination (webhook set) or
+// polling queue (webhook null) with its conditions.
+type CreateDestination =
+  | { type: "none" }
+  | { type: "existing"; id: string }
+  | { type: "new"; webhook: WebhookTarget | null; filter: EventFilter };
+
 type CreateInput = {
   name: string;
   deliveryKind: BotDeliveryKind;
-  deliverySubscriptionId: string | null;
+  destination: CreateDestination;
   sourceIds: string[];
 };
 
@@ -115,24 +171,44 @@ const createBotBody = jsonBody<CreateBotRequest, CreateInput>((body, c) => {
   const name = normalizeDisplayName(body.name);
   if (name === null) return apiError(c, 400, "invalid_request", invalidNameMessage);
   if (!isDeliveryKind(body.delivery_kind)) return apiError(c, 400, "invalid_request", invalidDeliveryKindMessage);
+  const kind = body.delivery_kind;
   const sourceIds = "source_ids" in body ? parseSourceIds(body.source_ids) : [];
   if (sourceIds === null) return apiError(c, 400, "invalid_request", invalidSourceIdsMessage);
-  const deliverySubscriptionId = parseDeliverySubscriptionId(body.delivery_kind, body.delivery_subscription_id);
-  if (deliverySubscriptionId === undefined) return apiError(c, 400, "invalid_delivery", invalidDeliveryMessage);
-  return { ok: true, value: { name, deliveryKind: body.delivery_kind, deliverySubscriptionId, sourceIds } };
-});
+  const hasWebhook = "webhook" in body;
+  const hasConditions = "conditions" in body;
+  const id = body.delivery_subscription_id;
+  const value = (destination: CreateDestination) =>
+    ({ ok: true, value: { name, deliveryKind: kind, destination, sourceIds } }) as const;
 
-// The destination given for a delivery kind: null for mcp (absent or null), a subscription ID of the right form for
-// webhook and queue. undefined if invalid.
-function parseDeliverySubscriptionId(kind: BotDeliveryKind, value: unknown): string | null | undefined {
-  if (kind === "mcp") return value === undefined || value === null ? null : undefined;
-  return typeof value === "string" && SUBSCRIPTION_ID_PATTERN.test(value) ? value : undefined;
-}
+  if (kind === "mcp") {
+    if (hasWebhook || hasConditions) return apiError(c, 400, "invalid_request", mcpDestinationFieldsMessage);
+    if (id !== undefined && id !== null) return apiError(c, 400, "invalid_delivery", invalidDeliveryMessage);
+    return value({ type: "none" });
+  }
+  if (hasWebhook && kind !== "webhook") return apiError(c, 400, "invalid_request", webhookKindMessage);
+  // null is taken as left out: a new destination is made.
+  if (id !== undefined && id !== null) {
+    if (hasWebhook) return apiError(c, 400, "invalid_request", webhookWithIdMessage);
+    if (hasConditions) return apiError(c, 400, "invalid_request", conditionsWithIdMessage);
+    if (typeof id !== "string" || !SUBSCRIPTION_ID_PATTERN.test(id)) {
+      return apiError(c, 400, "invalid_delivery", invalidDeliveryMessage);
+    }
+    return value({ type: "existing", id });
+  }
+  if (kind === "webhook" && !hasWebhook) return apiError(c, 400, "invalid_delivery", invalidDeliveryMessage);
+  const webhook = hasWebhook ? parseWebhookField(c, body.webhook) : null;
+  if (webhook instanceof Response) return webhook;
+  const filter = hasConditions ? parseConditionsField(c, body.conditions) : {};
+  if (filter instanceof Response) return filter;
+  return value({ type: "new", webhook, filter });
+});
 
 type UpdateInput = {
   name?: string;
   deliveryKind?: BotDeliveryKind;
   deliverySubscriptionId?: string | null;
+  webhook?: WebhookTarget;
+  conditions?: EventFilter;
   sourceIds?: string[];
 };
 
@@ -144,7 +220,7 @@ const updateBotBody = jsonBody<UpdateBotRequest, UpdateInput>((body, c) => {
       c,
       400,
       "invalid_request",
-      "name・delivery_kind・delivery_subscription_id・source_ids のどれかを指定してください",
+      "name・delivery_kind・delivery_subscription_id・webhook・conditions・source_ids のどれかを指定してください",
     );
   }
   const value: UpdateInput = {};
@@ -162,12 +238,31 @@ const updateBotBody = jsonBody<UpdateBotRequest, UpdateInput>((body, c) => {
     if (sourceIds === null) return apiError(c, 400, "invalid_request", invalidSourceIdsMessage);
     value.sourceIds = sourceIds;
   }
+  if ("webhook" in body) {
+    if ("delivery_subscription_id" in body) return apiError(c, 400, "invalid_request", webhookWithIdMessage);
+    if (value.deliveryKind !== undefined && value.deliveryKind !== "webhook") {
+      return apiError(c, 400, "invalid_request", webhookKindMessage);
+    }
+  }
+  if ("conditions" in body && value.deliveryKind === "mcp") {
+    return apiError(c, 400, "invalid_request", mcpConditionsMessage);
+  }
   if ("delivery_subscription_id" in body) {
     const id = body.delivery_subscription_id;
     if (id !== null && (typeof id !== "string" || !SUBSCRIPTION_ID_PATTERN.test(id))) {
       return apiError(c, 400, "invalid_delivery", invalidDeliveryMessage);
     }
     value.deliverySubscriptionId = id;
+  }
+  if ("webhook" in body) {
+    const webhook = parseWebhookField(c, body.webhook);
+    if (webhook instanceof Response) return webhook;
+    value.webhook = webhook;
+  }
+  if ("conditions" in body) {
+    const conditions = parseConditionsField(c, body.conditions);
+    if (conditions instanceof Response) return conditions;
+    value.conditions = conditions;
   }
   return { ok: true, value };
 });
@@ -189,26 +284,43 @@ async function validSources(db: Db, workspaceId: string, ids: string[]): Promise
   return ids.every((id) => known.has(id));
 }
 
+// The state of a bot that the statements of a batch rely on: its delivery kind and its destination.
+type BotDelivery = { kind: BotDeliveryKind; subscriptionId: string | null };
+
+// The condition that the bot is not deleted and still has this delivery kind and destination (IS: NULL for mcp).
+// Every statement of the batches that change a bot carries it, so that a bot changed by another request since it was
+// read changes nothing.
+function liveBotGuard(botId: string, workspaceId: string, delivery: BotDelivery): StatementGuard {
+  return {
+    sql: `EXISTS (SELECT 1 FROM bots WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL AND delivery_kind = ?
+      AND delivery_subscription_id IS ?)`,
+    values: [botId, workspaceId, delivery.kind, delivery.subscriptionId],
+  };
+}
+
 // The statements that link a bot to its sources, for the batch that creates or updates the bot. Each statement is
-// guarded by the bot not being deleted, so that a delete that runs first leaves no rows behind. Only sources of
-// programs of the workspace are inserted (sources are never deleted, so the validated ones are still there).
+// guarded (liveBotGuard with the bot's state after the batch), so that a delete or another change that runs first
+// leaves no rows behind. Only sources of programs of the workspace are inserted (sources are never deleted, so the
+// validated ones are still there).
 function linkSourcesStatements(
   d1: D1Database,
   workspaceId: string,
   botId: string,
   sourceIds: string[],
   now: number,
+  guard: StatementGuard,
 ): D1PreparedStatement[] {
-  const liveBot = "EXISTS (SELECT 1 FROM bots WHERE id = ?1 AND workspace_id = ?2 AND deleted_at IS NULL)";
   return [
-    d1.prepare(`DELETE FROM bot_sources WHERE bot_id = ?1 AND workspace_id = ?2 AND ${liveBot}`).bind(botId, workspaceId),
+    d1
+      .prepare(`DELETE FROM bot_sources WHERE bot_id = ? AND workspace_id = ? AND ${guard.sql}`)
+      .bind(botId, workspaceId, ...guard.values),
     ...sourceIds.map((sourceId) =>
       d1
         .prepare(
           `INSERT INTO bot_sources (bot_id, source_id, workspace_id, created_at)
-          SELECT ?1, id, workspace_id, ?4 FROM sources WHERE id = ?3 AND workspace_id = ?2 AND kind = 'program' AND ${liveBot}`,
+          SELECT ?, id, workspace_id, ? FROM sources WHERE id = ? AND workspace_id = ? AND kind = 'program' AND ${guard.sql}`,
         )
-        .bind(botId, workspaceId, sourceId, now),
+        .bind(botId, now, sourceId, workspaceId, ...guard.values),
     ),
   ];
 }
@@ -234,6 +346,62 @@ async function findBot(c: AppContext, includeDeleted: boolean): Promise<BotRow |
     : findActiveWorkspaceBot(c.get("db"), workspaceId, id);
 }
 
+// The destination a bot refers to, ended or not, as BotDetail returns it.
+async function botDestination(db: Db, workspaceId: string, bot: BotRow, now: number): Promise<BotDetail["destination"]> {
+  if (bot.deliveryKind === "mcp" || bot.deliverySubscriptionId === null) return null;
+  const row = await findWorkspaceDestination(db, workspaceId, bot.deliverySubscriptionId);
+  if (row === undefined || row.kind === "mcp") return null;
+  return {
+    subscription_id: row.id,
+    kind: row.kind,
+    name: row.name,
+    callback_host: callbackHost(row.callbackUrl),
+    status: statusOf(row, now),
+    arguments: parseArguments(row.arguments),
+  };
+}
+
+// The new destination of an update: what the bot will deliver to after it.
+// - keep: the destination does not change.
+// - existing: delivery_subscription_id, another destination that exists.
+// - new: a new webhook destination (webhook set) or polling queue (webhook null).
+// - none: mcp.
+type DeliveryChange =
+  | { type: "keep" }
+  | { type: "existing"; kind: "webhook" | "queue"; id: string }
+  | { type: "new"; kind: "webhook" | "queue"; webhook: WebhookTarget | null }
+  | { type: "none" };
+
+// Decides the change of the destination of an update, or the error to answer.
+async function deliveryChange(c: AppContext, bot: BotRow, input: UpdateInput): Promise<DeliveryChange | Response> {
+  const db = c.get("db");
+  const workspaceId = c.get("workspace").id;
+  const kind = input.deliveryKind ?? bot.deliveryKind;
+  if (input.webhook !== undefined) {
+    if (kind !== "webhook") return apiError(c, 400, "invalid_request", webhookKindMessage);
+    return { type: "new", kind: "webhook", webhook: input.webhook };
+  }
+  if (input.deliverySubscriptionId !== undefined) {
+    const id = input.deliverySubscriptionId;
+    // The same destination (or none for mcp) is no change.
+    if (kind === bot.deliveryKind && id === bot.deliverySubscriptionId) return { type: "keep" };
+    if (!(await validDestination(db, workspaceId, kind, id))) {
+      return apiError(c, 400, "invalid_delivery", invalidDeliveryMessage);
+    }
+    if (kind === "mcp" || id === null) return { type: "none" };
+    return { type: "existing", kind, id };
+  }
+  if (kind === bot.deliveryKind) return { type: "keep" };
+  if (kind === "mcp") return { type: "none" };
+  if (kind === "queue") return { type: "new", kind: "queue", webhook: null };
+  return apiError(
+    c,
+    400,
+    "invalid_request",
+    "配信方式を Webhook に変えるときは webhook か delivery_subscription_id を指定してください",
+  );
+}
+
 const botsApi = new Hono<AppEnv>()
   .use("*", requireUser, requirePersonalWorkspace)
   .get("/", async (c) => {
@@ -243,16 +411,36 @@ const botsApi = new Hono<AppEnv>()
     const body: BotList = { bots: await botsToApi(db, workspaceId, rows, clock.now()) };
     return c.json(body, 200);
   })
+  .get("/:id", async (c) => {
+    const db = c.get("db");
+    const workspaceId = c.get("workspace").id;
+    const bot = await findBot(c, false);
+    if (!bot) return apiError(c, 404, "not_found", botNotFound);
+    const now = clock.now();
+    const [[api], destination] = await Promise.all([
+      botsToApi(db, workspaceId, [bot], now),
+      botDestination(db, workspaceId, bot, now),
+    ]);
+    if (api === undefined) return apiError(c, 404, "not_found", botNotFound);
+    const body: BotDetail = { ...api, destination };
+    return c.json(body, 200);
+  })
   .post("/", createBotBody, async (c) => {
     const input = c.req.valid("json");
     const db = c.get("db");
     const workspaceId = c.get("workspace").id;
+    const user = c.get("user");
     // A loose limit: concurrent requests may go slightly over it.
     if ((await countActiveBots(db, workspaceId)) >= MAX_BOTS_PER_WORKSPACE) {
       return apiError(c, 409, "limit_exceeded", `Bot は ${MAX_BOTS_PER_WORKSPACE} 個までです`);
     }
-    if (!(await validDestination(db, workspaceId, input.deliveryKind, input.deliverySubscriptionId))) {
+    const destination = input.destination;
+    if (destination.type === "existing" && !(await validDestination(db, workspaceId, input.deliveryKind, destination.id))) {
       return apiError(c, 400, "invalid_delivery", invalidDeliveryMessage);
+    }
+    if (destination.type === "new") {
+      const limited = await destinationLimitResponse(c, destination.webhook === null ? "queue" : "webhook");
+      if (limited !== null) return limited;
     }
     if (!(await validSources(db, workspaceId, input.sourceIds))) {
       return apiError(c, 400, "invalid_source", sourceNotFound);
@@ -260,16 +448,43 @@ const botsApi = new Hono<AppEnv>()
     const now = clock.now();
     const id = newBotId(now);
     const d1 = c.env.DB;
+    // The destination made with the bot, named after it. Its ID is random: a collision fails the batch (409).
+    const row =
+      destination.type === "new"
+        ? await newDestinationRow({
+            id: newRandomSubscriptionId(),
+            userId: user.id,
+            workspaceId,
+            name: input.name,
+            filter: destination.filter,
+            webhook: destination.webhook,
+            jwtSecret: c.get("config").jwtSecret,
+            now,
+          })
+        : null;
+    const subscriptionId = row !== null ? row.id : destination.type === "existing" ? destination.id : null;
+    // One batch: the destination, the bot, then its sources. A failure (a name taken, for example) leaves none of
+    // them.
     try {
       await d1.batch([
+        ...(row === null ? [] : [insertSubscriptionStatement(d1, row)]),
         d1
           .prepare(
             `INSERT INTO bots (id, workspace_id, created_by_user_id, name, delivery_kind, delivery_subscription_id,
               created_at, updated_at, deleted_at)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, NULL)`,
           )
-          .bind(id, workspaceId, c.get("user").id, input.name, input.deliveryKind, input.deliverySubscriptionId, now),
-        ...(input.sourceIds.length === 0 ? [] : linkSourcesStatements(d1, workspaceId, id, input.sourceIds, now)),
+          .bind(id, workspaceId, user.id, input.name, input.deliveryKind, subscriptionId, now),
+        ...(input.sourceIds.length === 0
+          ? []
+          : linkSourcesStatements(
+              d1,
+              workspaceId,
+              id,
+              input.sourceIds,
+              now,
+              liveBotGuard(id, workspaceId, { kind: input.deliveryKind, subscriptionId }),
+            )),
       ]);
     } catch (error) {
       if (isUniqueViolation(error)) return conflict(c, workspaceId, input.name, null);
@@ -286,20 +501,32 @@ const botsApi = new Hono<AppEnv>()
     const workspaceId = c.get("workspace").id;
     const bot = await findBot(c, false);
     if (!bot) return apiError(c, 404, "not_found", botNotFound);
-    const kind = input.deliveryKind ?? bot.deliveryKind;
-    if (kind !== bot.deliveryKind && input.deliverySubscriptionId === undefined) {
-      return apiError(
-        c,
-        400,
-        "invalid_request",
-        "配信方式を変えるときは delivery_subscription_id も指定してください（MCP Event では null）",
-      );
+    const change = await deliveryChange(c, bot, input);
+    if (change instanceof Response) return change;
+    // The destination before the update: ended when the bot changes to another one.
+    const previous: BotDelivery = { kind: bot.deliveryKind, subscriptionId: bot.deliverySubscriptionId };
+    const ending = change.type !== "keep" && previous.kind !== "mcp" ? previous.subscriptionId : null;
+    if (input.conditions !== undefined) {
+      if (change.type === "existing") return apiError(c, 400, "invalid_request", conditionsWithIdMessage);
+      if (change.type === "none") return apiError(c, 400, "invalid_request", mcpConditionsMessage);
+      if (change.type === "keep") {
+        if (bot.deliveryKind === "mcp") return apiError(c, 400, "invalid_request", mcpConditionsMessage);
+        const current =
+          bot.deliverySubscriptionId === null ? undefined : await findWorkspaceDestination(db, workspaceId, bot.deliverySubscriptionId);
+        if (current === undefined || current.kind !== bot.deliveryKind || current.unsubscribedAt !== null) {
+          return apiError(c, 400, "invalid_request", destinationEndedMessage);
+        }
+      }
     }
-    const destination = input.deliverySubscriptionId === undefined ? bot.deliverySubscriptionId : input.deliverySubscriptionId;
-    // A destination that does not change is not checked again (a rename of a bot whose destination has ended).
-    const changed = kind !== bot.deliveryKind || destination !== bot.deliverySubscriptionId;
-    if (changed && !(await validDestination(db, workspaceId, kind, destination))) {
-      return apiError(c, 400, "invalid_delivery", invalidDeliveryMessage);
+    if (change.type === "new") {
+      // The destination that this update ends is not counted (when it is active and of the same kind).
+      let endingActive = 0;
+      if (ending !== null && previous.kind === change.kind) {
+        const row = await findWorkspaceDestination(db, workspaceId, ending);
+        if (row !== undefined && row.kind === change.kind && row.unsubscribedAt === null) endingActive = 1;
+      }
+      const limited = await destinationLimitResponse(c, change.kind, endingActive);
+      if (limited !== null) return limited;
     }
     if (input.sourceIds !== undefined && !(await validSources(db, workspaceId, input.sourceIds))) {
       return apiError(c, 400, "invalid_source", sourceNotFound);
@@ -307,19 +534,77 @@ const botsApi = new Hono<AppEnv>()
     const name = input.name ?? bot.name;
     const now = clock.now();
     const d1 = c.env.DB;
-    try {
-      // The bot first: a bot deleted meanwhile changes nothing (404), and the guarded statements that follow change
-      // nothing either.
-      const [result] = await d1.batch([
+    const row =
+      change.type === "new"
+        ? await newDestinationRow({
+            id: newRandomSubscriptionId(),
+            userId: c.get("user").id,
+            workspaceId,
+            name,
+            filter: input.conditions ?? {},
+            webhook: change.webhook,
+            jwtSecret: c.get("config").jwtSecret,
+            now,
+          })
+        : null;
+    const next: BotDelivery =
+      change.type === "keep"
+        ? previous
+        : change.type === "none"
+          ? { kind: "mcp", subscriptionId: null }
+          : { kind: change.kind, subscriptionId: change.type === "new" ? (row as { id: string }).id : change.id };
+    const before = liveBotGuard(bot.id, workspaceId, previous);
+    const after = liveBotGuard(bot.id, workspaceId, next);
+
+    // The order of the batch: (1) the end of the previous destination and (2) the new destination, both while the
+    // bot is as it was read; (3) the bot, under the same condition; (4) the statements on the bot's new state, while
+    // the bot is as (3) left it. When (3) changes nothing, nothing else changes either.
+    const statements: D1PreparedStatement[] = [];
+    if (ending !== null && previous.kind !== "mcp") {
+      statements.push(...endDestinationStatements(d1, previous.kind, workspaceId, ending, now, before));
+    }
+    if (row !== null) statements.push(insertSubscriptionStatement(d1, row, before));
+    const botIndex = statements.length;
+    statements.push(
+      d1
+        .prepare(
+          `UPDATE bots SET name = ?, delivery_kind = ?, delivery_subscription_id = ?, updated_at = ?
+          WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL AND delivery_kind = ? AND delivery_subscription_id IS ?`,
+        )
+        .bind(name, next.kind, next.subscriptionId, now, bot.id, workspaceId, previous.kind, previous.subscriptionId),
+    );
+    if (input.sourceIds !== undefined) {
+      statements.push(...linkSourcesStatements(d1, workspaceId, bot.id, input.sourceIds, now, after));
+    }
+    // A destination kept is renamed with the bot, unless it has ended. A destination given by
+    // delivery_subscription_id keeps its name until the bot is renamed.
+    if (change.type === "keep" && name !== bot.name && next.kind !== "mcp" && next.subscriptionId !== null) {
+      statements.push(
         d1
           .prepare(
-            `UPDATE bots SET name = ?1, delivery_kind = ?2, delivery_subscription_id = ?3, updated_at = ?4
-            WHERE id = ?5 AND workspace_id = ?6 AND deleted_at IS NULL`,
+            `UPDATE subscriptions SET name = ?, updated_at = ?
+            WHERE id = ? AND workspace_id = ? AND kind = ? AND unsubscribed_at IS NULL AND ${after.sql}`,
           )
-          .bind(name, kind, destination, now, bot.id, workspaceId),
-        ...(input.sourceIds === undefined ? [] : linkSourcesStatements(d1, workspaceId, bot.id, input.sourceIds, now)),
-      ]);
-      if ((result?.meta.changes ?? 0) === 0) return apiError(c, 404, "not_found", botNotFound);
+          .bind(name, now, next.subscriptionId, workspaceId, next.kind, ...after.values),
+      );
+    }
+    if (change.type === "keep" && input.conditions !== undefined && next.subscriptionId !== null) {
+      statements.push(
+        d1
+          .prepare(
+            `UPDATE subscriptions SET arguments = ?, updated_at = ?
+            WHERE id = ? AND workspace_id = ? AND kind = ? AND unsubscribed_at IS NULL AND ${after.sql}`,
+          )
+          .bind(canonicalJson(input.conditions), now, next.subscriptionId, workspaceId, next.kind, ...after.values),
+      );
+    }
+    try {
+      const results = await d1.batch(statements);
+      if ((results[botIndex]?.meta.changes ?? 0) === 0) {
+        const latest = await findWorkspaceBot(db, workspaceId, bot.id);
+        if (!latest || latest.deletedAt !== null) return apiError(c, 404, "not_found", botNotFound);
+        return apiError(c, 409, "conflict", botChangedMessage);
+      }
     } catch (error) {
       if (isUniqueViolation(error)) return conflict(c, workspaceId, name, bot.id);
       throw error;
@@ -337,19 +622,45 @@ const botsApi = new Hono<AppEnv>()
     const workspaceId = c.get("workspace").id;
     const now = clock.now();
     const d1 = c.env.DB;
-    // The connection stays, not assigned to a bot. The destination (a webhook destination or a polling queue) is not
-    // ended, but belonging to no bot it receives no events. The linked sources go with the bot.
-    await d1.batch([
-      d1
-        .prepare("UPDATE bots SET deleted_at = ?1, updated_at = ?1 WHERE id = ?2 AND workspace_id = ?3 AND deleted_at IS NULL")
-        .bind(now, bot.id, workspaceId),
+    const previous: BotDelivery = { kind: bot.deliveryKind, subscriptionId: bot.deliverySubscriptionId };
+    const before = liveBotGuard(bot.id, workspaceId, previous);
+    // The bot's own destination (a webhook destination or a polling queue) ends with it, first, while the bot is as it
+    // was read. The connection stays, not assigned to a bot (an MCP Events subscription belongs to the connection and
+    // is not ended). The linked sources go with the bot. Those two run only once the bot is deleted.
+    const deleted = {
+      sql: "EXISTS (SELECT 1 FROM bots WHERE id = ? AND workspace_id = ? AND deleted_at IS NOT NULL)",
+      values: [bot.id, workspaceId],
+    };
+    const statements: D1PreparedStatement[] = [];
+    if (previous.kind !== "mcp" && previous.subscriptionId !== null) {
+      statements.push(...endDestinationStatements(d1, previous.kind, workspaceId, previous.subscriptionId, now, before));
+    }
+    const botIndex = statements.length;
+    statements.push(
       d1
         .prepare(
-          "UPDATE mcp_connections SET bot_id = NULL, updated_at = ?1 WHERE bot_id = ?2 AND workspace_id = ?3 AND revoked_at IS NULL",
+          `UPDATE bots SET deleted_at = ?, updated_at = ?
+          WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL AND delivery_kind = ? AND delivery_subscription_id IS ?`,
         )
-        .bind(now, bot.id, workspaceId),
-      d1.prepare("DELETE FROM bot_sources WHERE bot_id = ?1 AND workspace_id = ?2").bind(bot.id, workspaceId),
-    ]);
+        .bind(now, now, bot.id, workspaceId, previous.kind, previous.subscriptionId),
+      d1
+        .prepare(
+          `UPDATE mcp_connections SET bot_id = NULL, updated_at = ?
+          WHERE bot_id = ? AND workspace_id = ? AND revoked_at IS NULL AND ${deleted.sql}`,
+        )
+        .bind(now, bot.id, workspaceId, ...deleted.values),
+      d1
+        .prepare(`DELETE FROM bot_sources WHERE bot_id = ? AND workspace_id = ? AND ${deleted.sql}`)
+        .bind(bot.id, workspaceId, ...deleted.values),
+    );
+    const results = await d1.batch(statements);
+    if ((results[botIndex]?.meta.changes ?? 0) === 0) {
+      const latest = await findWorkspaceBot(c.get("db"), workspaceId, bot.id);
+      if (!latest) return apiError(c, 404, "not_found", botNotFound);
+      // Deleted by another request meanwhile.
+      if (latest.deletedAt !== null) return c.body(null, 204);
+      return apiError(c, 409, "conflict", botChangedMessage);
+    }
     return c.body(null, 204);
   });
 

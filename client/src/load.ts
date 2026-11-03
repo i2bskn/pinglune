@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type {
   ApiKey,
   Bot,
+  BotDetail,
   ConversationDetail,
   ConversationList,
   ConversationMessageList,
@@ -159,16 +160,17 @@ export async function loadEventDetail(client: ApiClient, id: string): Promise<Lo
   return { kind: "ready", data: event.value };
 }
 
-// A page of the delivery list. cursor is the next_cursor of the previous page; eventId limits it to one event and
-// status to one status.
+// A page of the delivery list. cursor is the next_cursor of the previous page; eventId limits it to one event, status
+// to one status and subscriptionId to one destination.
 export async function loadDeliveries(
   client: ApiClient,
-  options: { cursor?: string; eventId?: string; status?: DeliveryStatus } = {},
+  options: { cursor?: string; eventId?: string; status?: DeliveryStatus; subscriptionId?: string } = {},
 ): Promise<Loaded<DeliveryList>> {
-  const query: { cursor?: string; event_id?: string; status?: DeliveryStatus } = {};
+  const query: { cursor?: string; event_id?: string; status?: DeliveryStatus; subscription_id?: string } = {};
   if (options.cursor !== undefined) query.cursor = options.cursor;
   if (options.eventId !== undefined) query.event_id = options.eventId;
   if (options.status !== undefined) query.status = options.status;
+  if (options.subscriptionId !== undefined) query.subscription_id = options.subscriptionId;
   const list = await request(() => client.api.v1.deliveries.$get({ query }));
   if (list.kind === "redirecting") return list;
   // The list itself is never missing; a 404 here is an unexpected response.
@@ -385,6 +387,36 @@ export async function loadBotsView(client: ApiClient): Promise<Loaded<BotsData>>
       subscriptions: subscriptions.value.subscriptions,
       sources: sources.kind === "ok" ? sources.value.sources : [],
       sourcesError: sources.kind === "ok" ? null : sources.message,
+    },
+  };
+}
+
+export type BotDetailData = {
+  bot: BotDetail;
+  // The sources of programs, for the sources of the bot. Empty with sourcesError set when they cannot be read.
+  sources: Source[];
+  sourcesError: string | null;
+  // The MCP connections of the user, to tell an expired connection. Empty when they cannot be read.
+  connections: McpConnection[];
+};
+
+// One bot with its destination, the sources to choose from and the MCP connections. A deleted bot is not found.
+export async function loadBotDetail(client: ApiClient, id: string): Promise<Loaded<BotDetailData>> {
+  if (!isValidId(id)) return { kind: "notFound" };
+  const [bot, sources, connections] = await Promise.all([
+    request(() => client.api.v1.bots[":id"].$get({ param: { id } })),
+    request(() => client.api.v1.sources.$get()),
+    request(() => client.api.v1["mcp-connections"].$get()),
+  ]);
+  if (sources.kind === "redirecting" || connections.kind === "redirecting") return { kind: "redirecting" };
+  if (bot.kind !== "ok") return failure([bot]);
+  return {
+    kind: "ready",
+    data: {
+      bot: bot.value,
+      sources: sources.kind === "ok" ? sources.value.sources : [],
+      sourcesError: sources.kind === "ok" ? null : sources.message,
+      connections: connections.kind === "ok" ? connections.value.connections : [],
     },
   };
 }

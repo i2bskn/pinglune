@@ -10,6 +10,9 @@ export type Route =
   | { name: "deliveries" }
   | { name: "deliveryHistory" }
   | { name: "bots" }
+  | { name: "botNew" }
+  | { name: "bot"; id: string }
+  | { name: "connections" }
   | { name: "conversations" }
   | { name: "conversation"; id: string }
   | { name: "notFound" };
@@ -34,11 +37,16 @@ export function matchRoute(path: string): Route {
   if (pathname === "/deliveries") return { name: "deliveries" };
   if (pathname === "/deliveries/history") return { name: "deliveryHistory" };
   if (pathname === "/bots") return { name: "bots" };
+  // Before /bots/:id, so that "new" is never taken as an ID.
+  if (pathname === "/bots/new") return { name: "botNew" };
+  if (pathname === "/connections") return { name: "connections" };
   if (pathname === "/conversations") return { name: "conversations" };
   const event = /^\/events\/([^/]+)$/.exec(pathname);
   if (event?.[1] !== undefined && isValidId(event[1])) return { name: "event", id: event[1] };
   const source = /^\/sources\/([^/]+)$/.exec(pathname);
   if (source?.[1] !== undefined && isValidId(source[1])) return { name: "source", id: source[1] };
+  const bot = /^\/bots\/([^/]+)$/.exec(pathname);
+  if (bot?.[1] !== undefined && isValidId(bot[1])) return { name: "bot", id: bot[1] };
   const conversation = /^\/conversations\/([^/]+)$/.exec(pathname);
   if (conversation?.[1] !== undefined && isValidId(conversation[1])) return { name: "conversation", id: conversation[1] };
   return { name: "notFound" };
@@ -71,10 +79,13 @@ export function usePath(): string {
   return useSyncExternalStore(subscribe, getPath);
 }
 
-// Moves to a path inside the SPA. The scroll position is not restored on back; that is left to the browser.
-export function navigate(path: string): void {
+// Moves to a path inside the SPA. The scroll position is not restored on back; that is left to the browser. replace
+// takes the place of the current entry of the history (a screen that only moves on), so that back does not return to
+// it.
+export function navigate(path: string, options: { replace?: boolean } = {}): void {
   if (path !== getPath()) {
-    history.pushState(null, "", path);
+    if (options.replace === true) history.replaceState(null, "", path);
+    else history.pushState(null, "", path);
     for (const listener of listeners) listener();
   }
   window.scrollTo(0, 0);

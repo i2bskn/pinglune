@@ -1,13 +1,16 @@
 import type {
   Bot,
   BotDeliveryKind,
+  BotDetail,
   BotStatus,
   CreateBotRequest,
+  DestinationConditions,
   McpConnection,
   Source,
   Subscription,
   UpdateBotRequest,
 } from "../../src/api/types";
+import { INVALID_LABELS_MESSAGE, parseLabelLines, splitList } from "./deliveries";
 
 export const BOT_STATUS_LABELS: Record<BotStatus, string> = {
   ready: "準備完了",
@@ -29,8 +32,8 @@ export const DELIVERY_KIND_LABELS: Record<BotDeliveryKind, string> = {
 
 export const DELIVERY_KIND_DESCRIPTIONS: Record<BotDeliveryKind, string> = {
   mcp: "ChatGPT など、Pinglune に購読を作る AI。配信先は AI の接続から自動で決まります",
-  webhook: "配信先画面で作った Webhook 配信先に送ります（チャットボットなど）",
-  queue: "配信先画面で作ったポーリング用キューに入れます（外から呼び出せない AI など）",
+  webhook: "Bearer 認証の Webhook に送ります（チャットボットなど）。URL とキーをこの Bot に登録します",
+  queue: "この Bot 用のポーリング用キューに入れます（外から呼び出せない AI など）。キューは Bot と一緒に作られます",
 };
 
 export const DELIVERY_KINDS: BotDeliveryKind[] = ["mcp", "webhook", "queue"];
@@ -176,3 +179,148 @@ export const CONNECTION_KIND_LABELS: Record<McpConnection["kind"], string | null
   expired: "期限切れ",
   stale: "切断済み",
 };
+
+// The path of the detail screen of a bot.
+export function botPath(id: string): string {
+  return `/bots/${id}`;
+}
+
+// The webhook destinations and polling queues that no bot uses, active ones only: a bot can be made with them.
+export function unassignedBotDestinations(subscriptions: Subscription[]): Subscription[] {
+  return subscriptions.filter(
+    (subscription) => subscription.kind !== "mcp" && subscription.status === "active" && subscription.bot === null,
+  );
+}
+
+// The destination named by ?destination= of the creation screen, if it may be used: an active webhook destination or
+// polling queue that no bot uses. null otherwise (the query is then ignored).
+export function destinationFromQuery(params: URLSearchParams, subscriptions: Subscription[]): Subscription | null {
+  const id = params.get("destination");
+  if (id === null) return null;
+  return unassignedBotDestinations(subscriptions).find((subscription) => subscription.id === id) ?? null;
+}
+
+// The conditions of a new destination, as the form holds them: comma-separated types and key=value lines.
+export type ConditionsForm = { types: string; labels: string };
+
+export const EMPTY_CONDITIONS_FORM: ConditionsForm = { types: "", labels: "" };
+
+// The conditions of the form. Empty fields are left out ({} is every event); the server checks the rest.
+export function conditionsRequest(form: ConditionsForm): FormResult<DestinationConditions> {
+  const labels = parseLabelLines(form.labels);
+  if (labels === null) return { ok: false, message: INVALID_LABELS_MESSAGE };
+  const value: DestinationConditions = {};
+  const types = splitList(form.types);
+  if (types.length > 0) value.types = types;
+  if (Object.keys(labels).length > 0) value.labels = labels;
+  return { ok: true, value };
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+// The form of the stored conditions of a destination, to edit them.
+export function conditionsFormOf(args: Record<string, unknown> | null): ConditionsForm {
+  if (args === null) return EMPTY_CONDITIONS_FORM;
+  const labels = args.labels;
+  const lines =
+    typeof labels === "object" && labels !== null && !Array.isArray(labels)
+      ? Object.entries(labels as Record<string, unknown>).map(([key, value]) => `${key}=${String(value)}`)
+      : [];
+  return { types: stringList(args.types).join(", "), labels: lines.join("\n") };
+}
+
+// The creation form of a bot. url and token are for webhook; the conditions for webhook and queue. destinationId is
+// an existing destination to use (from ?destination=), which fixes the delivery kind and leaves out url, token and the
+// conditions.
+export type NewBotForm = {
+  name: string;
+  deliveryKind: BotDeliveryKind;
+  url: string;
+  token: string;
+  conditions: ConditionsForm;
+  sourceIds: string[];
+  destinationId: string | null;
+};
+
+export const EMPTY_NEW_BOT_FORM: NewBotForm = {
+  name: "",
+  deliveryKind: "mcp",
+  url: "",
+  token: "",
+  conditions: EMPTY_CONDITIONS_FORM,
+  sourceIds: [],
+  destinationId: null,
+};
+
+// The request of the creation form: an existing destination by ID, a new webhook destination with its URL and key, a
+// new polling queue, or none for MCP Event. The server checks the name, the URL and the key. sourcesLoaded is false
+// when the sources could not be read: nothing is sent.
+export function newBotRequest(form: NewBotForm, sourcesLoaded = true): FormResult<CreateBotRequest> {
+  if (!sourcesLoaded) return { ok: false, message: SOURCES_UNAVAILABLE_MESSAGE };
+  let value: CreateBotRequest;
+  if (form.deliveryKind === "mcp") {
+    value = { name: form.name, delivery_kind: "mcp" };
+  } else if (form.destinationId !== null) {
+    value = { name: form.name, delivery_kind: form.deliveryKind, delivery_subscription_id: form.destinationId };
+  } else {
+    const conditions = conditionsRequest(form.conditions);
+    if (!conditions.ok) return conditions;
+    value = { name: form.name, delivery_kind: form.deliveryKind };
+    if (form.deliveryKind === "webhook") value.webhook = { url: form.url, token: form.token };
+    if (Object.keys(conditions.value).length > 0) value.conditions = conditions.value;
+  }
+  if (form.sourceIds.length > 0) value.source_ids = form.sourceIds;
+  return { ok: true, value };
+}
+
+// The form that changes the delivery kind of a bot to a new destination: a new webhook destination (url, token), a
+// new polling queue, or MCP Event.
+export type DeliveryChangeForm = { kind: BotDeliveryKind; url: string; token: string; conditions: ConditionsForm };
+
+// The kinds the form offers for a bot: a queue bot cannot get a new queue (the server keeps the current one), and an
+// MCP Event bot is MCP Event already. A webhook bot may get a new webhook destination.
+export function deliveryChangeKinds(bot: Pick<Bot, "delivery_kind">): BotDeliveryKind[] {
+  return DELIVERY_KINDS.filter((kind) => kind === "webhook" || kind !== bot.delivery_kind);
+}
+
+// The request of the form that changes the destination. The previous webhook destination or queue ends with it.
+export function deliveryChangeRequest(form: DeliveryChangeForm): FormResult<UpdateBotRequest> {
+  if (form.kind === "mcp") return { ok: true, value: { delivery_kind: "mcp" } };
+  const conditions = conditionsRequest(form.conditions);
+  if (!conditions.ok) return conditions;
+  const value: UpdateBotRequest = { delivery_kind: form.kind };
+  if (form.kind === "webhook") value.webhook = { url: form.url, token: form.token };
+  if (Object.keys(conditions.value).length > 0) value.conditions = conditions.value;
+  return { ok: true, value };
+}
+
+// What the confirmation of a change of the destination says will end, or null when nothing ends.
+export function deliveryChangeWarning(bot: BotDetail): string | null {
+  const destination = bot.destination;
+  if (destination === null || destination.status !== "active") return null;
+  const name = destination.name ?? "（名前なし）";
+  return destination.kind === "queue"
+    ? `今のキュー「${name}」は終了します。まだ処理されていないイベント（取得済みで処理済みの連絡がないものを含む）は失敗になり、あとから ack_events で処理済みにはできません。`
+    : `今の Webhook 配信先「${name}」は終了します。まだ送っていない配信は送られません。`;
+}
+
+export type SourceTab = "overview" | "intake" | "settings";
+
+export const SOURCE_TABS: readonly { tab: SourceTab; label: string }[] = [
+  { tab: "overview", label: "概要" },
+  { tab: "intake", label: "送り方" },
+  { tab: "settings", label: "設定" },
+];
+
+// The tab of the detail screen of a source (?tab=); overview without one or for an unknown value.
+export function sourceTabOf(params: URLSearchParams): SourceTab {
+  const tab = params.get("tab");
+  return tab === "intake" || tab === "settings" ? tab : "overview";
+}
+
+// The path of a tab of the detail screen of a source. The overview is the plain path.
+export function sourceTabPath(sourceId: string, tab: SourceTab): string {
+  return tab === "overview" ? `/sources/${sourceId}` : `/sources/${sourceId}?tab=${tab}`;
+}

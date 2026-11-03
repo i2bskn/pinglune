@@ -6,6 +6,7 @@ import { clock } from "../clock";
 import type { Db } from "../db/client";
 import {
   findWorkspaceDelivery,
+  listSubscriptionDeliveries,
   listWorkspaceDeliveries,
   resetFailedDelivery,
   revertRetry,
@@ -13,7 +14,7 @@ import {
 } from "../deliveries/queries";
 import type { AppEnv } from "../env";
 import { findWorkspaceEventsByIds } from "../events/queries";
-import { DELIVERY_ID_PATTERN, EVENT_ID_PATTERN } from "../ids";
+import { DELIVERY_ID_PATTERN, EVENT_ID_PATTERN, SUBSCRIPTION_ID_PATTERN } from "../ids";
 import { findSubscriptionById, isActiveSubscription } from "../subscriptions/queries";
 import { requirePersonalWorkspace } from "./workspace";
 
@@ -25,13 +26,14 @@ function isDeliveryStatus(value: string): value is DeliveryStatus {
   return (DELIVERY_STATUSES as readonly string[]).includes(value);
 }
 
-type ListQuery = { cursor?: string; event_id?: string; status?: DeliveryStatus };
+type ListQuery = { cursor?: string; event_id?: string; status?: DeliveryStatus; subscription_id?: string };
 
 // cursor: the last delivery id of the previous page. event_id: only the deliveries of that event. status: only the
-// deliveries in that status. Any other value, including "" and a repeated parameter, is 400.
+// deliveries in that status. subscription_id: only the deliveries to that subscription. Any other value, including ""
+// and a repeated parameter, is 400.
 const listQuery = validator("query", (value: Record<string, string | string[]>, c) => {
   const query: ListQuery = {};
-  const { cursor, event_id: eventId, status } = value;
+  const { cursor, event_id: eventId, status, subscription_id: subscriptionId } = value;
   if (cursor !== undefined) {
     if (typeof cursor !== "string" || !DELIVERY_ID_PATTERN.test(cursor)) {
       return apiError(c, 400, "invalid_cursor", "cursor が正しくありません");
@@ -49,6 +51,12 @@ const listQuery = validator("query", (value: Record<string, string | string[]>, 
       return apiError(c, 400, "invalid_status", "状態が正しくありません");
     }
     query.status = status;
+  }
+  if (subscriptionId !== undefined) {
+    if (typeof subscriptionId !== "string" || !SUBSCRIPTION_ID_PATTERN.test(subscriptionId)) {
+      return apiError(c, 400, "invalid_subscription_id", "subscription_id が正しくありません");
+    }
+    query.subscription_id = subscriptionId;
   }
   return query;
 });
@@ -74,11 +82,14 @@ async function withEvents(db: Db, workspaceId: string, deliveries: Delivery[]): 
 const deliveriesApi = new Hono<AppEnv>()
   .use("*", requireUser, requirePersonalWorkspace)
   .get("/", listQuery, async (c) => {
-    const { cursor, event_id: eventId, status } = c.req.valid("query");
+    const { cursor, event_id: eventId, status, subscription_id: subscriptionId } = c.req.valid("query");
     const db = c.get("db");
     const workspaceId = c.get("workspace").id;
-    // Scoped to the workspace: an event of another workspace gives an empty list.
-    const { deliveries, nextCursor } = await listWorkspaceDeliveries(db, workspaceId, { cursor, eventId, status });
+    // Scoped to the workspace: an event or a subscription of another workspace gives an empty list.
+    const { deliveries, nextCursor } =
+      subscriptionId === undefined
+        ? await listWorkspaceDeliveries(db, workspaceId, { cursor, eventId, status })
+        : await listSubscriptionDeliveries(c.env.DB, db, workspaceId, subscriptionId, { cursor, eventId, status });
     const body: DeliveryList = { deliveries: await withEvents(db, workspaceId, deliveries), next_cursor: nextCursor };
     return c.json(body, 200);
   })

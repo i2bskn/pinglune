@@ -1730,6 +1730,86 @@ textarea {
   margin-bottom: 0;
 }
 
+/* A title with its state badges, and the buttons of the screen next to it (below it on narrow screens). */
+.page-head-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem 1.25rem;
+}
+
+.page-head-row > :first-child {
+  flex: 1 1 20rem;
+  min-width: 0;
+}
+
+.page-head-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.625rem;
+  min-width: 0;
+  margin: 0 0 0.5rem;
+}
+
+.page-head-title h1 {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.page-head-actions {
+  margin: 0;
+}
+
+/* A bot as a row that links to its screen, with a chevron at the end. */
+.bot-link {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.bot-link-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.bot-link > .icon {
+  flex: none;
+  color: var(--ink-3);
+}
+
+.bot-link-delivery {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.5rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The MCP Events subscriptions inside the card of a connection. */
+.connection-subscriptions {
+  margin: 0.5rem 0 0;
+}
+
+.connection-subscriptions h3 {
+  margin: 0 0 0.375rem;
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: var(--ink-2);
+}
+
+.connection-subscriptions .list {
+  margin: 0;
+  box-shadow: none;
+  background: var(--bg);
+}
+
 /* ---------- Conversations ---------- */
 
 .conversation-state {

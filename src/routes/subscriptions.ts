@@ -1,4 +1,5 @@
 import { and, eq, inArray } from "drizzle-orm";
+import type { Context } from "hono";
 import { Hono } from "hono";
 import { z } from "zod";
 import type {
@@ -43,7 +44,12 @@ import { requirePersonalWorkspace } from "./workspace";
 // No paging: a workspace has few subscriptions. Each kind is listed up to this many, so that MCP subscriptions
 // never push the webhook destinations or the polling queues out of the list.
 const SUBSCRIPTION_LIST_LIMIT = 100;
-const MAX_ACTIVE_WEBHOOK_DESTINATIONS_PER_WORKSPACE = 20;
+export const MAX_ACTIVE_WEBHOOK_DESTINATIONS_PER_WORKSPACE = 20;
+// The connections are read with IN lists of at most this many IDs, within the 100 bound variables of D1.
+const CONNECTION_ID_CHUNK = 90;
+
+export const webhookLimitMessage = `Webhook 配信先は ${MAX_ACTIVE_WEBHOOK_DESTINATIONS_PER_WORKSPACE} 件までです`;
+export const queueLimitMessage = `ポーリング用キューは ${MAX_ACTIVE_QUEUES_PER_WORKSPACE} 件までです`;
 // Printable ASCII without spaces, as HTTP header values allow without quoting.
 const TOKEN_PATTERN = /^[\x21-\x7E]{1,1024}$/;
 
@@ -63,7 +69,7 @@ export function statusOf(row: SubscriptionRow, now: number): SubscriptionStatus 
 
 // The stored arguments without sources, which delivery ignores (an MCP Events subscription may still carry it).
 // null if they are broken. The stored value is not changed.
-function parseArguments(value: string): Record<string, unknown> | null {
+export function parseArguments(value: string): Record<string, unknown> | null {
   try {
     const parsed: unknown = JSON.parse(value);
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
@@ -95,16 +101,21 @@ async function subscriptionsToApi(
   const connectionIds = [
     ...new Set(rows.flatMap((row) => (row.kind === "mcp" && row.connectionId !== null ? [row.connectionId] : []))),
   ];
-  const [connectionRows, liveBots] = await Promise.all([
-    connectionIds.length === 0
-      ? Promise.resolve([] as McpConnectionRow[])
-      : db
+  const chunks: string[][] = [];
+  for (let i = 0; i < connectionIds.length; i += CONNECTION_ID_CHUNK) chunks.push(connectionIds.slice(i, i + CONNECTION_ID_CHUNK));
+  const [connectionChunks, liveBots] = await Promise.all([
+    Promise.all(
+      chunks.map((ids) =>
+        db
           .select()
           .from(mcpConnections)
-          .where(and(eq(mcpConnections.userId, userId), inArray(mcpConnections.id, connectionIds)))
+          .where(and(eq(mcpConnections.userId, userId), inArray(mcpConnections.id, ids)))
           .all(),
+      ),
+    ),
     listWorkspaceBots(db, workspaceId, MAX_BOTS_PER_WORKSPACE),
   ]);
+  const connectionRows: McpConnectionRow[] = connectionChunks.flat();
   const botById = new Map(liveBots.map((bot) => [bot.id, bot]));
   const botByDestination = new Map(
     liveBots.flatMap((bot) =>
@@ -115,7 +126,7 @@ async function subscriptionsToApi(
   for (const row of connectionRows) {
     const bot = row.revokedAt === null && row.botId !== null ? botById.get(row.botId) : undefined;
     connections.set(row.id, {
-      connection: { client_name: row.clientName, bot_name: bot === undefined ? null : bot.name },
+      connection: { id: row.id, client_name: row.clientName, bot_name: bot === undefined ? null : bot.name },
       bot: bot !== undefined && bot.deliveryKind === "mcp" ? { id: bot.id, name: bot.name } : null,
     });
   }
@@ -157,21 +168,26 @@ function toApiSubscription(
 type WebhookDestinationInput = { name: string; url: URL; token: string; filter: EventFilter };
 
 // sources is a known field, so that it is answered with invalid_filter rather than unknown_field.
-const FILTER_FIELDS = ["types", "sources", "labels"] as const;
+export const FILTER_FIELDS = ["types", "sources", "labels"] as const;
 
-const createWebhookDestinationBody = jsonBody<CreateWebhookDestinationRequest, WebhookDestinationInput>((body, c) => {
-  const unknown = unknownField(body, ["name", "url", "token", ...FILTER_FIELDS]);
-  if (unknown !== null) return apiError(c, 400, "unknown_field", `未知の項目があります: ${unknown}`);
-  const name = normalizeDisplayName(body.name);
-  if (name === null) return apiError(c, 400, "invalid_name", invalidNameMessage);
-  const parsedUrl = parseCallbackUrl(body.url);
+type AppContext = Context<AppEnv>;
+
+export const invalidFilterMessage = "条件が正しくありません";
+
+// Checks the callback URL and the key of a webhook destination. Returns the error response if either is invalid.
+export function checkWebhookTarget(
+  c: AppContext,
+  url: unknown,
+  token: unknown,
+): { ok: true; url: URL; token: string } | Response {
+  const parsedUrl = parseCallbackUrl(url);
   if (!parsedUrl.ok) return apiError(c, 400, "invalid_url", invalidUrlMessage);
   // Sends to this service are blocked at send time too, but the consumer knows only APP_ORIGIN, not the host
   // of this request.
   const host = normalizeHost(parsedUrl.url.hostname);
   if (selfHosts(c.req.raw, c.env).includes(host)) return apiError(c, 400, "invalid_url", invalidUrlMessage);
   // Not trimmed: a key with spaces around it is a mistake.
-  if (typeof body.token !== "string" || !TOKEN_PATTERN.test(body.token)) {
+  if (typeof token !== "string" || !TOKEN_PATTERN.test(token)) {
     return apiError(
       c,
       400,
@@ -179,11 +195,87 @@ const createWebhookDestinationBody = jsonBody<CreateWebhookDestinationRequest, W
       "キーは空白を含まない印字可能な ASCII（1〜1024 文字）にしてください",
     );
   }
-  const given: Record<string, unknown> = {};
-  for (const field of FILTER_FIELDS) if (field in body) given[field] = body[field];
-  const filter = webhookFilter.safeParse(given);
-  if (!filter.success) return apiError(c, 400, "invalid_filter", "条件が正しくありません");
-  return { ok: true, value: { name, url: parsedUrl.url, token: body.token, filter: filter.data } };
+  return { ok: true, url: parsedUrl.url, token };
+}
+
+// The conditions of a webhook destination or a polling queue, from the fields of FILTER_FIELDS that are given.
+// null if they are invalid (invalid_filter), including sources.
+export function parseDestinationFilter(given: Record<string, unknown>): EventFilter | null {
+  const picked: Record<string, unknown> = {};
+  for (const field of FILTER_FIELDS) if (field in given) picked[field] = given[field];
+  const filter = webhookFilter.safeParse(picked);
+  return filter.success ? filter.data : null;
+}
+
+// The row of a new webhook destination (with webhook) or polling queue (without), as both the screen's own
+// registration and the creation of a bot store it. The key is encrypted with the ID as the additional authenticated
+// data.
+export async function newDestinationRow(params: {
+  id: string;
+  userId: string;
+  workspaceId: string;
+  name: string;
+  filter: EventFilter;
+  webhook: { url: URL; token: string } | null;
+  jwtSecret: string;
+  now: number;
+}): Promise<SubscriptionRow> {
+  const { id, webhook, now } = params;
+  let secret = "";
+  if (webhook !== null) {
+    const key = await subscriptionSecretKey(params.jwtSecret);
+    // Workers have no SharedArrayBuffer, so every view is backed by an ArrayBuffer.
+    const tokenBytes = new TextEncoder().encode(webhook.token) as Uint8Array<ArrayBuffer>;
+    secret = await encryptSecret(key, id, tokenBytes);
+  }
+  return {
+    id,
+    userId: params.userId,
+    workspaceId: params.workspaceId,
+    kind: webhook === null ? "queue" : "webhook",
+    name: params.name,
+    eventName: EVENT_NAME,
+    arguments: canonicalJson(params.filter),
+    // A polling queue sends nothing and has no key; the columns are NOT NULL.
+    callbackUrl: webhook === null ? "" : webhook.url.href,
+    secret,
+    previousSecret: null,
+    secretRotatedAt: null,
+    expiresAt: NO_EXPIRY,
+    unsubscribedAt: null,
+    createdAt: now,
+    updatedAt: now,
+    connectionId: null,
+  };
+}
+
+// Whether one more active destination of this kind may be made. A loose limit: concurrent requests may go slightly
+// over it. ending is the number of active destinations of this kind that the same request ends.
+export async function destinationLimitResponse(
+  c: AppContext,
+  kind: "webhook" | "queue",
+  ending = 0,
+) {
+  const db = c.get("db");
+  const workspaceId = c.get("workspace").id;
+  if (kind === "webhook") {
+    const count = (await countActiveWebhookDestinations(db, workspaceId)) - ending;
+    return count >= MAX_ACTIVE_WEBHOOK_DESTINATIONS_PER_WORKSPACE ? apiError(c, 409, "limit_exceeded", webhookLimitMessage) : null;
+  }
+  const count = (await countActiveQueues(db, workspaceId)) - ending;
+  return count >= MAX_ACTIVE_QUEUES_PER_WORKSPACE ? apiError(c, 409, "limit_exceeded", queueLimitMessage) : null;
+}
+
+const createWebhookDestinationBody = jsonBody<CreateWebhookDestinationRequest, WebhookDestinationInput>((body, c) => {
+  const unknown = unknownField(body, ["name", "url", "token", ...FILTER_FIELDS]);
+  if (unknown !== null) return apiError(c, 400, "unknown_field", `未知の項目があります: ${unknown}`);
+  const name = normalizeDisplayName(body.name);
+  if (name === null) return apiError(c, 400, "invalid_name", invalidNameMessage);
+  const target = checkWebhookTarget(c, body.url, body.token);
+  if (target instanceof Response) return target;
+  const filter = parseDestinationFilter(body);
+  if (filter === null) return apiError(c, 400, "invalid_filter", invalidFilterMessage);
+  return { ok: true, value: { name, url: target.url, token: target.token, filter } };
 });
 
 type QueueInput = { name: string; filter: EventFilter };
@@ -193,11 +285,9 @@ const createQueueBody = jsonBody<CreateQueueRequest, QueueInput>((body, c) => {
   if (unknown !== null) return apiError(c, 400, "unknown_field", `未知の項目があります: ${unknown}`);
   const name = normalizeDisplayName(body.name);
   if (name === null) return apiError(c, 400, "invalid_name", invalidNameMessage);
-  const given: Record<string, unknown> = {};
-  for (const field of FILTER_FIELDS) if (field in body) given[field] = body[field];
-  const filter = webhookFilter.safeParse(given);
-  if (!filter.success) return apiError(c, 400, "invalid_filter", "条件が正しくありません");
-  return { ok: true, value: { name, filter: filter.data } };
+  const filter = parseDestinationFilter(body);
+  if (filter === null) return apiError(c, 400, "invalid_filter", invalidFilterMessage);
+  return { ok: true, value: { name, filter } };
 });
 
 const subscriptionsApi = new Hono<AppEnv>()
@@ -221,39 +311,24 @@ const subscriptionsApi = new Hono<AppEnv>()
     const db = c.get("db");
     const user = c.get("user");
     const workspaceId = c.get("workspace").id;
-    // A loose limit: concurrent requests may go slightly over it.
-    if ((await countActiveWebhookDestinations(db, workspaceId)) >= MAX_ACTIVE_WEBHOOK_DESTINATIONS_PER_WORKSPACE) {
-      return apiError(c, 409, "limit_exceeded", "Webhook 配信先は 20 件までです");
-    }
+    const limited = await destinationLimitResponse(c, "webhook");
+    if (limited !== null) return limited;
     const now = clock.now();
-    const key = await subscriptionSecretKey(c.get("config").jwtSecret);
-    // Workers have no SharedArrayBuffer, so every view is backed by an ArrayBuffer.
-    const tokenBytes = new TextEncoder().encode(token) as Uint8Array<ArrayBuffer>;
     // On an ID collision, one more try. Not an upsert: a collision must not overwrite the existing row.
     for (let attempt = 0; attempt < 2; attempt++) {
       const id = newRandomSubscriptionId();
+      const row = await newDestinationRow({
+        id,
+        userId: user.id,
+        workspaceId,
+        name,
+        filter,
+        webhook: { url, token },
+        jwtSecret: c.get("config").jwtSecret,
+        now,
+      });
       try {
-        await db
-          .insert(subscriptions)
-          .values({
-            id,
-            userId: user.id,
-            workspaceId,
-            kind: "webhook",
-            name,
-            eventName: EVENT_NAME,
-            arguments: canonicalJson(filter),
-            callbackUrl: url.href,
-            // The ID is the additional authenticated data, so the key is encrypted again for each ID.
-            secret: await encryptSecret(key, id, tokenBytes),
-            previousSecret: null,
-            secretRotatedAt: null,
-            expiresAt: NO_EXPIRY,
-            unsubscribedAt: null,
-            createdAt: now,
-            updatedAt: now,
-          })
-          .run();
+        await db.insert(subscriptions).values(row).run();
       } catch (error) {
         if (isUniqueViolation(error)) continue;
         throw error;
@@ -275,36 +350,24 @@ const subscriptionsApi = new Hono<AppEnv>()
     const db = c.get("db");
     const user = c.get("user");
     const workspaceId = c.get("workspace").id;
-    // A loose limit: concurrent requests may go slightly over it.
-    if ((await countActiveQueues(db, workspaceId)) >= MAX_ACTIVE_QUEUES_PER_WORKSPACE) {
-      return apiError(c, 409, "limit_exceeded", "ポーリング用キューは 10 件までです");
-    }
+    const limited = await destinationLimitResponse(c, "queue");
+    if (limited !== null) return limited;
     const now = clock.now();
     // On an ID collision, one more try. Not an upsert: a collision must not overwrite the existing row.
     for (let attempt = 0; attempt < 2; attempt++) {
       const id = newRandomSubscriptionId();
+      const row = await newDestinationRow({
+        id,
+        userId: user.id,
+        workspaceId,
+        name,
+        filter,
+        webhook: null,
+        jwtSecret: c.get("config").jwtSecret,
+        now,
+      });
       try {
-        await db
-          .insert(subscriptions)
-          .values({
-            id,
-            userId: user.id,
-            workspaceId,
-            kind: "queue",
-            name,
-            eventName: EVENT_NAME,
-            arguments: canonicalJson(filter),
-            // Nothing is sent and there is no key; the columns are NOT NULL.
-            callbackUrl: "",
-            secret: "",
-            previousSecret: null,
-            secretRotatedAt: null,
-            expiresAt: NO_EXPIRY,
-            unsubscribedAt: null,
-            createdAt: now,
-            updatedAt: now,
-          })
-          .run();
+        await db.insert(subscriptions).values(row).run();
       } catch (error) {
         if (isUniqueViolation(error)) continue;
         throw error;
@@ -343,7 +406,7 @@ const subscriptionsApi = new Hono<AppEnv>()
       // The deliveries not taken yet would never be: they fail in the same batch.
       await endQueue(c.env.DB, workspaceId, id, now);
     } else {
-      await endWebhookDestination(db, workspaceId, id, now);
+      await endWebhookDestination(c.env.DB, workspaceId, id, now);
     }
     const ended = await findWorkspaceDestination(db, workspaceId, id);
     if (!ended) return apiError(c, 404, "not_found", destinationNotFound);

@@ -98,7 +98,7 @@ const POST_ERROR_MESSAGES: Record<PostErrorCode, string> = {
 
 function notParticipantMessage(reason: NotParticipantReason, botName: string | null): string {
   if (reason === "unassigned") {
-    return "この MCP 接続は Bot に割り当てられていません。Pinglune の Bot 画面で、この接続を Bot に割り当ててもらってください";
+    return "この MCP 接続は Bot に割り当てられていません。Pinglune の「AI の接続」画面で、この接続を Bot に割り当ててもらってください";
   }
   return `あなたは Bot「${botName ?? ""}」として接続していますが、この会話の参加者ではありません`;
 }

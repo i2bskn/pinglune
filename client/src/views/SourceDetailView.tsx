@@ -12,7 +12,9 @@ import { formatDateTime } from "../format";
 import { PlusIcon } from "../icons";
 import { Link } from "../Link";
 import { eventsPath } from "../events";
+import { SOURCE_TABS, botPath, sourceTabOf, sourceTabPath } from "../bots";
 import { type ApiClient, type ViewState, loadEvents, loadSourceBots, loadSourceDetail, useView } from "../load";
+import { searchParams } from "../router";
 import { ViewStatus, useDocumentTitle, viewTitle } from "./common";
 import { EventRow } from "./EventsView";
 import { CopyableId } from "./DeliveriesView";
@@ -24,9 +26,11 @@ const ADDRESS_GONE_MESSAGE = "このメールアドレスは見つかりませ�
 
 const RECENT_EVENTS = 5;
 
-// One source: rename, enable or disable, the bots that receive its events, its newest events, its ID for Service
-// Bindings, its API keys and its email addresses.
-export function SourceDetailView({ client, id }: { client: ApiClient; id: string }) {
+// One source, in three tabs (?tab=): the overview (the bots that receive its events and its newest events), how to
+// send (its ID for Service Bindings, its API keys and its email addresses), and the settings (rename, enable or
+// disable). A move to another tab loads the screen again.
+export function SourceDetailView({ client, id, path }: { client: ApiClient; id: string; path: string }) {
+  const tab = sourceTabOf(searchParams(path));
   const [state, reload] = useView(() => loadSourceDetail(client, id), `source:${id}`);
   // The result of the last operation, kept across the reload that follows.
   const [notice, setNotice] = useState<string | null>(null);
@@ -38,6 +42,10 @@ export function SourceDetailView({ client, id }: { client: ApiClient; id: string
     return <ViewStatus state={state} notFoundMessage={GONE_MESSAGE} onReload={reload} />;
   }
   const { source, apiKeys, emailAddresses } = state.data;
+  const onDone = (message: string | null) => {
+    setNotice(message);
+    reload();
+  };
 
   return (
     <main className="main">
@@ -45,124 +53,119 @@ export function SourceDetailView({ client, id }: { client: ApiClient; id: string
         <Link to="/sources">送信元</Link>
       </p>
       <header className="page-head">
-        <h1>{source.name}</h1>
+        <div className="page-head-title">
+          <h1>{source.name}</h1>
+          <span className={source.enabled ? "badge badge-ok" : "badge badge-off"}>{source.enabled ? "有効" : "無効"}</span>
+        </div>
         <p className="lead">この送信元から受け取ったイベントは、紐づけた Bot の配信先に届きます。</p>
       </header>
+      <nav className="filter-tabs" aria-label="送信元の表示">
+        {SOURCE_TABS.map((item) => (
+          <Link
+            key={item.tab}
+            to={sourceTabPath(source.id, item.tab)}
+            className="filter-tab"
+            aria-current={item.tab === tab ? "page" : undefined}
+          >
+            {item.label}
+          </Link>
+        ))}
+      </nav>
       {notice !== null && (
         <p className="notice" role="status">
           {notice}
         </p>
       )}
-      <SourceSettings
-        client={client}
-        source={source}
-        onDone={(message) => {
-          setNotice(message);
-          reload();
-        }}
-      />
 
-      <SourceBots client={client} sourceId={source.id} />
-
-      <h2>送信元 ID（Service Bindings 用）</h2>
-      <p>
-        同じ Cloudflare アカウントの Worker から送るときは、バインディングの <code>props</code> に次の送信元 ID を指定します。
-      </p>
-      <CopyableId id={source.id} />
-
-      <h2>API キー</h2>
-      <p>
-        HTTP（<code>POST /ingest/v1/events</code>）で送るときに <code>Authorization: Bearer</code> ヘッダーで使います。
-      </p>
-      {issued !== null && (
-        <div className="issued-key" role="status">
-          <p>
-            <strong>API キーを発行しました。このキーは今だけ表示されます。この画面を離れると二度と表示されません。</strong>
-            安全な場所に保存してください。
-          </p>
-          <p className="copyable">
-            <code>{issued.key}</code>
-          </p>
-          <button type="button" onClick={() => setIssued(null)}>
-            保存したので閉じる
-          </button>
-        </div>
-      )}
-      <IssueKeyButton
-        client={client}
-        sourceId={source.id}
-        onIssued={(keyId, key) => {
-          setNotice(null);
-          setIssued({ keyId, key });
-          reload();
-        }}
-        onGone={() => {
-          setNotice(GONE_MESSAGE);
-          reload();
-        }}
-      />
-      {apiKeys.length === 0 ? (
-        <p className="muted">API キーはまだありません。</p>
-      ) : (
-        <ul className="list api-keys">
-          {apiKeys.map((apiKey) => (
-            <ApiKeyRow
-              key={apiKey.key_id}
-              client={client}
-              sourceId={source.id}
-              apiKey={apiKey}
-              onDone={(message) => {
-                setNotice(message);
-                reload();
-              }}
-            />
-          ))}
-        </ul>
-      )}
-
-      <h2>メールアドレス</h2>
-      {emailAddresses.email_domain === null ? (
-        <p className="muted">
-          メールでの受付は設定されていません。README の『メールでの受付』を参照して <code>EMAIL_DOMAIN</code>{" "}
-          を設定してください。
-        </p>
-      ) : (
+      {tab === "overview" && (
         <>
-          <p>メールで送るときの宛先です。届いたメールはこの送信元のイベントとして受け付けます。</p>
-          <IssueEmailAddressButton
-            client={client}
-            sourceId={source.id}
-            onIssued={() => {
-              setNotice("メールアドレスを発行しました");
-              reload();
-            }}
-            onGone={() => {
-              setNotice(GONE_MESSAGE);
-              reload();
-            }}
-          />
-          {emailAddresses.email_addresses.length === 0 ? (
-            <p className="muted">メールアドレスはまだありません。</p>
-          ) : (
-            <ul className="list api-keys email-addresses">
-              {emailAddresses.email_addresses.map((emailAddress) => (
-                <EmailAddressRow
-                  key={emailAddress.local_part}
-                  client={client}
-                  sourceId={source.id}
-                  emailAddress={emailAddress}
-                  onDone={(message) => {
-                    setNotice(message);
-                    reload();
-                  }}
-                />
-              ))}
-            </ul>
-          )}
+          <SourceBots client={client} sourceId={source.id} />
+          <SourceEvents client={client} sourceId={source.id} />
         </>
       )}
 
-      <SourceEvents client={client} sourceId={source.id} />
+      {tab === "settings" && <SourceSettings client={client} source={source} onDone={onDone} />}
+
+      {tab === "intake" && (
+        <>
+          <h2>送信元 ID（Service Bindings 用）</h2>
+          <p>
+            同じ Cloudflare アカウントの Worker から送るときは、バインディングの <code>props</code> に次の送信元 ID を指定します。
+          </p>
+          <CopyableId id={source.id} />
+
+          <h2>API キー</h2>
+          <p>
+            HTTP（<code>POST /ingest/v1/events</code>）で送るときに <code>Authorization: Bearer</code> ヘッダーで使います。
+          </p>
+          {issued !== null && (
+            <div className="issued-key" role="status">
+              <p>
+                <strong>API キーを発行しました。このキーは今だけ表示されます。この画面を離れると二度と表示されません。</strong>
+                安全な場所に保存してください。
+              </p>
+              <p className="copyable">
+                <code>{issued.key}</code>
+              </p>
+              <button type="button" onClick={() => setIssued(null)}>
+                保存したので閉じる
+              </button>
+            </div>
+          )}
+          <IssueKeyButton
+            client={client}
+            sourceId={source.id}
+            onIssued={(keyId, key) => {
+              setNotice(null);
+              setIssued({ keyId, key });
+              reload();
+            }}
+            onGone={() => onDone(GONE_MESSAGE)}
+          />
+          {apiKeys.length === 0 ? (
+            <p className="muted">API キーはまだありません。</p>
+          ) : (
+            <ul className="list api-keys">
+              {apiKeys.map((apiKey) => (
+                <ApiKeyRow key={apiKey.key_id} client={client} sourceId={source.id} apiKey={apiKey} onDone={onDone} />
+              ))}
+            </ul>
+          )}
+
+          <h2>メールアドレス</h2>
+          {emailAddresses.email_domain === null ? (
+            <p className="muted">
+              メールでの受付は設定されていません。README の『メールでの受付』を参照して <code>EMAIL_DOMAIN</code>{" "}
+              を設定してください。
+            </p>
+          ) : (
+            <>
+              <p>メールで送るときの宛先です。届いたメールはこの送信元のイベントとして受け付けます。</p>
+              <IssueEmailAddressButton
+                client={client}
+                sourceId={source.id}
+                onIssued={() => onDone("メールアドレスを発行しました")}
+                onGone={() => onDone(GONE_MESSAGE)}
+              />
+              {emailAddresses.email_addresses.length === 0 ? (
+                <p className="muted">メールアドレスはまだありません。</p>
+              ) : (
+                <ul className="list api-keys email-addresses">
+                  {emailAddresses.email_addresses.map((emailAddress) => (
+                    <EmailAddressRow
+                      key={emailAddress.local_part}
+                      client={client}
+                      sourceId={source.id}
+                      emailAddress={emailAddress}
+                      onDone={onDone}
+                    />
+                  ))}
+                </ul>
+              )}
+            </>
+          )}
+        </>
+      )}
     </main>
   );
 }
@@ -204,7 +207,7 @@ function SourceBotsBody({ state }: { state: ViewState<Bot[]> }) {
         <ul className="list source-bots">
           {state.data.map((bot) => (
             <li key={bot.id}>
-              <Link to="/bots" className="source-link">
+              <Link to={botPath(bot.id)} className="source-link">
                 <span className="source-name">{bot.name}</span>
               </Link>
             </li>
@@ -244,7 +247,7 @@ function SourceEventsBody({ state }: { state: ViewState<EventList> }) {
       ) : (
         <ul className="list events">
           {state.data.events.slice(0, RECENT_EVENTS).map((event) => (
-            <EventRow key={event.event_id} event={event} />
+            <EventRow key={event.event_id} event={event} hideSource />
           ))}
         </ul>
       );

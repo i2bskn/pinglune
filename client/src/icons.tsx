@@ -100,6 +100,25 @@ export function HistoryIcon() {
   );
 }
 
+// AI connections: two links of a chain, unlike the plug of the sources.
+export function ConnectionsIcon() {
+  return (
+    <Icon>
+      <path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1.2 1.2" />
+      <path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1.2-1.2" />
+    </Icon>
+  );
+}
+
+// A chevron that points into a row that links to a screen.
+export function ChevronRightIcon() {
+  return (
+    <Icon>
+      <path d="m9.5 6 6 6-6 6" />
+    </Icon>
+  );
+}
+
 // Bots: a robot head.
 export function BotsIcon() {
   return (

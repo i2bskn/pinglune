@@ -8,7 +8,7 @@ import {
   participantStopReason,
 } from "../conversations";
 import { formatDateTime, keepNumbersWithUnits } from "../format";
-import { DELIVERY_KIND_LABELS } from "../bots";
+import { DELIVERY_KIND_LABELS, botPath } from "../bots";
 import { Link } from "../Link";
 import {
   type ApiClient,
@@ -353,7 +353,9 @@ function ParticipantList({ conversation }: { conversation: ConversationDetail })
         return (
           <li key={participant.name} className="subscription">
             <span className="delivery-head">
-              <span className="delivery-host">{participant.name}</span>
+              <span className="delivery-host">
+                {bot !== null && !bot.deleted ? <Link to={botPath(bot.id)}>{participant.name}</Link> : participant.name}
+              </span>
               {bot?.deleted === true && <span className="badge badge-off">削除済み</span>}
               <span className={active ? "badge badge-ok" : "badge badge-warning"}>
                 {active ? "届く" : `届かない（${participantStopReason(participant)}）`}
@@ -363,7 +365,15 @@ function ParticipantList({ conversation }: { conversation: ConversationDetail })
               {(bot === null || bot.name !== participant.name) && (
                 <div>
                   <dt>Bot</dt>
-                  <dd>{bot === null ? "以前の参加者（Bot ではありません）" : bot.name}</dd>
+                  <dd>
+                    {bot === null ? (
+                      "以前の参加者（Bot ではありません）"
+                    ) : bot.deleted ? (
+                      bot.name
+                    ) : (
+                      <Link to={botPath(bot.id)}>{bot.name}</Link>
+                    )}
+                  </dd>
                 </div>
               )}
               <div>

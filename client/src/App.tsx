@@ -4,8 +4,11 @@ import { createApiClient, createApiFetch, unexpectedResponseMessage } from "./ap
 import { loadMe, useView } from "./load";
 import { type Route, matchRoute, usePath } from "./router";
 import { markLeaving } from "./unload";
+import { BotDetailView } from "./views/BotDetailView";
+import { BotNewView } from "./views/BotNewView";
 import { BotsView } from "./views/BotsView";
 import { LoadError, NotFound, useDocumentTitle } from "./views/common";
+import { ConnectionsView } from "./views/ConnectionsView";
 import { ConversationDetailView } from "./views/ConversationDetailView";
 import { ConversationsView } from "./views/ConversationsView";
 import { DeliveriesView } from "./views/DeliveriesView";
@@ -62,7 +65,8 @@ export function App() {
   }
 }
 
-// path includes the query, which the event list and the delivery history read their filters from.
+// path includes the query, which the event list and the delivery history read their filters from, the creation of a
+// bot its destination and the source its tab.
 function Screen({ route, path, user }: { route: Route; path: string; user: User }) {
   switch (route.name) {
     case "home":
@@ -74,13 +78,19 @@ function Screen({ route, path, user }: { route: Route; path: string; user: User 
     case "sources":
       return <SourcesView client={client} />;
     case "source":
-      return <SourceDetailView client={client} id={route.id} />;
+      return <SourceDetailView client={client} id={route.id} path={path} />;
     case "deliveries":
-      return <DeliveriesView client={client} />;
+      return <DeliveriesView />;
     case "deliveryHistory":
       return <DeliveryHistoryView client={client} path={path} />;
     case "bots":
       return <BotsView client={client} />;
+    case "botNew":
+      return <BotNewView client={client} path={path} />;
+    case "bot":
+      return <BotDetailView client={client} id={route.id} />;
+    case "connections":
+      return <ConnectionsView client={client} />;
     case "conversations":
       return <ConversationsView client={client} />;
     case "conversation":

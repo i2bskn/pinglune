@@ -12,6 +12,7 @@ import { subscriptions, type SubscriptionRow } from "../db/schema";
 import { failPendingDelivery } from "../deliveries/queries";
 import { findWorkspaceEventsByIds } from "../events/queries";
 import { DELIVERY_ID_PATTERN } from "../ids";
+import type { StatementGuard } from "../subscriptions/queries";
 import { QUEUE_LEASE_MS, QUEUE_MAX_CLAIMS, QUEUE_RETENTION_MS } from "./constants";
 
 // The polling queues of a workspace for the management screen: the active ones first, then newest first, so that
@@ -69,21 +70,36 @@ export function findActiveWorkspaceQueue(
 // Ends a polling queue of a workspace and fails its pending deliveries, in one batch. Ending it again keeps the
 // first unsubscribed_at; failing the pending deliveries again does no harm.
 export async function endQueue(d1: D1Database, workspaceId: string, id: string, now: number): Promise<void> {
-  await d1.batch([
+  await d1.batch(endQueueStatements(d1, workspaceId, id, now));
+}
+
+// The statements of endQueue, so that they can join another batch. A guard (an EXISTS condition with its values)
+// is added to both, so that they change nothing when it does not hold. Deliveries claimed and not acknowledged fail
+// too: a later ack counts them as not found.
+export function endQueueStatements(
+  d1: D1Database,
+  workspaceId: string,
+  id: string,
+  now: number,
+  guard?: StatementGuard,
+): D1PreparedStatement[] {
+  const condition = guard === undefined ? "" : ` AND ${guard.sql}`;
+  const values = guard === undefined ? [] : guard.values;
+  return [
     d1
       .prepare(
-        `UPDATE subscriptions SET unsubscribed_at = ?1, updated_at = ?1
-        WHERE id = ?2 AND workspace_id = ?3 AND kind = 'queue' AND unsubscribed_at IS NULL`,
+        `UPDATE subscriptions SET unsubscribed_at = ?, updated_at = ?
+        WHERE id = ? AND workspace_id = ? AND kind = 'queue' AND unsubscribed_at IS NULL${condition}`,
       )
-      .bind(now, id, workspaceId),
+      .bind(now, now, id, workspaceId, ...values),
     d1
       .prepare(
         `UPDATE deliveries INDEXED BY deliveries_status_created_at_idx
-        SET status = 'failed', last_error = 'subscription_inactive', updated_at = ?1
-        WHERE status = 'pending' AND subscription_id = ?2 AND workspace_id = ?3`,
+        SET status = 'failed', last_error = 'subscription_inactive', updated_at = ?
+        WHERE status = 'pending' AND subscription_id = ? AND workspace_id = ?${condition}`,
       )
-      .bind(now, id, workspaceId),
-  ]);
+      .bind(now, id, workspaceId, ...values),
+  ];
 }
 
 // The deliveries of a queue that may be claimed now, oldest first. A query of its own so that a test can check

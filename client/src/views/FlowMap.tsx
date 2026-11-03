@@ -10,6 +10,7 @@ import {
   flowSourceName,
   relatedIds,
 } from "../flow";
+import { botPath } from "../bots";
 import { Link } from "../Link";
 import type { Subscription } from "../../../src/api/types";
 import type { FlowData } from "../load";
@@ -43,7 +44,7 @@ export function FlowMap({ data, unassigned = [] }: { data: FlowData; unassigned?
             {unassigned.map((subscription) => subscriptionName(subscription)).join("、")}
           </p>
           <Link to="/bots" className="button button-primary">
-            Bot に割り当てる
+            Bot 画面で確かめる
           </Link>
         </div>
       )}
@@ -226,7 +227,7 @@ function FlowDiagram({ model, collapsed, uid }: { model: FlowModel; collapsed: b
               {node(
                 bot.id,
                 null,
-                <Link to="/bots" className="flow-card">
+                <Link to={botPath(bot.botId)} className="flow-card">
                   <span className="flow-name">{bot.name}</span>
                   <Badges badges={bot.badges} />
                   <span className="sr-only">{bot.description}</span>
@@ -235,7 +236,7 @@ function FlowDiagram({ model, collapsed, uid }: { model: FlowModel; collapsed: b
               {node(
                 bot.delivery.id,
                 null,
-                <Link to="/deliveries" className="flow-card">
+                <Link to={botPath(bot.botId)} className="flow-card">
                   <DeliveryBody delivery={bot.delivery} />
                 </Link>,
               )}
@@ -311,7 +312,7 @@ function FlowStack({ model }: { model: FlowModel }) {
                 <li className="flow-step">
                   <span className="flow-step-label">Bot</span>
                   <span className="flow-step-value">
-                    <Link to="/bots" className="flow-name">
+                    <Link to={botPath(bot.botId)} className="flow-name">
                       {bot.name}
                     </Link>
                   </span>
@@ -320,7 +321,7 @@ function FlowStack({ model }: { model: FlowModel }) {
                   <span className="flow-step-label">配信先</span>
                   <span className="flow-step-value">
                     <span className="kind-chip">{bot.delivery.kindLabel}</span>
-                    {bot.delivery.primary !== null && <Link to="/deliveries">{bot.delivery.primary}</Link>}
+                    {bot.delivery.primary !== null && <Link to={botPath(bot.botId)}>{bot.delivery.primary}</Link>}
                     {bot.delivery.badge !== null && <span className="badge badge-warning">{bot.delivery.badge}</span>}
                   </span>
                   {bot.delivery.note !== null && <span className="flow-note">{bot.delivery.note}</span>}

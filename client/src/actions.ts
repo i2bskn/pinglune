@@ -365,17 +365,26 @@ export async function createBot(client: ApiClient, input: CreateBotRequest): Pro
 
 const INVALID_BOT_ID = { kind: "error", message: "Bot が見つかりません" } as const;
 
-// Changes the name or the destination of a bot. Never rejects.
+// Changes the name, the sources, the destination or its conditions of a bot. Never rejects.
 export async function updateBot(client: ApiClient, botId: string, input: UpdateBotRequest): Promise<BotResult> {
   if (!isValidId(botId)) return INVALID_BOT_ID;
   return botResult(await send(() => client.api.v1.bots[":id"].update.$post({ param: { id: botId }, json: input })));
 }
 
-// Deletes a bot. Its MCP connection stays, not assigned to a bot; its destination is not ended. Deleting a deleted bot
-// is ok. Never rejects.
-export async function deleteBot(client: ApiClient, botId: string): Promise<ResourceActionResult> {
+export type DeleteBotResult =
+  | ResourceActionResult
+  // The bot was changed by another operation since the screen read it (409); the screen offers to reload.
+  | { kind: "conflict"; message: string };
+
+// Deletes a bot and ends its webhook destination or polling queue. Its MCP connection stays, not assigned to a bot.
+// Deleting a deleted bot is ok. Never rejects.
+export async function deleteBot(client: ApiClient, botId: string): Promise<DeleteBotResult> {
   if (!isValidId(botId)) return INVALID_BOT_ID;
-  return resourceActionResult(await send(() => client.api.v1.bots[":id"].delete.$post({ param: { id: botId } })));
+  const sent = await send(() => client.api.v1.bots[":id"].delete.$post({ param: { id: botId } }));
+  if (sent.kind === "response" && sent.res.status === 409) {
+    return { kind: "conflict", message: await responseErrorMessage(sent.res) };
+  }
+  return resourceActionResult(sent);
 }
 
 // Assigns an MCP connection (or a legacy grant) to a bot, or removes the assignment with bot_id null. The other

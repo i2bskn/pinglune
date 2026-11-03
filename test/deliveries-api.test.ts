@@ -159,6 +159,7 @@ describe("GET /api/v1/subscriptions", () => {
     for (const row of [lonely, legacy, revoked, deleted, crossed]) expect(botOf(row.id), row.id).toBeNull();
     // The connection still names the bot it is assigned to, whatever its delivery kind.
     expect(body.subscriptions.find((s) => s.id === crossed.id)?.connection).toEqual({
+      id: crossedBot.connectionId,
       client_name: "Test client",
       bot_name: "Grok",
     });

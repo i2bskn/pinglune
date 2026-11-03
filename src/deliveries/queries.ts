@@ -143,6 +143,91 @@ export async function listWorkspaceDeliveries(
   };
 }
 
+type DeliveryRecord = {
+  id: string;
+  event_id: string;
+  subscription_id: string;
+  workspace_id: string;
+  status: DeliveryStatus;
+  attempts: number;
+  last_attempt_at: number | null;
+  last_http_status: number | null;
+  last_error: string | null;
+  delivered_at: number | null;
+  created_at: number;
+  updated_at: number;
+};
+
+// The newest deliveries to one subscription in the workspace, as a statement so that a test can check its plan. It
+// reads that subscription's deliveries through deliveries_subscription_id_idx (INDEXED BY keeps the plan when D1
+// gathers statistics) and sorts them, rather than the whole workspace: an old destination has many, but they are
+// fewer than the workspace's. The other options are applied to those rows.
+export function subscriptionDeliveriesStatement(
+  d1: D1Database,
+  workspaceId: string,
+  subscriptionId: string,
+  options: ListDeliveriesOptions,
+  limit: number,
+): D1PreparedStatement {
+  const conditions = ["subscription_id = ?", "workspace_id = ?"];
+  const values: unknown[] = [subscriptionId, workspaceId];
+  if (options.cursor !== undefined) {
+    conditions.push("id < ?");
+    values.push(options.cursor);
+  }
+  if (options.eventId !== undefined) {
+    conditions.push("event_id = ?");
+    values.push(options.eventId);
+  }
+  if (options.status !== undefined) {
+    conditions.push("status = ?");
+    values.push(options.status);
+  }
+  return d1
+    .prepare(
+      `SELECT * FROM deliveries INDEXED BY deliveries_subscription_id_idx
+      WHERE ${conditions.join(" AND ")} ORDER BY id DESC LIMIT ?`,
+    )
+    .bind(...values, limit);
+}
+
+function fromRecord(record: DeliveryRecord): DeliveryRow {
+  return {
+    id: record.id,
+    eventId: record.event_id,
+    subscriptionId: record.subscription_id,
+    workspaceId: record.workspace_id,
+    status: record.status,
+    attempts: record.attempts,
+    lastAttemptAt: record.last_attempt_at,
+    lastHttpStatus: record.last_http_status,
+    lastError: record.last_error,
+    deliveredAt: record.delivered_at,
+    createdAt: record.created_at,
+    updatedAt: record.updated_at,
+  };
+}
+
+// The newest deliveries to one subscription in the workspace (subscriptionDeliveriesStatement), as
+// listWorkspaceDeliveries returns them.
+export async function listSubscriptionDeliveries(
+  d1: D1Database,
+  db: Db,
+  workspaceId: string,
+  subscriptionId: string,
+  options: ListDeliveriesOptions = {},
+): Promise<{ deliveries: Delivery[]; nextCursor: string | null }> {
+  const limit = DELIVERY_PAGE_SIZE;
+  const { results } = await subscriptionDeliveriesStatement(d1, workspaceId, subscriptionId, options, limit + 1).all<DeliveryRecord>();
+  const rows = results.map(fromRecord);
+  const page = rows.slice(0, limit);
+  const last = page[page.length - 1];
+  return {
+    deliveries: await toApiDeliveries(db, page),
+    nextCursor: rows.length > limit && last ? last.id : null,
+  };
+}
+
 // One delivery only if it belongs to the workspace.
 export function findWorkspaceDelivery(db: Db, workspaceId: string, id: string): Promise<DeliveryRow | undefined> {
   return db

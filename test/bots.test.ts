@@ -170,7 +170,14 @@ describe("POST /api/v1/bots", () => {
       "delivery_in_use",
     );
     expect((await remove(grok.id)).status).toBe(204);
-    await created({ name: "Grok", delivery_kind: "webhook", delivery_subscription_id: hook.id });
+    // The name is free again; the destination ended with the bot.
+    await expectApiError(
+      await create({ name: "Grok", delivery_kind: "webhook", delivery_subscription_id: hook.id }),
+      400,
+      "invalid_delivery",
+    );
+    const other = await createSubscription({ user: alice, kind: "webhook", name: "other", expiresAt: NO_EXPIRY });
+    await created({ name: "Grok", delivery_kind: "webhook", delivery_subscription_id: other.id });
     // Another user may use the same name.
     await created({ name: "Grok", delivery_kind: "mcp" }, bobCookies);
   });
@@ -207,7 +214,7 @@ describe("POST /api/v1/bots/:id/update", () => {
 
   it("rejects a change of the delivery kind without a destination, unknown fields and an empty body", async () => {
     const bot = await created({ name: "Dot", delivery_kind: "mcp" });
-    await expectApiError(await update(bot.id, { delivery_kind: "queue" }), 400, "invalid_request");
+    await expectApiError(await update(bot.id, { delivery_kind: "webhook" }), 400, "invalid_request");
     await expectApiError(await update(bot.id, { extra: 1 }), 400, "unknown_field");
     await expectApiError(await update(bot.id, {}), 400, "invalid_request");
     await expectApiError(await update(bot.id, { delivery_subscription_id: queue.id }), 400, "invalid_delivery");
@@ -231,7 +238,7 @@ describe("POST /api/v1/bots/:id/update", () => {
 });
 
 describe("POST /api/v1/bots/:id/delete", () => {
-  it("deletes a bot and keeps its connection, not assigned, and its destination", async () => {
+  it("deletes a bot and ends its destination, and keeps its connection, not assigned", async () => {
     const bot = await created({ name: "Grok", delivery_kind: "webhook", delivery_subscription_id: hook.id });
     const connection = await connect(alice, bot.id);
     expect((await remove(bot.id)).status).toBe(204);
@@ -243,7 +250,7 @@ describe("POST /api/v1/bots/:id/delete", () => {
     const destination = await env.DB.prepare("SELECT unsubscribed_at FROM subscriptions WHERE id = ?")
       .bind(hook.id)
       .first<{ unsubscribed_at: number | null }>();
-    expect(destination?.unsubscribed_at).toBeNull();
+    expect(destination?.unsubscribed_at).toBe(now);
     expect(await list()).toEqual([]);
     // Again: nothing changes.
     now += 1000;

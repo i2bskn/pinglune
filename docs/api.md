@@ -177,13 +177,14 @@ RPCでは同じ分類のエラーを、種類を判別できる形で返しま�
 | `GET /api/v1/events?cursor=&type=&source_id=` | イベントの一覧（新しい順、50件、`next_cursor`）。会話のメッセージは出ない。`type` は種別1つ、`source_id` は送信元のID1つで絞り込む。次のページにも同じ絞り込みを付ける。他のワークスペースの送信元や存在しない送信元のIDでは空の一覧を返す |
 | `GET /api/v1/events/:id` | イベントの詳細と、本文・添付の一覧（`data`） |
 | `GET /api/v1/events/:id/data/:dataRef` | 本文・添付の中身（下記） |
-| `GET /api/v1/deliveries?cursor=&event_id=&status=` | 配信の記録（新しい順、50件、`next_cursor`）。`event_id` はイベント1つ、`status` は `pending`・`delivered`・`failed` のどれかで絞り込む。組み合わせてよい |
+| `GET /api/v1/deliveries?cursor=&event_id=&status=&subscription_id=` | 配信の記録（新しい順、50件、`next_cursor`）。`event_id` はイベント1つ、`status` は `pending`・`delivered`・`failed` のどれかで、`subscription_id` は配信先（購読）1つで絞り込む。組み合わせてよい。他のワークスペースの配信先のIDでは空の一覧を返す |
 | `POST /api/v1/deliveries/:id/retry` | 失敗した配信の再送（下記）。200で更新後の配信を返す |
 
 - イベントの一覧の各イベントには `delivery_summary`（`{ "delivered", "pending", "failed" }`、そのイベントの配信の状態ごとの件数）が付きます。配信がなければすべて0です。MCPの `list_events` には付きません。
 - 配信の記録の各配信には `event`（`{ "type", "summary", "source_name" }`）が付きます。会話のメッセージでは、`source_name` は会話の隠し送信元の名前です。イベントが見つからなければ `null` です。
-- 絞り込みの値の誤り（形式の誤り、空文字、同じパラメータを2回以上指定）は400で、コードは `invalid_cursor`・`invalid_type`・`invalid_source_id`・`invalid_event_id`・`invalid_status` です。`type` の形式は送信元が渡す `type` と同じです。
+- 絞り込みの値の誤り（形式の誤り、空文字、同じパラメータを2回以上指定）は400で、コードは `invalid_cursor`・`invalid_type`・`invalid_source_id`・`invalid_event_id`・`invalid_status`・`invalid_subscription_id` です。`type` の形式は送信元が渡す `type` と同じです。
 - 絞り込みに使えるインデックスはワークスペースとIDの組だけです。`type`・`source_id`・`status` で絞り込むと、該当が51件に達するまで走査が続くため、該当が少ないとワークスペース全体を読みます。個人から少人数での利用を前提にしています。
+- `subscription_id` を付けたときだけは、配信先ごとのインデックス（`deliveries_subscription_id_idx`）でその配信先の配信をすべて読み、新しい順に並べ替えます。ワークスペース全体は読みませんが、長く使った配信先ほど読む行が増えます。管理画面のBotの詳細（最近の配信）が使います。
 
 ### 本文・添付の中身
 
@@ -226,13 +227,14 @@ RPCでは同じ分類のエラーを、種類を判別できる形で返しま�
 
 ### Bot
 
-Botは会話に参加するAIの管理の単位で、名前・MCP接続（1つ）・配信先（1つ）・受け取る送信元をまとめたものです。会話の参加者はBotで選びます。管理画面（Bot）で作り、AIからMCPに接続するときに、どのBotとして接続するかを選びます。
+Botは会話に参加するAIの管理の単位で、名前・MCP接続（1つ）・配信先（1つ）・受け取る送信元をまとめたものです。会話の参加者はBotで選びます。管理画面（Bot）で作り、AIからMCPに接続するときに、どのBotとして接続するかを選びます。MCP接続とその購読は管理画面（AIの接続）で管理します。
 
 | エンドポイント | 内容 |
 | --- | --- |
 | `GET /api/v1/bots` | 削除していないBotの一覧（名前順、20件まで） `{ "bots": Bot[] }` |
-| `POST /api/v1/bots` | 作成。本文は `{ "name", "delivery_kind", "delivery_subscription_id?", "source_ids?" }`。201で `Bot` を返す |
-| `POST /api/v1/bots/:id/update` | 変更。本文は `{ "name?", "delivery_kind?", "delivery_subscription_id?", "source_ids?" }`。200で `Bot` を返す |
+| `GET /api/v1/bots/:id` | 1つのBot。`Bot` に `destination`（下記）を加えた `BotDetail` を返す |
+| `POST /api/v1/bots` | 作成。本文は `{ "name", "delivery_kind", "delivery_subscription_id?", "webhook?", "conditions?", "source_ids?" }`。201で `Bot` を返す |
+| `POST /api/v1/bots/:id/update` | 変更。本文は `{ "name?", "delivery_kind?", "delivery_subscription_id?", "webhook?", "conditions?", "source_ids?" }`。200で `Bot` を返す |
 | `POST /api/v1/bots/:id/delete` | 削除。204。削除済みのBotの削除も204 |
 
 ```json
@@ -249,16 +251,33 @@ Botは会話に参加するAIの管理の単位で、名前・MCP接続（1つ�
 }
 ```
 
-- `delivery_kind` は配信方式です。`mcp`（ChatGPTなど、Pingluneに購読を作るAI。配信先はAIの接続から自動で決まる）、`webhook`（配信先画面で作ったWebhook配信先）、`queue`（配信先画面で作ったポーリング用キュー）のどれかです。
-- `webhook` と `queue` では `delivery_subscription_id` が必須で、同じワークスペースの、種類が一致する有効な配信先に限ります。`mcp` では指定しません（変更で `mcp` にするときは `null`）。1つの配信先を使えるBotは1つだけです。
+- `delivery_kind` は配信方式です。`mcp`（ChatGPTなど、Pingluneに購読を作るAI。配信先はAIの接続から自動で決まる）、`webhook`（Webhook配信先）、`queue`（ポーリング用キュー）のどれかです。
+- 作成では、`webhook` と `queue` の配信先をその場で作れます。配信先の名前はBotの名前です。
+  - `webhook`：`webhook: { "url", "token" }` で新しいWebhook配信先を作るか、`delivery_subscription_id` で作成済みの配信先を使います。ちょうど一方を指定します（両方は400 `invalid_request`、どちらもなしは400 `invalid_delivery`）。
+  - `queue`：`delivery_subscription_id` を省くと新しいキューを作ります。`webhook` は指定できません（400 `invalid_request`）。
+  - `mcp`：`webhook`・`conditions` は400 `invalid_request`、`delivery_subscription_id`（`null` 以外）は400 `invalid_delivery` です。
+  - `conditions: { "types?", "labels?" }` は新しく作る配信先の条件です（`POST /api/v1/subscriptions/webhooks`・`/queues` と同じ検証。`sources` は400 `invalid_filter`）。`delivery_subscription_id` と同時には指定できません（400 `invalid_request`）。
+  - `webhook` の `url`・`token` の検証、上限（Webhook配信先20件、キュー10件。超えると409 `limit_exceeded`）、鍵の暗号化は、管理画面のWebhook配信先・キューの作成と同じです。`webhook`・`conditions` の未知の項目は400 `unknown_field` です。
+  - 配信先・Bot・受け取る送信元は1つのD1 batchで書きます。名前の重複などで失敗すると、どれも残りません。
+- `delivery_subscription_id` で指定する配信先は、同じワークスペースの、種類が一致する有効な配信先に限ります。1つの配信先を使えるBotは1つだけです。
+- 変更で配信先を替えられます。替える操作では、Botの古い配信先（Webhook配信先・キュー）を同じbatchで終了します（終了の中身は下記の削除と同じ）。
+  - `delivery_kind` を指定すると配信先を替えます。`delivery_subscription_id` があればその配信先、`webhook` があれば新しいWebhook配信先、`queue` でどちらもなければ新しいキュー、`mcp` なら配信先なし（`delivery_subscription_id` は省くか `null`）です。`webhook` に替えるときに `webhook`・`delivery_subscription_id` のどちらもなければ400 `invalid_request` です。
+  - `delivery_kind` なしの `webhook` は、今の配信方式が `webhook` のときだけ新しいWebhook配信先に替えます（違えば400 `invalid_request`）。`delivery_kind` なしの `delivery_subscription_id` は、今と同じ種類の配信先への付け替えです（種類が違えば400 `invalid_delivery`）。
+  - 今と同じ配信先になる指定（今と同じ `delivery_subscription_id`、今と同じ `delivery_kind` だけ）は替える操作に数えず、何も終了・作成しません。キューを作り直すことはできません。
+  - `conditions` だけを指定すると、今のWebhook配信先・キューの条件を変えます（IDは変わりません。`{}` で条件を外す）。`mcp` のBotでは400 `invalid_request`（MCP Eventの条件はAI側で決まる）、配信先が終了していれば400 `invalid_request` です。新しいWebhook配信先・キューと一緒の `conditions` はその条件になり、別の `delivery_subscription_id` と同時なら400 `invalid_request` です。`name`・`source_ids` と同時に指定でき、同じbatchで反映します。
+  - 新しい配信先を作るとき、同じ種類の配信先を終了するなら、その1件は上限の数から除きます。
+  - 名前を変えると、今のWebhook配信先・キュー（終了していないもの）の名前も同じbatchで変えます。`delivery_subscription_id` で付け替えた配信先の名前は、次にBotの名前を変えるまでそのままです。
+- 変更と削除は、読み込んだときのBotの配信方式と `delivery_subscription_id` を条件にbatchの各文を実行します。ほかの操作でBotが変わっていたら何も変えず、409 `conflict`（「Bot がほかの操作で変わりました。読み込み直してください」）を返します。削除されていたら変更は404、削除は204です。
+- `destination`（`GET /api/v1/bots/:id` だけ）は、`delivery_subscription_id` の配信先 `{ "subscription_id", "kind", "name", "callback_host", "status", "arguments" }` です。終了していても返します（`status: "unsubscribed"`）。`mcp` のBotでは `null` です。
 - `delivery` は今の配信先です。`webhook`・`queue` は指定した配信先（有効なときだけ）、`mcp` はBotの有効な接続が作った有効な購読のうち `updated_at` が最新のものです。なければ `null`。
 - `status` は、接続がなければ `no_connection`、配信先がなければ `no_delivery`、両方あれば `ready` です（`no_connection` を優先）。D1だけで決めるので、grantの期限切れは反映しません（管理画面はMCP接続の一覧と突き合わせて「接続の期限切れ」と表示します）。
 - `mcp` のBotは、AIが購読を作り直すまで（最大24時間）`no_delivery` になることがあります。この機能を入れた直後に接続し直した場合も同じです。すぐ試すときは、AIにPingluneのイベントを購読し直すよう頼んでください。
 - `source_ids` はBotが受け取る送信元（同じワークスペースのプログラムの送信元。無効にした送信元も選べる）のIDの配列です。重複は1つにまとめ、100個までです。作成で省略すると送信元なし、変更では指定すると全体を置き換え、省略すると変えません。
 - `sources` はBotが受け取る送信元 `{ "id", "name", "enabled" }` の配列（名前順）です。空のBotにはイベントが届きません（会話には参加できます）。
-- 削除すると、Botの有効な接続は切断せず「割り当てない」接続として残ります。配信先（Webhook配信先・キュー）も終了しませんが、どのBotにも属さない配信先になるため、イベントは届かなくなります。受け取る送信元の紐づけも消えます。会話の参加者には削除済みとして残ります。
-- 名前は1〜64文字で、削除していないBotの中で重複できません。変更で配信方式を変えるときは `delivery_subscription_id` も指定します。
-- エラー: 未知の項目400 `unknown_field`、名前・配信方式・形の誤り（`source_ids` が文字列の配列でない、100個を超えるを含む）400 `invalid_request`、配信先の誤り400 `invalid_delivery`、受け取る送信元が見つからない（形式の誤り、他のワークスペース、会話の隠し送信元）400 `invalid_source`、存在しない・削除済み・他の利用者のBot404 `not_found`、名前の重複409 `name_conflict`、配信先が別のBotで使用中409 `delivery_in_use`、20個を超える409 `limit_exceeded`。
+- 削除すると、Botの配信先（`delivery_subscription_id` のWebhook配信先・キュー。作成時にその場で作ったものに限らない）を同じbatchで終了します。Webhook配信先は `unsubscribed_at` を入れるだけで、残った `pending` の配信は送信時に `subscription_inactive` で失敗します。キューは `pending` の配信（取得済みで未確認のものを含む）を `subscription_inactive` で失敗にし、そのあとの `ack_events` では見つからない扱いになります。MCP Eventsの購読は接続に属するので終了しません。Botの有効な接続は切断せず「割り当てない」接続として残ります。受け取る送信元の紐づけも消えます。会話の参加者には削除済みとして残ります。
+- 終了する配信先を、Bot導入前の会話の参加者（`conversation_participants.subscription_id`）が直接参照していても終了します。その参加者には届かなくなります。
+- 名前は1〜64文字で、削除していないBotの中で重複できません。
+- エラー: 未知の項目400 `unknown_field`、名前・配信方式・形の誤り（`source_ids` が文字列の配列でない、100個を超える、上記の組み合わせの誤りを含む）400 `invalid_request`、配信先の誤り400 `invalid_delivery`、URL・鍵・条件の誤り400 `invalid_url`・`invalid_token`・`invalid_filter`、受け取る送信元が見つからない（形式の誤り、他のワークスペース、会話の隠し送信元）400 `invalid_source`、存在しない・削除済み・他の利用者のBot404 `not_found`、名前の重複409 `name_conflict`、配信先が別のBotで使用中409 `delivery_in_use`、Botが20個・配信先が上限を超える409 `limit_exceeded`、ほかの操作でBotが変わった409 `conflict`。
 
 #### 配信の決まり方
 
@@ -316,7 +335,7 @@ data_refの読み取りでも、利用者が対象データのワークスペー
 
 ### ポーリング用キュー
 
-外から呼び出せないAI（MetaのMuseなど、定期タスクで動くもの）のための配信先です。管理画面の配信先でキューを作り、`queue` のBotの配信先にすると、Botに紐づけた送信元のイベントのうち条件に一致したものがキューにたまります。AIは定期的に（5分おきなど）MCPの `claim_events` で取り出し、処理したら `ack_events` で知らせます。どのイベントを取り出したかはPinglune側で管理するので、AIが覚えておく必要はありません。
+外から呼び出せないAI（MetaのMuseなど、定期タスクで動くもの）のための配信先です。管理画面のBotの作成で配信方式に「キュー」を選ぶとキューができ、そのBotの配信先になります。Botに紐づけた送信元のイベントのうち条件に一致したものがキューにたまります。AIは定期的に（5分おきなど）MCPの `claim_events` で取り出し、処理したら `ack_events` で知らせます。どのイベントを取り出したかはPinglune側で管理するので、AIが覚えておく必要はありません。
 
 #### キューの作成と削除
 
@@ -326,7 +345,7 @@ data_refの読み取りでも、利用者が対象データのワークスペー
 | --- | --- |
 | `POST /api/v1/subscriptions/queues` | キューを作る。本文は `{ "name", "types?", "labels?" }`。条件の意味はMCP Eventsの購読と同じで、省略すると、キューを使うBotの受け取る送信元のすべてのイベントが対象。`sources` は受け付けない（400 `invalid_filter`。Webhook配信先の作成 `POST /api/v1/subscriptions/webhooks` も同じ）。名前は1〜64文字。有効なキューはワークスペースあたり10件まで（超えると409 `limit_exceeded`）。成功すると201で購読（`kind: "queue"`）を返す |
 | `POST /api/v1/subscriptions/:id/delete` | Webhook配信先またはキューを削除する。キューでは、まだ処理されていないイベントを失敗（`subscription_inactive`）にする。削除済みのキューの削除も200。MCP Eventsの購読では購読を停止する（まだ送っていない配信は送信時に `subscription_inactive` で失敗する）。AIが動いていれば、また購読し直されることがある。止め続けるには、MCP接続を切断する |
-| `GET /api/v1/subscriptions/` | キューも返す。`callback_host`、`refresh_before`、`expires_at` は `null`。各購読の `connection` は、MCP Eventsの購読を作った（最後に更新した）MCP接続 `{ "client_name", "bot_name" }`。`bot_name` は接続が有効でBotに割り当てられているときだけ入る。この機能より前の接続が作った購読と、Webhook配信先・キューでは `null`。`bot` はその配信先を使うBot `{ "id", "name" }`（下記）。`arguments` は配信に使う条件だけで、保存された `sources` は返さない |
+| `GET /api/v1/subscriptions/` | キューも返す。`callback_host`、`refresh_before`、`expires_at` は `null`。各購読の `connection` は、MCP Eventsの購読を作った（最後に更新した）MCP接続 `{ "id", "client_name", "bot_name" }`（`id` はMCP接続のID）。`bot_name` は接続が有効でBotに割り当てられているときだけ入る。この機能より前の接続が作った購読と、Webhook配信先・キューでは `null`。`bot` はその配信先を使うBot `{ "id", "name" }`（下記）。`arguments` は配信に使う条件だけで、保存された `sources` は返さない |
 
 購読（`Subscription`）を返すAPI（一覧、Webhook配信先・キューの作成、削除）の `bot` は、Webhook配信先・キューではそれを配信先にしている削除していないBot、MCP Eventsの購読では、購読を作った接続が切断されておらず、その接続のBotが削除されておらず、配信方式が `mcp` のときのそのBotです。それ以外は `null` で、イベントは届きません。作成直後はまだBotがないので `null` です。
 
@@ -450,7 +469,7 @@ data_refの読み取りでも、利用者が対象データのワークスペー
 成功すると `{ "event_id", "conversation_status", "remaining_ai_messages" }` を返します。
 
 - 発言者はMCP接続で決めます（[発言者の識別](#発言者の識別)）。本文や引数での名乗りは使いません。参加者でない接続からの発言は `not_participant` で、原因に応じて次の文を返します。
-  - 接続がBotに割り当てられていない（この機能より前の接続で取り込んでいない、割り当てたBotが削除済みを含む）: 「この MCP 接続は Bot に割り当てられていません。Pinglune の Bot 画面で、この接続を Bot に割り当ててもらってください」
+  - 接続がBotに割り当てられていない（この機能より前の接続で取り込んでいない、割り当てたBotが削除済みを含む）: 「この MCP 接続は Bot に割り当てられていません。Pinglune の「AI の接続」画面で、この接続を Bot に割り当ててもらってください」
   - 接続のBotがこの会話の参加者でない: 「あなたは Bot「<Bot名>」として接続していますが、この会話の参加者ではありません」
 - 停止中の会話は `conversation_stopped`（「会話は停止しています」）、本文の誤りは `invalid_text`、同じキーで別の内容は `idempotency_conflict`、一時的な失敗は `temporarily_unavailable`（同じ `idempotency_key` を付けて再送します。キーなしで再送すると発言が重複します）です。
 - ツールの注釈は `readOnlyHint: false`、`destructiveHint: false`、`idempotentHint: false`、`openWorldHint: false` です。`get_conversation` は読み取り専用です。
@@ -556,4 +575,4 @@ JSON-RPCのエラーはChatGPTの記載に合わせます。引数の誤り（�
 - grantの取り消しはKVで行い、KVは結果整合性のため、取り消しの後も約60秒は古いアクセストークンで `events/subscribe` を呼べることがある。このとき購読は再び有効になる。
 - 明示的な取り消し（ユーザー削除、パスワード変更、セッションの失効）以外でアクセス権を失った場合（トークンの期限切れなど）は、購読は期限（最長25時間）まで残る。ユーザーが削除されていれば、配信の直前の確認で送らない。
 - 購読IDはMCP接続を含まない。callback URLが同じ2つの接続（同じアプリの2つのBotでcallbackが同じ場合）は同じ購読の行を共有し、最後に購読した接続のものになる。そのため、もう一方のBotは `no_delivery` になる。
-- 同じアプリの別の接続をBotに割り当てると、古いインストールの購読も新しい接続へ付け替わる。新しいインストールが購読するまで（最大25時間）、古い購読がBotの配信先として選ばれ続けることがある。配信先画面で古い購読を「停止」すれば止まる。
+- 同じアプリの別の接続をBotに割り当てると、古いインストールの購読も新しい接続へ付け替わる。新しいインストールが購読するまで（最大25時間）、古い購読がBotの配信先として選ばれ続けることがある。AIの接続画面で古い購読を「停止」すれば止まる。

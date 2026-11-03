@@ -675,6 +675,12 @@ describe("updateBot and deleteBot", () => {
     expect(fetch.mock.calls[0]?.[1]?.method).toBe("POST");
   });
 
+  it("tells a bot changed by another operation from other errors", async () => {
+    const message = "Bot がほかの操作で変わりました。読み込み直してください";
+    const { client } = setup(apiError(409, message), 401, `/api/v1/bots/${BOT.id}/delete`);
+    expect(await deleteBot(client, BOT.id)).toEqual({ kind: "conflict", message });
+  });
+
   it("does not send an invalid ID", async () => {
     const { client, fetch } = setup(() => Response.json({}), 401, "/unused");
     expect(await deleteBot(client, "../x")).toEqual({ kind: "error", message: "Bot が見つかりません" });

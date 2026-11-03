@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "../db/client";
 import { subscriptions, type SubscriptionRow } from "../db/schema";
+import { endQueueStatements } from "../queues/queries";
 
 export function findSubscriptionById(db: Db, id: string): Promise<SubscriptionRow | undefined> {
   return db.select().from(subscriptions).where(eq(subscriptions.id, id)).get();
@@ -92,20 +93,78 @@ export async function countActiveWebhookDestinations(db: Db, workspaceId: string
   return row?.count ?? 0;
 }
 
-// Ends a webhook destination of a workspace. Ending it again keeps the first unsubscribed_at.
-export async function endWebhookDestination(db: Db, workspaceId: string, id: string, now: number): Promise<void> {
-  await db
-    .update(subscriptions)
-    .set({ unsubscribedAt: now, updatedAt: now })
-    .where(
-      and(
-        eq(subscriptions.id, id),
-        eq(subscriptions.workspaceId, workspaceId),
-        eq(subscriptions.kind, "webhook"),
-        isNull(subscriptions.unsubscribedAt),
-      ),
+// Ends a webhook destination of a workspace. Ending it again keeps the first unsubscribed_at. The deliveries left
+// pending fail as subscription_inactive when the consumer takes them.
+export async function endWebhookDestination(d1: D1Database, workspaceId: string, id: string, now: number): Promise<void> {
+  await endWebhookDestinationStatement(d1, workspaceId, id, now).run();
+}
+
+// An EXISTS condition (or another condition) added to a statement with its values, so that the statement changes
+// nothing when it does not hold. The SQL uses "?" placeholders, bound after the statement's own values.
+export type StatementGuard = { sql: string; values: unknown[] };
+
+// The statement of endWebhookDestination, so that it can join a batch, with an optional guard.
+export function endWebhookDestinationStatement(
+  d1: D1Database,
+  workspaceId: string,
+  id: string,
+  now: number,
+  guard?: StatementGuard,
+): D1PreparedStatement {
+  return d1
+    .prepare(
+      `UPDATE subscriptions SET unsubscribed_at = ?, updated_at = ?
+      WHERE id = ? AND workspace_id = ? AND kind = 'webhook' AND unsubscribed_at IS NULL${guard === undefined ? "" : ` AND ${guard.sql}`}`,
     )
-    .run();
+    .bind(now, now, id, workspaceId, ...(guard?.values ?? []));
+}
+
+// The statements that end a webhook destination or a polling queue (endWebhookDestination, endQueue), for a batch.
+export function endDestinationStatements(
+  d1: D1Database,
+  kind: "webhook" | "queue",
+  workspaceId: string,
+  id: string,
+  now: number,
+  guard?: StatementGuard,
+): D1PreparedStatement[] {
+  return kind === "queue"
+    ? endQueueStatements(d1, workspaceId, id, now, guard)
+    : [endWebhookDestinationStatement(d1, workspaceId, id, now, guard)];
+}
+
+// Inserts a subscription row (a webhook destination or a polling queue) as a statement for a batch. With a guard the
+// row is inserted only when it holds (INSERT ... SELECT ... WHERE). Not an upsert: an ID collision fails the batch.
+export function insertSubscriptionStatement(
+  d1: D1Database,
+  row: SubscriptionRow,
+  guard?: StatementGuard,
+): D1PreparedStatement {
+  return d1
+    .prepare(
+      `INSERT INTO subscriptions (id, user_id, workspace_id, event_name, kind, name, arguments, callback_url, secret,
+        previous_secret, secret_rotated_at, expires_at, unsubscribed_at, created_at, updated_at, connection_id)
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${guard === undefined ? "" : ` WHERE ${guard.sql}`}`,
+    )
+    .bind(
+      row.id,
+      row.userId,
+      row.workspaceId,
+      row.eventName,
+      row.kind,
+      row.name,
+      row.arguments,
+      row.callbackUrl,
+      row.secret,
+      row.previousSecret,
+      row.secretRotatedAt,
+      row.expiresAt,
+      row.unsubscribedAt,
+      row.createdAt,
+      row.updatedAt,
+      row.connectionId,
+      ...(guard?.values ?? []),
+    );
 }
 
 export function isActiveSubscription(row: SubscriptionRow, now: number): boolean {

@@ -168,14 +168,21 @@ function EventList({
 
 // One event in a list: its type and source, its summary, when it happened, its labels and, when given, how its
 // deliveries went.
-export function EventRow({ event }: { event: EventSummary & { delivery_summary?: DeliverySummary } }) {
+// hideSource leaves out the name of the source (on the screen of that source).
+export function EventRow({
+  event,
+  hideSource = false,
+}: {
+  event: EventSummary & { delivery_summary?: DeliverySummary };
+  hideSource?: boolean;
+}) {
   const summary = event.delivery_summary;
   return (
     <li>
       <Link to={`/events/${event.event_id}`} className="event-link">
         <span className="event-head">
           <span className="event-type">{event.type}</span>
-          <span className="event-source">{event.source.name}</span>
+          {!hideSource && <span className="event-source">{event.source.name}</span>}
           <time className="event-time" dateTime={new Date(event.occurred_at).toISOString()}>
             {formatDateTime(event.occurred_at)}
           </time>

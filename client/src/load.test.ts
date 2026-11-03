@@ -13,6 +13,7 @@ import type {
 } from "../../src/api/types";
 import { createApiClient, createApiFetch } from "./api";
 import {
+  loadBotDetail,
   loadBotsView,
   loadConversationDetail,
   loadConversationForm,
@@ -148,6 +149,34 @@ describe("loadBotsView", () => {
       "/api/v1/sources": [json(200, { sources: [] })],
     });
     expect(await loadBotsView(client)).toEqual({ kind: "error", message: "サーバーでエラーが発生しました" });
+  });
+});
+
+describe("loadBotDetail", () => {
+  const DETAIL = { ...BOT, destination: null };
+
+  it("loads the bot, the sources and the connections", async () => {
+    const { client } = setup({
+      [`/api/v1/bots/${BOT.id}`]: [json(200, DETAIL)],
+      "/api/v1/sources": [json(200, { sources: [] })],
+      "/api/v1/mcp-connections": [apiError(503, "MCP を使えません")],
+    });
+    expect(await loadBotDetail(client, BOT.id)).toEqual({
+      kind: "ready",
+      data: { bot: DETAIL, sources: [], sourcesError: null, connections: [] },
+    });
+  });
+
+  it("is not found for a deleted bot and for an invalid ID", async () => {
+    const { client, fetch } = setup({
+      [`/api/v1/bots/${BOT.id}`]: [apiError(404, "Bot が見つかりません")],
+      "/api/v1/sources": [json(200, { sources: [] })],
+      "/api/v1/mcp-connections": [json(200, { connections: [] })],
+    });
+    expect(await loadBotDetail(client, BOT.id)).toEqual({ kind: "notFound" });
+    fetch.mockClear();
+    expect(await loadBotDetail(client, "../x")).toEqual({ kind: "notFound" });
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
 
@@ -449,6 +478,14 @@ describe("loadDeliveriesView", () => {
     expect(await loadDeliveries(client, { status: "failed" })).toEqual({ kind: "ready", data: DELIVERIES });
     expect(await loadDeliveries(client, { cursor: "dlv_1", status: "failed" })).toEqual({ kind: "ready", data: DELIVERIES });
     expect(calls("/api/v1/deliveries?cursor=dlv_1&status=failed")).toBe(1);
+  });
+
+  it("limits the deliveries to one destination", async () => {
+    const { client, calls } = setup({
+      "/api/v1/deliveries?subscription_id=sub_1": [json(200, DELIVERIES)],
+    });
+    expect(await loadDeliveries(client, { subscriptionId: "sub_1" })).toEqual({ kind: "ready", data: DELIVERIES });
+    expect(calls("/api/v1/deliveries?subscription_id=sub_1")).toBe(1);
   });
 });
 

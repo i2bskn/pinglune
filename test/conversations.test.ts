@@ -713,7 +713,7 @@ describe("post_message", () => {
     const unnamed = await post(undefined, created.id, "名無し");
     expectToolError(unnamed, "not_participant");
     expect(JSON.parse(unnamed.content[0]?.text ?? "").error.message).toBe(
-      "この MCP 接続は Bot に割り当てられていません。Pinglune の Bot 画面で、この接続を Bot に割り当ててもらってください",
+      "この MCP 接続は Bot に割り当てられていません。Pinglune の「AI の接続」画面で、この接続を Bot に割り当ててもらってください",
     );
     expect(await countTable("events")).toBe(1);
     expect(await conversationRow(created.id)).toMatchObject({ ai_message_count: 0 });

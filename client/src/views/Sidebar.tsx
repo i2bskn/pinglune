@@ -5,8 +5,8 @@ import { BrandLogo } from "../brand";
 import {
   BotsIcon,
   CloseIcon,
+  ConnectionsIcon,
   ConversationsIcon,
-  DeliveriesIcon,
   EventsIcon,
   HistoryIcon,
   LogoutIcon,
@@ -27,10 +27,10 @@ const ICONS: Record<NavItemId, () => ReactNode> = {
   overview: OverviewIcon,
   events: EventsIcon,
   sources: SourcesIcon,
-  deliveries: DeliveriesIcon,
   deliveryHistory: HistoryIcon,
   bots: BotsIcon,
   conversations: ConversationsIcon,
+  connections: ConnectionsIcon,
   users: UsersIcon,
 };
 

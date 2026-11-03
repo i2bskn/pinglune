@@ -1,5 +1,6 @@
 import { type MouseEvent, type ReactNode, useEffect, useRef } from "react";
 import { BRAND_NAME } from "../../../src/brand";
+import { takeFlash } from "../flash";
 import { Link } from "../Link";
 import type { ViewState } from "../load";
 
@@ -10,6 +11,17 @@ export function useDocumentTitle(title: string | null): void {
   useEffect(() => {
     if (title !== null) document.title = title;
   }, [title]);
+}
+
+// Shows the message that the previous screen left with setFlash, once, when the screen is first shown. An effect, so
+// that the double render of StrictMode never takes the message without showing it; a second run finds nothing and
+// leaves the notice as it is.
+export function useFlashNotice(show: (message: string) => void): void {
+  useEffect(() => {
+    const message = takeFlash();
+    if (message !== null) show(message);
+    // Once, on mount.
+  }, []);
 }
 
 // The document title for a screen's state. readyTitle is the screen's own title, without the app name.

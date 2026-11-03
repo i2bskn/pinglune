@@ -34,10 +34,23 @@ describe("matchRoute", () => {
     expect(matchRoute("/deliveries/other")).toEqual({ name: "notFound" });
   });
 
-  it("matches the bots screen", () => {
+  it("matches the bots screens", () => {
+    const id = "bot_01JC9Z8Q4R6T2V7W3X5Y1A0B2C";
     expect(matchRoute("/bots")).toEqual({ name: "bots" });
     expect(matchRoute("/bots?x=1")).toEqual({ name: "bots" });
     expect(matchRoute("/bots/")).toEqual({ name: "notFound" });
+    expect(matchRoute("/bots/new")).toEqual({ name: "botNew" });
+    expect(matchRoute("/bots/new?destination=sub_1")).toEqual({ name: "botNew" });
+    expect(matchRoute(`/bots/${id}`)).toEqual({ name: "bot", id });
+    expect(matchRoute(`/bots/${id}?x=1`)).toEqual({ name: "bot", id });
+    expect(matchRoute("/bots/a/b")).toEqual({ name: "notFound" });
+    expect(matchRoute("/bots/a.b")).toEqual({ name: "notFound" });
+  });
+
+  it("matches the AI connections screen", () => {
+    expect(matchRoute("/connections")).toEqual({ name: "connections" });
+    expect(matchRoute("/connections?x=1")).toEqual({ name: "connections" });
+    expect(matchRoute("/connections/")).toEqual({ name: "notFound" });
   });
 
   it("matches the conversations screens", () => {
@@ -103,6 +116,17 @@ describe("navigate", () => {
     const { pushState } = stubBrowser("/a");
     navigate("/b");
     expect(pushState).toHaveBeenCalledWith(null, "", "/b");
+  });
+
+  it("replaces the current entry of the history with replace", () => {
+    const pushState = vi.fn();
+    const replaceState = vi.fn();
+    vi.stubGlobal("location", { pathname: "/deliveries", search: "" });
+    vi.stubGlobal("history", { pushState, replaceState });
+    vi.stubGlobal("window", { scrollTo: vi.fn() });
+    navigate("/bots", { replace: true });
+    expect(replaceState).toHaveBeenCalledWith(null, "", "/bots");
+    expect(pushState).not.toHaveBeenCalled();
   });
 });
 
