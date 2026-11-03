@@ -1,9 +1,11 @@
 import type {
+  Bot,
   Conversation,
   ConversationParticipant,
   CreateConversationRequest,
   Subscription,
 } from "../../src/api/types";
+import { BOT_STATUS_LABELS } from "./bots";
 
 export function conversationStatusLabel(conversation: Pick<Conversation, "status" | "stop_reason">): string {
   if (conversation.status === "open") return "進行中";
@@ -26,59 +28,70 @@ export function subscriptionLabel(subscription: Pick<Subscription, "kind" | "nam
   }
 }
 
-// The destination of a participant, in the same form. "不明な配信先" when it is not found.
+// The destination of a participant, in the same form. "通知先なし" when it has none.
 export function participantDestinationLabel(participant: ConversationParticipant): string {
-  if (participant.destination_kind === null) return "不明な配信先";
-  return subscriptionLabel({
-    kind: participant.destination_kind,
-    name: participant.destination_name,
-    callback_host: participant.callback_host,
-  });
+  if (participant.destination === null) return "通知先なし";
+  return subscriptionLabel(participant.destination);
 }
 
 // Whether the participant is still notified: the destination is active.
 export function participantDestinationStatus(participant: ConversationParticipant): string {
-  switch (participant.destination_status) {
+  switch (participant.destination?.status) {
     case "active":
       return "有効";
     case "expired":
       return "期限切れ";
     case "unsubscribed":
       return "終了済み";
-    case null:
-      return "見つかりません";
+    case undefined:
+      return "なし";
   }
 }
 
-export type ParticipantForm = { name: string; clientId: string; subscriptionId: string };
+// A bot as the select of the form shows it: "Dot（準備OK）".
+export function botOptionLabel(bot: Pick<Bot, "name" | "status">): string {
+  return `${bot.name}（${BOT_STATUS_LABELS[bot.status]}）`;
+}
+
+// The warning under a bot that is not ready; null when it is.
+export function botWarning(bot: Pick<Bot, "status">): string | null {
+  switch (bot.status) {
+    case "ready":
+      return null;
+    case "no_connection":
+      return "この Bot には MCP 接続がありません。発言できるのは、AI から接続して Bot を選んだあとです";
+    case "no_delivery":
+      return "この Bot には通知先がありません。通知先ができるまで、発言は届きません";
+  }
+}
 
 export type ConversationForm = {
   title: string;
   maxAiMessages: string;
-  participants: ParticipantForm[];
+  // The bot of each participant; "" until one is chosen.
+  botIds: string[];
   message: string;
 };
 
 export const MIN_PARTICIPANT_ROWS = 1;
 export const MAX_PARTICIPANT_ROWS = 5;
 
-// The request of the creation form. The limit must be a whole number; the server checks the rest.
+// The request of the creation form. The limit must be a whole number, and every participant needs a bot, each once;
+// the server checks the rest.
 export function conversationRequest(
   form: ConversationForm,
   idempotencyKey: string,
 ): { ok: true; value: CreateConversationRequest } | { ok: false; message: string } {
   const trimmed = form.maxAiMessages.trim();
   if (!/^\d{1,3}$/.test(trimmed)) return { ok: false, message: "AI の発言の上限は 1〜100 の整数にしてください" };
+  if (form.botIds.some((id) => id === "")) return { ok: false, message: "参加者の Bot を選んでください" };
+  if (new Set(form.botIds).size !== form.botIds.length) return { ok: false, message: "同じ Bot は選べません" };
   return {
     ok: true,
     value: {
       title: form.title,
       max_ai_messages: Number(trimmed),
-      participants: form.participants.map((p) => ({
-        name: p.name,
-        oauth_client_id: p.clientId,
-        subscription_id: p.subscriptionId,
-      })),
+      participants: form.botIds.map((id) => ({ bot_id: id })),
       message: form.message,
       idempotency_key: idempotencyKey,
     },

@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type {
   ApiKey,
+  Bot,
+  McpConnection,
   ConversationDetail,
   ConversationMessageList,
   DeliveryList,
@@ -11,6 +13,7 @@ import type {
 } from "../../src/api/types";
 import { createApiClient, createApiFetch } from "./api";
 import {
+  loadBotsView,
   loadConversationDetail,
   loadConversationForm,
   loadConversationMessages,
@@ -47,6 +50,62 @@ function setup(routes: Record<string, Reply[]>) {
 }
 
 const unauthorized = apiError(401, "ログインしてください");
+
+const BOT: Bot = {
+  id: "bot_01JC9Z7H2K4M6N8P0Q2R4S6T8V",
+  name: "Dot",
+  delivery_kind: "mcp",
+  delivery: null,
+  connection: null,
+  status: "no_connection",
+  created_at: 1,
+  updated_at: 1,
+};
+
+describe("loadBotsView", () => {
+  const CONNECTION: McpConnection = {
+    kind: "legacy",
+    id: null,
+    grant_id: "g1",
+    client_name: "ChatGPT",
+    redirect_host: "chatgpt.com",
+    bot: null,
+    created_at: 1,
+  };
+
+  it("loads the bots, the MCP connections and the subscriptions", async () => {
+    const { client } = setup({
+      "/api/v1/bots": [json(200, { bots: [BOT] })],
+      "/api/v1/mcp-connections": [json(200, { connections: [CONNECTION] })],
+      "/api/v1/subscriptions": [json(200, { subscriptions: [] })],
+    });
+    expect(await loadBotsView(client)).toEqual({
+      kind: "ready",
+      data: { bots: [BOT], connections: [CONNECTION], connectionsError: null, subscriptions: [] },
+    });
+  });
+
+  it("shows the bots without connections when they cannot be read", async () => {
+    const { client } = setup({
+      "/api/v1/bots": [json(200, { bots: [BOT] })],
+      "/api/v1/mcp-connections": [apiError(503, "この接続先では MCP 接続を確認できません")],
+      "/api/v1/subscriptions": [json(200, { subscriptions: [] })],
+    });
+    expect(await loadBotsView(client)).toEqual({
+      kind: "ready",
+      data: { bots: [BOT], connections: [], connectionsError: "この接続先では MCP 接続を確認できません", subscriptions: [] },
+    });
+  });
+
+  it("is an error when the bots cannot be read", async () => {
+    const { client } = setup({
+      "/api/v1/bots": [apiError(500, "サーバーでエラーが発生しました")],
+      "/api/v1/mcp-connections": [json(200, { connections: [] })],
+      "/api/v1/subscriptions": [json(200, { subscriptions: [] })],
+    });
+    expect(await loadBotsView(client)).toEqual({ kind: "error", message: "サーバーでエラーが発生しました" });
+  });
+});
 
 describe("loadUsersView", () => {
   const USER: User = {
@@ -162,6 +221,7 @@ describe("loadDeliveriesView", () => {
     expires_at: 2,
     created_at: 1,
     updated_at: 1,
+    connection: null,
   };
   const WEBHOOK: Subscription = {
     ...MCP,
@@ -231,12 +291,9 @@ describe("conversations", () => {
     participants: [
       {
         name: "dot",
-        oauth_client_id: "c1",
-        oauth_client_name: "dot",
-        destination_kind: "webhook",
-        destination_name: "dot",
-        callback_host: "hooks.example.com",
-        destination_status: "active",
+        bot: { id: "bot_01JC9Z7H2K4M6N8P0Q2R4S6T8V", name: "dot", deleted: false },
+        connection_client_name: "dot",
+        destination: { kind: "webhook", name: "dot", callback_host: "hooks.example.com", status: "active" },
       },
     ],
     created_at: 1,
@@ -259,8 +316,8 @@ describe("conversations", () => {
     expires_at: null,
     created_at: 1,
     updated_at: 1,
+    connection: null,
   };
-  const ENDED: Subscription = { ...ACTIVE, id: "sub_00000000000000000000000000000003", status: "unsubscribed" };
 
   it("sends the cursor of the next page of the list", async () => {
     const page = { conversations: [], next_cursor: null };
@@ -304,26 +361,15 @@ describe("conversations", () => {
     expect(await loadConversationMessages(client, ID, cursor)).toEqual({ kind: "ready", data: MESSAGES });
   });
 
-  it("loads the MCP connections and the active destinations for the form", async () => {
-    const connections = [{ client_id: "c1", client_name: "dot" }];
-    const { client } = setup({
-      "/api/v1/mcp-connections": [json(200, { connections })],
-      "/api/v1/subscriptions": [json(200, { subscriptions: [ACTIVE, ENDED] })],
-    });
-    expect(await loadConversationForm(client)).toEqual({
-      kind: "ready",
-      data: { connections, connectionsError: null, subscriptions: [ACTIVE] },
-    });
+  it("loads the bots for the form", async () => {
+    const { client, calls } = setup({ "/api/v1/bots": [json(200, { bots: [BOT] })] });
+    expect(await loadConversationForm(client)).toEqual({ kind: "ready", data: { bots: [BOT] } });
+    expect(calls("/api/v1/mcp-connections")).toBe(0);
+    expect(calls("/api/v1/subscriptions")).toBe(0);
   });
 
-  it("shows the form without connections when they cannot be read", async () => {
-    const { client } = setup({
-      "/api/v1/mcp-connections": [apiError(503, "この接続先では MCP 接続を確認できません")],
-      "/api/v1/subscriptions": [json(200, { subscriptions: [ACTIVE] })],
-    });
-    expect(await loadConversationForm(client)).toEqual({
-      kind: "ready",
-      data: { connections: [], connectionsError: "この接続先では MCP 接続を確認できません", subscriptions: [ACTIVE] },
-    });
+  it("is an error when the bots cannot be read", async () => {
+    const { client } = setup({ "/api/v1/bots": [apiError(500, "サーバーでエラーが発生しました")] });
+    expect(await loadConversationForm(client)).toEqual({ kind: "error", message: "サーバーでエラーが発生しました" });
   });
 });

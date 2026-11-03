@@ -1,3 +1,4 @@
+import { and, eq, inArray } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import type {
@@ -9,9 +10,11 @@ import type {
 } from "../api/types";
 import { apiError, requireUser } from "../auth/middleware";
 import { isUniqueViolation } from "../auth/users";
+import { workspaceBotsByIds } from "../bots/queries";
 import { canonicalJson } from "../canonical-json";
 import { clock } from "../clock";
-import { subscriptions, type SubscriptionRow } from "../db/schema";
+import type { Db } from "../db/client";
+import { mcpConnections, subscriptions, type SubscriptionRow } from "../db/schema";
 import type { AppEnv } from "../env";
 import { callbackHost } from "../deliveries/queries";
 import { eventFilterShape, type EventFilter } from "../events/filter";
@@ -24,7 +27,9 @@ import { encryptSecret, subscriptionSecretKey } from "../subscriptions/secret";
 import {
   countActiveWebhookDestinations,
   endWebhookDestination,
+  endWorkspaceMcpSubscription,
   findWorkspaceDestination,
+  findWorkspaceMcpSubscription,
   findWorkspaceWebhookDestination,
   listWorkspaceMcpSubscriptions,
   listWorkspaceWebhookDestinations,
@@ -65,9 +70,43 @@ function parseArguments(value: string): Record<string, unknown> | null {
   }
 }
 
+type SubscriptionConnection = NonNullable<Subscription["connection"]>;
+
+// The MCP connections of these MCP Events subscriptions, by connection ID, with the name of the bot while the
+// connection is active and its bot is not deleted. Only the user's connections are read.
+async function subscriptionConnections(
+  db: Db,
+  userId: string,
+  workspaceId: string,
+  rows: SubscriptionRow[],
+): Promise<Map<string, SubscriptionConnection>> {
+  const ids = [
+    ...new Set(rows.flatMap((row) => (row.kind === "mcp" && row.connectionId !== null ? [row.connectionId] : []))),
+  ];
+  if (ids.length === 0) return new Map();
+  const connections = await db
+    .select()
+    .from(mcpConnections)
+    .where(and(eq(mcpConnections.userId, userId), inArray(mcpConnections.id, ids)))
+    .all();
+  const botIds = connections.flatMap((c) => (c.revokedAt === null && c.botId !== null ? [c.botId] : []));
+  const botRows = await workspaceBotsByIds(db, workspaceId, botIds);
+  return new Map(
+    connections.map((c) => {
+      const bot = c.revokedAt === null && c.botId !== null ? botRows.get(c.botId) : undefined;
+      const botName = bot !== undefined && bot.deletedAt === null ? bot.name : null;
+      return [c.id, { client_name: c.clientName, bot_name: botName }] as const;
+    }),
+  );
+}
+
 // Neither the secrets (or keys), the whole callback URL nor the user is returned. Polling queues have no callback
 // URL: callback_host is null.
-function toApiSubscription(row: SubscriptionRow, now: number): Subscription {
+function toApiSubscription(
+  row: SubscriptionRow,
+  now: number,
+  connections: Map<string, SubscriptionConnection> = new Map(),
+): Subscription {
   const isMcp = row.kind === "mcp";
   return {
     id: row.id,
@@ -80,6 +119,7 @@ function toApiSubscription(row: SubscriptionRow, now: number): Subscription {
     expires_at: isMcp ? row.expiresAt : null,
     created_at: row.createdAt,
     updated_at: row.updatedAt,
+    connection: isMcp && row.connectionId !== null ? (connections.get(row.connectionId) ?? null) : null,
   };
 }
 
@@ -139,8 +179,9 @@ const subscriptionsApi = new Hono<AppEnv>()
       listWorkspaceQueues(db, workspaceId, SUBSCRIPTION_LIST_LIMIT),
     ]);
     const now = clock.now();
+    const connections = await subscriptionConnections(db, c.get("user").id, workspaceId, mcp);
     const body: SubscriptionList = {
-      subscriptions: [...mcp, ...webhooks, ...queues].map((row) => toApiSubscription(row, now)),
+      subscriptions: [...mcp, ...webhooks, ...queues].map((row) => toApiSubscription(row, now, connections)),
     };
     return c.json(body, 200);
   })
@@ -251,13 +292,20 @@ const subscriptionsApi = new Hono<AppEnv>()
     const db = c.get("db");
     const workspaceId = c.get("workspace").id;
     const id = c.req.param("id");
-    // Webhook destinations and polling queues only: MCP subscriptions are ended by their clients, which would
-    // subscribe again.
-    const destination = SUBSCRIPTION_ID_PATTERN.test(id)
-      ? await findWorkspaceDestination(db, workspaceId, id)
-      : undefined;
-    if (!destination) return apiError(c, 404, "not_found", destinationNotFound);
     const now = clock.now();
+    if (!SUBSCRIPTION_ID_PATTERN.test(id)) return apiError(c, 404, "not_found", destinationNotFound);
+    // An MCP Events subscription is ended (stopped) so that one left by an old installation stops receiving events.
+    // An AI that still runs subscribes again; disconnecting its MCP connection stops it for good.
+    const mcp = await findWorkspaceMcpSubscription(db, workspaceId, id);
+    if (mcp) {
+      await endWorkspaceMcpSubscription(db, workspaceId, id, now);
+      const ended = await findWorkspaceMcpSubscription(db, workspaceId, id);
+      if (!ended) return apiError(c, 404, "not_found", destinationNotFound);
+      const connections = await subscriptionConnections(db, c.get("user").id, workspaceId, [ended]);
+      return c.json(toApiSubscription(ended, now, connections), 200);
+    }
+    const destination = await findWorkspaceDestination(db, workspaceId, id);
+    if (!destination) return apiError(c, 404, "not_found", destinationNotFound);
     if (destination.kind === "queue") {
       // The deliveries not taken yet would never be: they fail in the same batch.
       await endQueue(c.env.DB, workspaceId, id, now);

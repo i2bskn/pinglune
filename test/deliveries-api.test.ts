@@ -98,6 +98,7 @@ describe("GET /api/v1/subscriptions", () => {
       expires_at: active.expiresAt,
       created_at: active.createdAt,
       updated_at: active.updatedAt,
+      connection: null,
     });
     expect(body.subscriptions.find((s) => s.id === expired.id)?.status).toBe("expired");
     expect(body.subscriptions.find((s) => s.id === ended.id)?.status).toBe("unsubscribed");

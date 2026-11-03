@@ -9,6 +9,7 @@ import { apiError, requireMode, requireUser } from "../auth/middleware";
 import { hashPassword, verifyPassword } from "../auth/password";
 import { prepareNewSession, revokeUserSessionsQuery } from "../auth/sessions";
 import { isValidPassword } from "../auth/validate";
+import { revokeUserConnectionsQuery } from "../mcp/connections";
 import { revokeAllGrants } from "../mcp/grants";
 import { endUserSubscriptionsQuery } from "../subscriptions/queries";
 import { jsonBody, toApiUser } from "./api";
@@ -51,6 +52,7 @@ const me = new Hono<AppEnv>()
       db.update(users).set({ passwordHash, updatedAt: now }).where(eq(users.id, user.id)),
       revokeUserSessionsQuery(db, user.id, now),
       endUserSubscriptionsQuery(db, user.id, now, { includeWebhooks: false }),
+      revokeUserConnectionsQuery(db, user.id, now),
       insert,
     ]);
     await setCookiesForSession(c, session, config.jwtSecret, now);

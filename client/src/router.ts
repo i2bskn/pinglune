@@ -7,6 +7,7 @@ export type Route =
   | { name: "source"; id: string }
   | { name: "users" }
   | { name: "deliveries" }
+  | { name: "bots" }
   | { name: "conversations" }
   | { name: "conversation"; id: string }
   | { name: "notFound" };
@@ -28,6 +29,7 @@ export function matchRoute(path: string): Route {
   if (pathname === "/users") return { name: "users" };
   if (pathname === "/sources") return { name: "sources" };
   if (pathname === "/deliveries") return { name: "deliveries" };
+  if (pathname === "/bots") return { name: "bots" };
   if (pathname === "/conversations") return { name: "conversations" };
   const event = /^\/events\/([^/]+)$/.exec(pathname);
   if (event?.[1] !== undefined && isValidId(event[1])) return { name: "event", id: event[1] };

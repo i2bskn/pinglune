@@ -161,6 +161,7 @@ describe("POST /api/v1/subscriptions/queues", () => {
       expires_at: null,
       created_at: now,
       updated_at: now,
+      connection: null,
     });
     expect(await findSubscriptionById(db, body.id)).toMatchObject({
       userId: alice.id,

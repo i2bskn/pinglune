@@ -7,7 +7,7 @@ import { describeError } from "../auth/middleware";
 import { canonicalJson } from "../canonical-json";
 import { clock } from "../clock";
 import type { Db } from "../db/client";
-import type { SubscriptionRow, UserRow } from "../db/schema";
+import type { McpConnectionRow, SubscriptionRow, UserRow } from "../db/schema";
 import { eventFilterShape } from "../events/filter";
 import { base64Url, sha256Hex } from "../ids";
 import { decryptSecret, encryptSecret, parseWebhookSecret, subscriptionSecretKey } from "../subscriptions/secret";
@@ -28,6 +28,8 @@ export type EventDeps = {
   jwtSecret: string;
   // Hosts of this service (the request's, and APP_ORIGIN's when set). Callbacks to them are blocked.
   selfHosts: string[];
+  // The MCP connection of the request, recorded on the subscriptions it makes. null for legacy connections.
+  connection: McpConnectionRow | null;
 };
 
 export const EVENT_NAME = "pinglune.event";
@@ -297,6 +299,7 @@ async function subscribe(deps: EventDeps, rawParams: unknown) {
     unsubscribedAt: null,
     createdAt: now,
     updatedAt: now,
+    connectionId: deps.connection?.id ?? null,
   });
   return { id, refreshBefore: iso(refreshBefore), cursor: null, truncated: false };
 }

@@ -12,9 +12,11 @@ import {
 import intake from "./intake/http";
 import auth from "./routes/auth";
 import authorize from "./routes/authorize";
-import conversationsApi, { mcpConnectionsApi } from "./routes/conversations";
+import botsApi from "./routes/bots";
+import conversationsApi from "./routes/conversations";
 import deliveriesApi from "./routes/deliveries";
 import eventsApi from "./routes/events";
+import { mcpConnectionsApi } from "./routes/mcp-connections";
 import me from "./routes/me";
 import sourcesApi from "./routes/sources";
 import subscriptionsApi from "./routes/subscriptions";
@@ -46,6 +48,7 @@ const apiRoutes = app
   .route("/api/v1/events", eventsApi)
   .route("/api/v1/subscriptions", subscriptionsApi)
   .route("/api/v1/deliveries", deliveriesApi)
+  .route("/api/v1/bots", botsApi)
   .route("/api/v1/conversations", conversationsApi)
   .route("/api/v1/mcp-connections", mcpConnectionsApi);
 

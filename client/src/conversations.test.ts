@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { ConversationParticipant } from "../../src/api/types";
 import {
   aiMessagesLabel,
+  botOptionLabel,
+  botWarning,
   conversationRequest,
   conversationStatusLabel,
   participantDestinationLabel,
@@ -27,17 +29,23 @@ describe("conversation labels", () => {
   it("shows the destination of a participant and its state", () => {
     const participant: ConversationParticipant = {
       name: "dot",
-      oauth_client_id: "c1",
-      oauth_client_name: "dot",
-      destination_kind: "webhook",
-      destination_name: "dot",
-      callback_host: "hooks.example.com",
-      destination_status: "unsubscribed",
+      bot: { id: "bot_01JC9Z7H2K4M6N8P0Q2R4S6T8V", name: "dot", deleted: false },
+      connection_client_name: "dot",
+      destination: { kind: "webhook", name: "dot", callback_host: "hooks.example.com", status: "unsubscribed" },
     };
     expect(participantDestinationLabel(participant)).toBe("Webhook: dot");
     expect(participantDestinationStatus(participant)).toBe("終了済み");
-    expect(participantDestinationLabel({ ...participant, destination_kind: null })).toBe("不明な配信先");
-    expect(participantDestinationStatus({ ...participant, destination_status: null })).toBe("見つかりません");
+    expect(participantDestinationLabel({ ...participant, destination: null })).toBe("通知先なし");
+    expect(participantDestinationStatus({ ...participant, destination: null })).toBe("なし");
+  });
+
+  it("shows a bot with its state and warns when it is not ready", () => {
+    expect(botOptionLabel({ name: "Dot", status: "ready" })).toBe("Dot（準備OK）");
+    expect(botOptionLabel({ name: "Grok Bot", status: "no_connection" })).toBe("Grok Bot（接続なし）");
+    expect(botOptionLabel({ name: "Muse", status: "no_delivery" })).toBe("Muse（通知先なし）");
+    expect(botWarning({ status: "ready" })).toBeNull();
+    expect(botWarning({ status: "no_connection" })).toMatch(/MCP 接続がありません/);
+    expect(botWarning({ status: "no_delivery" })).toMatch(/通知先がありません/);
   });
 
   it("describes a delivery failed by a stop", () => {
@@ -49,7 +57,7 @@ describe("conversationRequest", () => {
   const form = {
     title: "相談",
     maxAiMessages: " 5 ",
-    participants: [{ name: "dot", clientId: "c1", subscriptionId: "sub_1" }],
+    botIds: ["bot_1", "bot_2"],
     message: "hi",
   };
 
@@ -59,7 +67,7 @@ describe("conversationRequest", () => {
       value: {
         title: "相談",
         max_ai_messages: 5,
-        participants: [{ name: "dot", oauth_client_id: "c1", subscription_id: "sub_1" }],
+        participants: [{ bot_id: "bot_1" }, { bot_id: "bot_2" }],
         message: "hi",
         idempotency_key: "k1",
       },
@@ -70,6 +78,17 @@ describe("conversationRequest", () => {
     expect(conversationRequest({ ...form, maxAiMessages }, "k1")).toEqual({
       ok: false,
       message: "AI の発言の上限は 1〜100 の整数にしてください",
+    });
+  });
+
+  it("rejects a participant without a bot and a repeated bot", () => {
+    expect(conversationRequest({ ...form, botIds: ["bot_1", ""] }, "k1")).toEqual({
+      ok: false,
+      message: "参加者の Bot を選んでください",
+    });
+    expect(conversationRequest({ ...form, botIds: ["bot_1", "bot_1"] }, "k1")).toEqual({
+      ok: false,
+      message: "同じ Bot は選べません",
     });
   });
 });

@@ -177,7 +177,8 @@ label {
 
 input[type="email"],
 input[type="text"],
-input[type="password"] {
+input[type="password"],
+select {
   width: 100%;
   min-height: 2.875rem;
   padding: 0.5rem 0.875rem;
@@ -190,7 +191,8 @@ input[type="password"] {
   border-radius: var(--radius);
 }
 
-input:focus-visible {
+input:focus-visible,
+select:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 0;
   border-color: var(--focus);

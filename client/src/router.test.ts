@@ -26,6 +26,12 @@ describe("matchRoute", () => {
     expect(matchRoute(`/sources/${sourceId}`)).toEqual({ name: "source", id: sourceId });
   });
 
+  it("matches the bots screen", () => {
+    expect(matchRoute("/bots")).toEqual({ name: "bots" });
+    expect(matchRoute("/bots?x=1")).toEqual({ name: "bots" });
+    expect(matchRoute("/bots/")).toEqual({ name: "notFound" });
+  });
+
   it("matches the conversations screens", () => {
     const id = "cnv_01JC9Z8Q4R6T2V7W3X5Y1A0B2C";
     expect(matchRoute("/conversations")).toEqual({ name: "conversations" });

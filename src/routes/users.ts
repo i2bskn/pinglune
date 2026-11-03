@@ -16,6 +16,7 @@ import { revokeUserSessionsQuery } from "../auth/sessions";
 import { deleteUser, findUserById, isUniqueViolation } from "../auth/users";
 import { isRole, isValidPassword, normalizeEmail, normalizeName } from "../auth/validate";
 import { deleteWorkspaceObjects } from "../intake/storage";
+import { revokeUserConnectionsQuery } from "../mcp/connections";
 import { revokeAllGrants } from "../mcp/grants";
 import { endUserSubscriptionsQuery } from "../subscriptions/queries";
 import { insertPersonalWorkspaceStatement } from "../workspaces/queries";
@@ -98,6 +99,7 @@ const usersApi = new Hono<AppEnv>()
       db.update(users).set({ passwordHash, updatedAt: now }).where(eq(users.id, id)),
       revokeUserSessionsQuery(db, id, now),
       endUserSubscriptionsQuery(db, id, now, { includeWebhooks: true }),
+      revokeUserConnectionsQuery(db, id, now),
     ]);
     return c.body(null, 204);
   })
@@ -110,6 +112,7 @@ const usersApi = new Hono<AppEnv>()
     if (c.env.OAUTH_PROVIDER) await revokeAllGrants(c.env.OAUTH_PROVIDER, id);
     const now = clock.now();
     await endUserSubscriptionsQuery(db, id, now, { includeWebhooks: true }).run();
+    await revokeUserConnectionsQuery(db, id, now).run();
     await revokeUserSessionsQuery(db, id, now).run();
     return c.body(null, 204);
   })

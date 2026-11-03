@@ -7,6 +7,7 @@ import { Link } from "./Link";
 import { loadMe, useView } from "./load";
 import { type Route, matchRoute, usePath } from "./router";
 import { markLeaving } from "./unload";
+import { BotsView } from "./views/BotsView";
 import { LoadError, Menu, NotFound, useDocumentTitle } from "./views/common";
 import { ConversationDetailView } from "./views/ConversationDetailView";
 import { ConversationsView } from "./views/ConversationsView";
@@ -74,6 +75,8 @@ function Screen({ route, user }: { route: Route; user: User }) {
       return <SourceDetailView client={client} id={route.id} />;
     case "deliveries":
       return <DeliveriesView client={client} />;
+    case "bots":
+      return <BotsView client={client} />;
     case "conversations":
       return <ConversationsView client={client} />;
     case "conversation":
@@ -91,7 +94,7 @@ function RouteNotFound() {
 }
 
 // The section of the navigation a screen belongs to.
-type Section = "events" | "sources" | "deliveries" | "conversations";
+type Section = "events" | "sources" | "deliveries" | "bots" | "conversations";
 
 function section(route: Route): Section | null {
   switch (route.name) {
@@ -103,6 +106,8 @@ function section(route: Route): Section | null {
       return "sources";
     case "deliveries":
       return "deliveries";
+    case "bots":
+      return "bots";
     case "conversations":
     case "conversation":
       return "conversations";
@@ -134,6 +139,9 @@ function Header({ user, path, route }: { user: User; path: string; route: Route 
           </Link>
           <Link to="/deliveries" className="nav-link" aria-current={ariaCurrent("deliveries", "deliveries")}>
             配信
+          </Link>
+          <Link to="/bots" className="nav-link" aria-current={ariaCurrent("bots", "bots")}>
+            Bot
           </Link>
           <Link to="/conversations" className="nav-link" aria-current={ariaCurrent("conversations", "conversations")}>
             会話

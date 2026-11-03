@@ -15,8 +15,9 @@ import type {
 import { clock } from "../src/clock";
 import { CONVERSATION_SOURCE_NAME } from "../src/conversations/queries";
 import { messageLabels, messageSummary } from "../src/conversations/service";
-import type { SubscriptionRow, UserRow } from "../src/db/schema";
+import type { BotRow, SubscriptionRow, UserRow } from "../src/db/schema";
 import { handleEmail } from "../src/intake/email";
+import { newBotId, newMcpConnectionId, newParticipantId } from "../src/ids";
 import { validateIntakeInput } from "../src/intake/validation";
 import { mcpHandler } from "../src/mcp/handler";
 import {
@@ -59,6 +60,7 @@ type McpMessage = {
   created_at: string;
 };
 type GetConversationResult = {
+  you: { bot_name: string | null };
   conversation: {
     conversation_id: string;
     title: string;
@@ -82,6 +84,11 @@ let aliceCookies: SessionCookies;
 let dotHook: SubscriptionRow;
 let grokQueue: SubscriptionRow;
 let museMcp: SubscriptionRow;
+let dotBot: BotRow;
+let grokBot: BotRow;
+let museBot: BotRow;
+// The MCP connection of each client of alice, by client ID.
+let connections: Record<string, string>;
 let queue: FakeQueue;
 let now: number;
 let keySequence = 0;
@@ -124,10 +131,7 @@ function nextKey(): string {
 function createBody(overrides: Record<string, unknown> = {}) {
   return {
     title: "週次の相談",
-    participants: [
-      { name: "dot", oauth_client_id: DOT, subscription_id: dotHook.id },
-      { name: "Grok", oauth_client_id: GROK, subscription_id: grokQueue.id },
-    ],
+    participants: [{ bot_id: dotBot.id }, { bot_id: grokBot.id }],
     message: "こんにちは。\n今週の予定を相談しましょう。",
     idempotency_key: nextKey(),
     ...overrides,
@@ -169,9 +173,49 @@ function postUserMessage(id: string, text: string, key = nextKey()) {
   });
 }
 
+// Inserts a bot of alice directly.
+async function createBot(name: string, kind: "mcp" | "webhook" | "queue", subscriptionId: string | null): Promise<BotRow> {
+  const id = newBotId(now);
+  await env.DB.prepare(
+    `INSERT INTO bots (id, workspace_id, created_by_user_id, name, delivery_kind, delivery_subscription_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(id, (await personalWorkspaceOf(alice)).id, alice.id, name, kind, subscriptionId, now, now)
+    .run();
+  const row = await env.DB.prepare("SELECT * FROM bots WHERE id = ?").bind(id).first<Record<string, unknown>>();
+  if (!row) throw new Error("bot not found");
+  return {
+    id,
+    workspaceId: row.workspace_id as string,
+    createdByUserId: alice.id,
+    name,
+    deliveryKind: kind,
+    deliverySubscriptionId: subscriptionId,
+    createdAt: now,
+    updatedAt: now,
+    deletedAt: null,
+  };
+}
+
+// Inserts an active MCP connection of alice directly, and makes it the connection of clientId in rpc().
+async function connect(clientId: string, clientName: string, botId: string | null): Promise<string> {
+  const id = newMcpConnectionId(now);
+  await env.DB.prepare(
+    `INSERT INTO mcp_connections (id, user_id, workspace_id, bot_id, grant_id, oauth_client_id, client_name, redirect_uri, created_at, updated_at)
+    VALUES (?, ?, ?, ?, NULL, ?, ?, 'https://client.example/cb', ?, ?)`,
+  )
+    .bind(id, alice.id, (await personalWorkspaceOf(alice)).id, botId, clientId, clientName, now, now)
+    .run();
+  connections[clientId] = id;
+  return id;
+}
+
+// The MCP connection of clientId is passed in the props, as a grant made by POST /authorize carries it. A client
+// without a connection (undefined, or another user) is a legacy connection.
 async function rpc(user: UserRow, clientId: string | undefined, method: string, params: unknown): Promise<unknown> {
+  const connectionId = user.id === alice.id && clientId !== undefined ? connections[clientId] : undefined;
   const ctx = Object.assign(createExecutionContext(), {
-    props: { userId: user.id, authMode: "password" },
+    props: { userId: user.id, authMode: "password", ...(connectionId === undefined ? {} : { connectionId }) },
     auth: { token: "t", audience: `${ORIGIN}/mcp`, scope: ["mcp"], clientId },
   }) as unknown as OAuthResourceContext<unknown>;
   const request = new Request(`${ORIGIN}/mcp`, {
@@ -241,6 +285,15 @@ beforeEach(async () => {
   dotHook = await createSubscription({ user: alice, kind: "webhook", name: "dot", expiresAt: 253402300799999 });
   grokQueue = await createQueue({ user: alice, name: "grok" });
   museMcp = await createSubscription({ user: alice, callbackUrl: "https://muse.example.com/hook" });
+  connections = {};
+  dotBot = await createBot("dot", "webhook", dotHook.id);
+  grokBot = await createBot("Grok", "queue", grokQueue.id);
+  museBot = await createBot("Muse", "mcp", null);
+  await connect(DOT, "dot", dotBot.id);
+  await connect(GROK, "Grok Bot", grokBot.id);
+  await connect(MUSE, "Muse", museBot.id);
+  // Muse's MCP Events subscription was made by its connection.
+  await env.DB.prepare("UPDATE subscriptions SET connection_id = ? WHERE id = ?").bind(connections[MUSE], museMcp.id).run();
 });
 
 afterEach(async () => {
@@ -261,21 +314,15 @@ describe("POST /api/v1/conversations", () => {
       participants: [
         {
           name: "dot",
-          oauth_client_id: DOT,
-          oauth_client_name: "dot",
-          destination_kind: "webhook",
-          destination_name: "dot",
-          callback_host: "hooks.example.com",
-          destination_status: "active",
+          bot: { id: dotBot.id, name: "dot", deleted: false },
+          connection_client_name: "dot",
+          destination: { kind: "webhook", name: "dot", callback_host: "hooks.example.com", status: "active" },
         },
         {
           name: "Grok",
-          oauth_client_id: GROK,
-          oauth_client_name: "Grok Bot",
-          destination_kind: "queue",
-          destination_name: "grok",
-          callback_host: null,
-          destination_status: "active",
+          bot: { id: grokBot.id, name: "Grok", deleted: false },
+          connection_client_name: "Grok Bot",
+          destination: { kind: "queue", name: "grok", callback_host: null, status: "active" },
         },
       ],
     });
@@ -359,25 +406,16 @@ describe("POST /api/v1/conversations", () => {
     expect(await countTable("conversations")).toBe(0);
   });
 
-  it("rejects 6 participants and repeated names, clients and destinations", async () => {
-    const participant = (i: number) => ({ name: `ai-${i}`, oauth_client_id: `c-${i}`, subscription_id: dotHook.id });
+  it("rejects 6 participants, a repeated bot, the participants before bots and malformed IDs", async () => {
+    const others = await Promise.all([1, 2, 3].map((i) => createBot(`ai-${i}`, "mcp", null)));
     const cases = [
-      Array.from({ length: 6 }, (_, i) => ({ ...participant(i), subscription_id: `sub_${String(i).padStart(32, "a")}` })),
-      [
-        { name: "dot", oauth_client_id: DOT, subscription_id: dotHook.id },
-        { name: "dot", oauth_client_id: GROK, subscription_id: grokQueue.id },
-      ],
-      [
-        { name: "dot", oauth_client_id: DOT, subscription_id: dotHook.id },
-        { name: "grok", oauth_client_id: DOT, subscription_id: grokQueue.id },
-      ],
-      [
-        { name: "dot", oauth_client_id: DOT, subscription_id: dotHook.id },
-        { name: "grok", oauth_client_id: GROK, subscription_id: dotHook.id },
-      ],
-      [{ name: "dot", oauth_client_id: DOT, subscription_id: dotHook.id, extra: 1 }],
-      [{ name: "dot", oauth_client_id: "", subscription_id: dotHook.id }],
-      [{ name: "dot", oauth_client_id: DOT, subscription_id: "sub_x" }],
+      [dotBot, grokBot, museBot, ...others].map((bot) => ({ bot_id: bot.id })),
+      [{ bot_id: dotBot.id }, { bot_id: dotBot.id }],
+      [{ bot_id: dotBot.id, extra: 1 }],
+      [{ name: "dot", oauth_client_id: DOT, subscription_id: dotHook.id }],
+      [{ bot_id: "bot_x" }],
+      [{ bot_id: 1 }],
+      ["x"],
     ];
     for (const participants of cases) {
       await expectApiError(await createConversationRequest(createBody({ participants })), 400, "invalid_participants");
@@ -385,22 +423,35 @@ describe("POST /api/v1/conversations", () => {
     expect(await countTable("conversations")).toBe(0);
   });
 
-  it("rejects a client the user has not authorized, and destinations that are ended or of another user", async () => {
-    const ended = await createSubscription({ user: alice, kind: "webhook", name: "old", unsubscribedAt: now - 1 });
-    const expired = await createSubscription({ user: alice, expiresAt: now - 1 });
-    const bobs = await createQueue({ user: bob });
-    const cases = [
-      [{ name: "x", oauth_client_id: "client-unknown", subscription_id: dotHook.id }],
-      [{ name: "x", oauth_client_id: DOT, subscription_id: ended.id }],
-      [{ name: "x", oauth_client_id: DOT, subscription_id: expired.id }],
-      [{ name: "x", oauth_client_id: DOT, subscription_id: bobs.id }],
-      [{ name: "x", oauth_client_id: DOT, subscription_id: "sub_0123456789abcdef0123456789abcdef" }],
-    ];
-    for (const participants of cases) {
-      await expectApiError(await createConversationRequest(createBody({ participants })), 400, "invalid_participants");
+  it("rejects bots that are deleted, of another user or missing", async () => {
+    const deleted = await createBot("old", "mcp", null);
+    await env.DB.prepare("UPDATE bots SET deleted_at = ? WHERE id = ?").bind(now, deleted.id).run();
+    const bobsBot = newBotId(now);
+    await env.DB.prepare(
+      `INSERT INTO bots (id, workspace_id, created_by_user_id, name, delivery_kind, delivery_subscription_id, created_at, updated_at)
+      VALUES (?, ?, ?, 'bob', 'mcp', NULL, ?, ?)`,
+    )
+      .bind(bobsBot, (await personalWorkspaceOf(bob)).id, bob.id, now, now)
+      .run();
+    for (const id of [deleted.id, bobsBot, newBotId(now)]) {
+      await expectApiError(
+        await createConversationRequest(createBody({ participants: [{ bot_id: dotBot.id }, { bot_id: id }] })),
+        400,
+        "invalid_participants",
+      );
     }
     expect(await countTable("conversations")).toBe(0);
     expect(await countTable("events")).toBe(0);
+  });
+
+  it("accepts a bot without a connection or a destination, and stores the message without delivering to it", async () => {
+    const lonely = await createBot("lonely", "mcp", null);
+    const created = await createConversation({ participants: [{ bot_id: lonely.id }] });
+    expect(created.participants).toEqual([
+      { name: "lonely", bot: { id: lonely.id, name: "lonely", deleted: false }, connection_client_name: null, destination: null },
+    ]);
+    expect(await countTable("events")).toBe(1);
+    expect(await listDeliveries()).toEqual([]);
   });
 
   it("allows 20 open conversations", async () => {
@@ -416,15 +467,15 @@ describe("POST /api/v1/conversations", () => {
     expect((await createConversationRequest(createBody())).status).toBe(201);
   });
 
-  it("answers 503 without OAUTH_PROVIDER", async () => {
+  it("creates a conversation without OAUTH_PROVIDER", async () => {
     const origin = "http://pinglune.internal.example";
     const res = await send(`${origin}/api/v1/conversations`, {
       json: createBody(),
       cookies: aliceCookies,
       env: { DELIVERY_QUEUE: queue },
     });
-    await expectApiError(res, 503, "temporarily_unavailable");
-    expect(await countTable("conversations")).toBe(0);
+    expect(res.status).toBe(201);
+    expect(await countTable("conversations")).toBe(1);
   });
 
   it("answers 503 and keeps the message when queueing fails, and queues it on the retry", async () => {
@@ -445,16 +496,19 @@ describe("POST /api/v1/conversations", () => {
 });
 
 describe("GET /api/v1/mcp-connections", () => {
-  it("lists each client of the user's grants once, with its name", async () => {
+  it("lists the grants without a connection as legacy connections, with the names of their clients", async () => {
     const res = await send("/api/v1/mcp-connections", { cookies: aliceCookies, env: apiEnv() });
     expect(res.status).toBe(200);
-    expect((await res.json()) as McpConnectionList).toEqual({
-      connections: [
-        { client_id: DOT, client_name: "dot" },
-        { client_id: GROK, client_name: "Grok Bot" },
-        { client_id: MUSE, client_name: "Muse" },
-      ],
-    });
+    const body = (await res.json()) as McpConnectionList;
+    const legacy = body.connections.filter((c) => c.kind === "legacy");
+    expect(legacy.map((c) => [c.grant_id, c.client_name]).sort()).toEqual(
+      [
+        ["g1", "dot"],
+        ["g2", "Grok Bot"],
+        ["g3", "Muse"],
+        ["g4", "dot"],
+      ].sort(),
+    );
   });
 
   it("names a client that cannot be looked up by its ID", async () => {
@@ -463,12 +517,12 @@ describe("GET /api/v1/mcp-connections", () => {
       env: apiEnv(fakeOAuth({ failLookup: true })),
     });
     const body = (await res.json()) as McpConnectionList;
-    expect(body.connections.map((c) => c.client_name)).toEqual([DOT, GROK, MUSE]);
-    const unnamed = await send("/api/v1/mcp-connections", {
-      cookies: aliceCookies,
-      env: apiEnv(fakeOAuth({ names: {} })),
-    });
-    expect(((await unnamed.json()) as McpConnectionList).connections[0]).toEqual({ client_id: DOT, client_name: DOT });
+    expect(
+      body.connections
+        .filter((c) => c.kind === "legacy")
+        .map((c) => c.client_name)
+        .sort(),
+    ).toEqual([DOT, DOT, GROK, MUSE].sort());
   });
 
   it("answers 503 without OAUTH_PROVIDER", async () => {
@@ -527,19 +581,16 @@ describe("the management API of a conversation", () => {
       cookies: aliceCookies,
     });
     const detail = (await res.json()) as ConversationDetail;
-    expect(detail.participants.map((p) => [p.name, p.oauth_client_name, p.destination_status])).toEqual([
-      ["dot", DOT, "unsubscribed"],
-      ["Grok", GROK, "active"],
+    // An ended destination is no destination of the bot anymore.
+    expect(detail.participants.map((p) => [p.name, p.connection_client_name, p.destination?.status ?? null])).toEqual([
+      ["dot", "dot", null],
+      ["Grok", "Grok Bot", "active"],
     ]);
   });
 
   it("posts messages of the user to every AI with an active destination, without counting them", async () => {
     const created = await createConversation({
-      participants: [
-        { name: "dot", oauth_client_id: DOT, subscription_id: dotHook.id },
-        { name: "Grok", oauth_client_id: GROK, subscription_id: grokQueue.id },
-        { name: "Muse", oauth_client_id: MUSE, subscription_id: museMcp.id },
-      ],
+      participants: [{ bot_id: dotBot.id }, { bot_id: grokBot.id }, { bot_id: museBot.id }],
     });
     // A subscription of the workspace that is not a participant gets nothing.
     const bystander = await createSubscription({ user: alice, kind: "webhook", name: "all", expiresAt: 253402300799999 });
@@ -653,8 +704,16 @@ describe("post_message", () => {
 
   it("rejects a connection that is not a participant, without storing or counting", async () => {
     const created = await createConversation();
-    expectToolError(await post(MUSE, created.id, "割り込み"), "not_participant");
-    expectToolError(await post(undefined, created.id, "名無し"), "not_participant");
+    const intruder = await post(MUSE, created.id, "割り込み");
+    expectToolError(intruder, "not_participant");
+    expect(JSON.parse(intruder.content[0]?.text ?? "").error.message).toBe(
+      "あなたは Bot「Muse」として接続していますが、この会話の参加者ではありません",
+    );
+    const unnamed = await post(undefined, created.id, "名無し");
+    expectToolError(unnamed, "not_participant");
+    expect(JSON.parse(unnamed.content[0]?.text ?? "").error.message).toBe(
+      "この MCP 接続は Bot に割り当てられていません。Pinglune の Bot 画面で、この接続を Bot に割り当ててもらってください",
+    );
     expect(await countTable("events")).toBe(1);
     expect(await conversationRow(created.id)).toMatchObject({ ai_message_count: 0 });
   });
@@ -775,6 +834,7 @@ describe("get_conversation", () => {
       { name: "dot", is_you: true },
       { name: "Grok", is_you: false },
     ]);
+    expect(result.you).toEqual({ bot_name: "dot" });
     expect(result.messages.map((m) => [m.sender, m.sender_kind, m.text, m.truncated])).toEqual([
       ["alice@example.com", "user", "こんにちは。\n今週の予定を相談しましょう。", false],
       ["Grok", "ai", "返信です", false],
@@ -782,7 +842,10 @@ describe("get_conversation", () => {
     expect(result.messages[1]?.created_at).toBe(new Date(now).toISOString());
     expect(result.older_cursor).toBeNull();
     // A connection that is not a participant can read it too.
-    expect((await getConversation(MUSE, { conversation_id: created.id })).participants.every((p) => !p.is_you)).toBe(true);
+    const muse = await getConversation(MUSE, { conversation_id: created.id });
+    expect(muse.participants.every((p) => !p.is_you)).toBe(true);
+    expect(muse.you).toEqual({ bot_name: "Muse" });
+    expect((await getConversation(undefined, { conversation_id: created.id })).you).toEqual({ bot_name: null });
   });
 
   it("returns the newest messages and pages to older ones", async () => {
@@ -824,6 +887,89 @@ describe("get_conversation", () => {
     const created = await createConversation();
     expectToolError(await callTool(DOT, "get_conversation", { conversation_id: created.id }, bob), "not_found");
     expectToolError(await callTool(DOT, "get_conversation", { conversation_id: MISSING_CONVERSATION }), "not_found");
+  });
+});
+
+describe("the participants of conversations", () => {
+  it("delivers to the subscription of the new connection after the connection of a bot is replaced", async () => {
+    const created = await createConversation({ participants: [{ bot_id: dotBot.id }, { bot_id: museBot.id }] });
+    const old = connections[MUSE] ?? "";
+    // Muse is installed again: the old connection is replaced, and the new one subscribes with another callback.
+    await env.DB.prepare("UPDATE mcp_connections SET revoked_at = ?, revoke_reason = 'replaced' WHERE id = ?")
+      .bind(now, old)
+      .run();
+    const fresh = await connect(MUSE, "Muse", museBot.id);
+    const subscription = await createSubscription({ user: alice, callbackUrl: "https://muse.example.com/new" });
+    await env.DB.prepare("UPDATE subscriptions SET connection_id = ? WHERE id = ?").bind(fresh, subscription.id).run();
+    now += 1000;
+
+    const sent = parse<PostResult>(await post(MUSE, created.id, "新しい接続から"));
+    expect((await listDeliveries("event_id = ?", sent.event_id)).map((d) => d.subscription_id)).toEqual([dotHook.id]);
+    const reply = parse<PostResult>(await post(DOT, created.id, "届きましたか"));
+    expect((await listDeliveries("event_id = ?", reply.event_id)).map((d) => d.subscription_id)).toEqual([
+      subscription.id,
+    ]);
+
+    // The token of the old connection is rejected.
+    const ctx = Object.assign(createExecutionContext(), {
+      props: { userId: alice.id, authMode: "password", connectionId: old },
+      auth: { token: "t", audience: `${ORIGIN}/mcp`, scope: ["mcp"], clientId: MUSE },
+    }) as unknown as OAuthResourceContext<unknown>;
+    const request = new Request(`${ORIGIN}/mcp`, {
+      method: "POST",
+      headers: { Accept: MCP_ACCEPT, "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    expect((await mcpHandler.fetch(request, { ...env, DELIVERY_QUEUE: queue }, ctx)).status).toBe(401);
+  });
+
+  it("does not deliver to a bot whose connection or subscription is gone, nor to a deleted bot", async () => {
+    const created = await createConversation({
+      participants: [{ bot_id: dotBot.id }, { bot_id: grokBot.id }, { bot_id: museBot.id }],
+    });
+    await env.DB.prepare("UPDATE mcp_connections SET bot_id = NULL WHERE id = ?").bind(connections[MUSE]).run();
+    await env.DB.prepare("UPDATE bots SET deleted_at = ? WHERE id = ?").bind(now, grokBot.id).run();
+    const sent = parse<PostResult>(await post(DOT, created.id, "誰かいますか"));
+    expect(await listDeliveries("event_id = ?", sent.event_id)).toEqual([]);
+    const res = await send(`/api/v1/conversations/${created.id}`, { cookies: aliceCookies });
+    const detail = (await res.json()) as ConversationDetail;
+    expect(detail.participants.map((p) => [p.name, p.bot?.deleted, p.connection_client_name, p.destination])).toEqual([
+      ["dot", false, "dot", { kind: "webhook", name: "dot", callback_host: "hooks.example.com", status: "active" }],
+      ["Grok", true, null, null],
+      ["Muse", false, null, null],
+    ]);
+  });
+
+  it("matches and notifies a participant created before bots by its client and its subscription", async () => {
+    const created = await createConversation({ participants: [{ bot_id: dotBot.id }] });
+    const workspaceId = (await personalWorkspaceOf(alice)).id;
+    // A row of the form before bots, as the migration copies it.
+    await env.DB.prepare(
+      `INSERT INTO conversation_participants (id, conversation_id, workspace_id, name, oauth_client_id, subscription_id, created_at)
+      VALUES (?, ?, ?, 'old', 'client-legacy', ?, ?)`,
+    )
+      .bind(newParticipantId(now), created.id, workspaceId, grokQueue.id, now)
+      .run();
+
+    // client-legacy has no MCP connection: a legacy connection, matched by its OAuth client.
+    const sent = parse<PostResult>(await post("client-legacy", created.id, "以前の参加者です"));
+    expect((await listDeliveries("event_id = ?", sent.event_id)).map((d) => d.subscription_id)).toEqual([dotHook.id]);
+    const reply = parse<PostResult>(await post(DOT, created.id, "お久しぶりです"));
+    expect((await listDeliveries("event_id = ?", reply.event_id)).map((d) => d.subscription_id)).toEqual([
+      grokQueue.id,
+    ]);
+    const read = await getConversation("client-legacy", { conversation_id: created.id });
+    expect(read.participants).toEqual([
+      { name: "dot", is_you: false },
+      { name: "old", is_you: true },
+    ]);
+    const res = await send(`/api/v1/conversations/${created.id}`, { cookies: aliceCookies });
+    expect(((await res.json()) as ConversationDetail).participants[1]).toEqual({
+      name: "old",
+      bot: null,
+      connection_client_name: "client-legacy",
+      destination: { kind: "queue", name: "grok", callback_host: null, status: "active" },
+    });
   });
 });
 

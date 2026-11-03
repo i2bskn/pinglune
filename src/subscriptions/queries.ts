@@ -125,7 +125,8 @@ export function isActiveSubscription(row: SubscriptionRow, now: number): boolean
 
 // Inserts an MCP Events subscription, or updates the one with the same ID. user_id, workspace_id, event_name,
 // arguments and callback_url follow from the ID (or are kept), and kind and name are kept, so an update leaves them
-// as they are. Webhook destinations are inserted without this: an ID collision must not overwrite a row.
+// as they are. connection_id becomes the connection of this request: the ID does not include the connection, so two
+// connections with the same callback share the row, and the last one to subscribe owns it. Webhook destinations are inserted without this: an ID collision must not overwrite a row.
 export async function upsertSubscription(db: Db, row: SubscriptionRow): Promise<void> {
   await db
     .insert(subscriptions)
@@ -139,9 +140,40 @@ export async function upsertSubscription(db: Db, row: SubscriptionRow): Promise<
         expiresAt: row.expiresAt,
         unsubscribedAt: null,
         updatedAt: row.updatedAt,
+        connectionId: row.connectionId,
       },
     })
     .run();
+}
+
+// Ends an MCP Events subscription of a workspace from the management screen. Ending it again keeps the first
+// unsubscribed_at. An AI that still runs subscribes again with events/subscribe.
+export async function endWorkspaceMcpSubscription(db: Db, workspaceId: string, id: string, now: number): Promise<void> {
+  await db
+    .update(subscriptions)
+    .set({ unsubscribedAt: now, updatedAt: now })
+    .where(
+      and(
+        eq(subscriptions.id, id),
+        eq(subscriptions.workspaceId, workspaceId),
+        eq(subscriptions.kind, "mcp"),
+        isNull(subscriptions.unsubscribedAt),
+      ),
+    )
+    .run();
+}
+
+// The MCP Events subscription of a workspace with this ID.
+export function findWorkspaceMcpSubscription(
+  db: Db,
+  workspaceId: string,
+  id: string,
+): Promise<SubscriptionRow | undefined> {
+  return db
+    .select()
+    .from(subscriptions)
+    .where(and(eq(subscriptions.id, id), eq(subscriptions.workspaceId, workspaceId), eq(subscriptions.kind, "mcp")))
+    .get();
 }
 
 // Ends the user's subscription with this ID. Rows of other users are never matched.

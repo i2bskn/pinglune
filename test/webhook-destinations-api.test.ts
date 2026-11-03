@@ -113,6 +113,7 @@ describe("POST /api/v1/subscriptions/webhooks", () => {
       expires_at: null,
       created_at: now,
       updated_at: now,
+      connection: null,
     });
     const text = JSON.stringify(body);
     for (const hidden of [TOKEN, "abc-123", "automations", "x=1", alice.id]) expect(text).not.toContain(hidden);
@@ -301,8 +302,16 @@ describe("POST /api/v1/subscriptions/:id/delete", () => {
     expect((await findSubscriptionById(db, theirs.id))?.unsubscribedAt).toBeNull();
   });
 
-  it("returns 404 for an MCP subscription", async () => {
+  it("stops an MCP subscription", async () => {
     const subscription = await createSubscription({ user: alice });
+    const res = await remove(subscription.id);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ id: subscription.id, kind: "mcp", status: "unsubscribed", updated_at: now });
+    expect((await findSubscriptionById(db, subscription.id))?.unsubscribedAt).toBe(now);
+  });
+
+  it("returns 404 for another workspace's MCP subscription", async () => {
+    const subscription = await createSubscription({ user: bob });
     expect(await errorOf(await remove(subscription.id))).toMatchObject({ status: 404, code: "not_found" });
     expect((await findSubscriptionById(db, subscription.id))?.unsubscribedAt).toBeNull();
   });

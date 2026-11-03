@@ -1,6 +1,12 @@
 import { type FormEvent, useState } from "react";
 import type { Delivery, Subscription } from "../../../src/api/types";
-import { createQueue, createWebhookDestination, deleteQueue, deleteWebhookDestination } from "../actions";
+import {
+  createQueue,
+  createWebhookDestination,
+  deleteQueue,
+  deleteWebhookDestination,
+  stopMcpSubscription,
+} from "../actions";
 import {
   SUBSCRIPTION_STATUS_LABELS,
   WEBHOOK_DESTINATION_STATUS_LABELS,
@@ -22,11 +28,14 @@ import { ViewStatus, useDocumentTitle, viewTitle } from "./common";
 import { UNKNOWN_RESULT_MESSAGE } from "./SourcesView";
 
 const DESTINATION_GONE_MESSAGE = "この Webhook 配信先は見つかりません";
+const SUBSCRIPTION_GONE_MESSAGE = "この購読は見つかりません";
+const STOP_SUBSCRIPTION_CONFIRMATION =
+  "この購読を停止します。これからのイベントは送られなくなります。AI が動いていれば、また購読し直されることがあります。止め続けるには、Bot 画面で接続を切断してください。";
 const QUEUE_GONE_MESSAGE = "このポーリング用キューは見つかりません。削除された可能性があります";
 const QUEUE_GUIDE =
   "AI に、このキューの ID を claim_events に渡して定期的に（5 分おきなど）取得させ、処理したら ack_events を呼ばせてください。";
 
-// The destinations of the signed-in user's workspace (MCP Events subscriptions, read only, and webhook
+// The destinations of the signed-in user's workspace (MCP Events subscriptions, which can be stopped here, and webhook
 // destinations and polling queues, which can be registered and deleted here) and the deliveries to them.
 export function DeliveriesView({ client }: { client: ApiClient }) {
   const [state, reload] = useView(() => loadDeliveriesView(client), "deliveries");
@@ -86,7 +95,7 @@ function DeliveriesContent({
       ) : (
         <ul className="list subscriptions">
           {mcpSubscriptions.map((subscription) => (
-            <SubscriptionItem key={subscription.id} subscription={subscription} />
+            <SubscriptionItem key={subscription.id} client={client} subscription={subscription} onDone={onDone} />
           ))}
         </ul>
       )}
@@ -132,18 +141,80 @@ function DeliveriesContent({
   );
 }
 
-function SubscriptionItem({ subscription }: { subscription: Subscription }) {
+function SubscriptionItem({
+  client,
+  subscription,
+  onDone,
+}: {
+  client: ApiClient;
+  subscription: Subscription;
+  onDone: (message: string | null) => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+  const active = subscription.status === "active";
+  const connection = subscription.connection;
+
+  async function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSending(true);
+    setFailure(null);
+    const result = await stopMcpSubscription(client, subscription.id);
+    switch (result.kind) {
+      case "ok":
+        setSending(false);
+        setConfirming(false);
+        onDone("購読を停止しました");
+        return;
+      case "notFound":
+        setSending(false);
+        setConfirming(false);
+        onDone(SUBSCRIPTION_GONE_MESSAGE);
+        return;
+      case "error":
+        setSending(false);
+        setFailure(result.message);
+        return;
+      case "unknown":
+        setSending(false);
+        setFailure(UNKNOWN_RESULT_MESSAGE);
+        return;
+      case "redirecting":
+        return;
+    }
+  }
+
   return (
     <li className="subscription">
       <span className="delivery-head">
         <span className="delivery-host">{subscription.callback_host ?? "不明な宛先"}</span>
-        <span className={subscription.status === "active" ? "badge" : "badge badge-off"}>
-          {SUBSCRIPTION_STATUS_LABELS[subscription.status]}
-        </span>
+        <span className={active ? "badge" : "badge badge-off"}>{SUBSCRIPTION_STATUS_LABELS[subscription.status]}</span>
+        {active && (
+          <button
+            type="button"
+            className="button-danger-outline"
+            onClick={() => {
+              setConfirming(true);
+              setFailure(null);
+            }}
+            disabled={sending}
+          >
+            停止
+          </button>
+        )}
+      </span>
+      <span className="delivery-conditions">
+        接続:{" "}
+        {connection === null
+          ? "不明（以前の接続）"
+          : connection.bot_name === null
+            ? connection.client_name
+            : `${connection.client_name}（Bot: ${connection.bot_name}）`}
       </span>
       <span className="delivery-conditions">{describeArguments(subscription.arguments)}</span>
       <span className="delivery-meta">
-        {subscription.status === "active" && subscription.refresh_before !== null && (
+        {active && subscription.refresh_before !== null && (
           <time dateTime={new Date(subscription.refresh_before).toISOString()}>
             更新期限: {formatDateTime(subscription.refresh_before)}
           </time>
@@ -152,6 +223,20 @@ function SubscriptionItem({ subscription }: { subscription: Subscription }) {
           更新: {formatDateTime(subscription.updated_at)}
         </time>
       </span>
+      {confirming && (
+        <form className="folder-form" aria-label="購読を停止" onSubmit={(event) => void onSubmit(event)}>
+          <p>{STOP_SUBSCRIPTION_CONFIRMATION}</p>
+          <div className="folder-form-actions">
+            <button type="submit" className="button-danger" disabled={sending}>
+              停止する
+            </button>
+            <button type="button" onClick={() => setConfirming(false)} disabled={sending}>
+              やめる
+            </button>
+          </div>
+          {failure !== null && <p role="alert">{failure}</p>}
+        </form>
+      )}
     </li>
   );
 }

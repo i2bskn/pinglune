@@ -4,17 +4,20 @@ import { z } from "zod";
 import { describeError } from "../auth/middleware";
 import { clock } from "../clock";
 import type { Db } from "../db/client";
-import type { UserRow } from "../db/schema";
+import type { McpConnectionRow, UserRow } from "../db/schema";
 import {
   findWorkspaceConversation,
   listConversationMessages,
   listConversationParticipants,
 } from "../conversations/queries";
 import {
+  isRequestParticipant,
   MESSAGE_IDEMPOTENCY_KEY_PATTERN,
   postAiMessage,
   readMessageText,
   remainingAiMessages,
+  type ConnectionBot,
+  type NotParticipantReason,
   type PostErrorCode,
 } from "../conversations/service";
 import type { DeliveryMessage } from "../deliveries/enqueue";
@@ -34,15 +37,18 @@ import { findPersonalWorkspaceByUserId } from "../workspaces/queries";
 import { iso, toMcpEvent, toMcpEventDetail } from "./event-payload";
 import { isReadableText, sliceUtf8 } from "./text";
 
-// d1 is for the batches and the changed row counts of the queue tools. clientId is the OAuth client of the request
-// (ctx.auth.clientId), which post_message matches with the participants of a conversation; queue is for the
-// deliveries of the messages.
+// d1 is for the batches and the changed row counts of the queue tools. post_message matches the request with the
+// participants of a conversation by connectionBot (the bot of the MCP connection, when it is assigned to one that is
+// not deleted) and, for participants created before bots, by clientId (the OAuth client, ctx.auth.clientId). connection
+// is the MCP connection of the request (null for a legacy connection). queue is for the deliveries of the messages.
 export type ToolDeps = {
   db: Db;
   d1: D1Database;
   user: UserRow;
   bucket: R2Bucket;
   clientId: string | null;
+  connection: McpConnectionRow | null;
+  connectionBot: ConnectionBot | null;
   queue: Queue<DeliveryMessage>;
 };
 
@@ -89,6 +95,13 @@ const POST_ERROR_MESSAGES: Record<PostErrorCode, string> = {
   idempotency_conflict: "同じ idempotency_key で別の内容が送られました",
   temporarily_unavailable: "一時的に受け付けられません。同じ idempotency_key を付けて再送してください",
 };
+
+function notParticipantMessage(reason: NotParticipantReason, botName: string | null): string {
+  if (reason === "unassigned") {
+    return "この MCP 接続は Bot に割り当てられていません。Pinglune の Bot 画面で、この接続を Bot に割り当ててもらってください";
+  }
+  return `あなたは Bot「${botName ?? ""}」として接続していますが、この会話の参加者ではありません`;
+}
 
 function ok(result: unknown): CallToolResult {
   return { content: [{ type: "text", text: JSON.stringify(result) }] };
@@ -389,8 +402,8 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
     {
       title: "Get a conversation",
       description:
-        "Gets a conversation between AIs and the user: its state, its participants (is_you marks you) and its " +
-        "newest messages, oldest first. Pass older_cursor as cursor to get older messages; it is null when there " +
+        "Gets a conversation between AIs and the user: its state, its participants (bots; is_you marks you), the bot " +
+        "you are connected as (you.bot_name) and its newest messages, oldest first. Pass older_cursor as cursor to get older messages; it is null when there " +
         "are none. A long message is cut (truncated is true): read the rest with read_data and its data_ref. " +
         CONVERSATION_NOTE,
       inputSchema: getConversationInput,
@@ -429,8 +442,9 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
           },
           participants: participants.map((p) => ({
             name: p.name,
-            is_you: deps.clientId !== null && p.oauthClientId === deps.clientId,
+            is_you: isRequestParticipant(p, deps.connectionBot, deps.clientId),
           })),
+          you: { bot_name: deps.connectionBot?.name ?? null },
           messages: page.messages.map((message, index) => ({
             event_id: message.eventId,
             sender: message.labels.sender ?? "",
@@ -451,7 +465,7 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
     {
       title: "Post a message to a conversation",
       description:
-        "Posts a message to a conversation that you take part in. The other participants are notified. A " +
+        "Posts a message to a conversation that your bot takes part in. The other participants are notified. A " +
         "conversation stops after a set number of AI messages, or when the user stops it; then posting fails with " +
         "conversation_stopped. remaining_ai_messages tells how many AI messages are left. Pass idempotency_key so " +
         "that a retry does not post twice. " +
@@ -470,12 +484,18 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
           {
             conversation,
             participants,
+            connectionBot: deps.connectionBot,
             clientId: deps.clientId,
             text: args.text,
             idempotencyKey: args.idempotency_key,
           },
         );
-        if (!result.ok) return toolError(result.code, POST_ERROR_MESSAGES[result.code]);
+        if (!result.ok) {
+          if (result.code === "not_participant") {
+            return toolError(result.code, notParticipantMessage(result.reason, result.botName));
+          }
+          return toolError(result.code, POST_ERROR_MESSAGES[result.code]);
+        }
         return ok({
           event_id: result.eventId,
           conversation_status: result.conversation.status,

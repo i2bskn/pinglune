@@ -13,6 +13,7 @@ import {
   type ConversationRow,
   type SubscriptionRow,
 } from "../db/schema";
+import { resolveBotDeliveries, workspaceBotsByIds } from "../bots/queries";
 import { newSourceId } from "../ids";
 import { isActiveSubscription } from "../subscriptions/queries";
 
@@ -136,8 +137,9 @@ export async function workspaceSubscriptionsByIds(
   return new Map(rows.map((row) => [row.id, row]));
 }
 
-// The destinations that a message is delivered to: the active subscriptions of the participants other than the
-// sender, each once. Filters (types, sources, labels) are not looked at.
+// The destinations that a message is delivered to, each once: for the participants other than the sender, the
+// destination of each bot now (resolveBotDeliveries), and the active subscription of each participant created before
+// bots. Filters (types, sources, labels) are not looked at.
 export async function messageRecipients(
   db: Db,
   workspaceId: string,
@@ -145,14 +147,26 @@ export async function messageRecipients(
   senderParticipantId: string | null,
   now: number,
 ): Promise<string[]> {
-  const ids = [
-    ...new Set(participants.filter((p) => p.id !== senderParticipantId).map((p) => p.subscriptionId)),
-  ];
-  const rows = await workspaceSubscriptionsByIds(db, workspaceId, ids);
-  return ids.filter((id) => {
-    const row = rows.get(id);
-    return row !== undefined && isActiveSubscription(row, now);
-  });
+  const others = participants.filter((p) => p.id !== senderParticipantId);
+  const botIds = others.flatMap((p) => (p.botId === null ? [] : [p.botId]));
+  const legacyIds = [...new Set(others.flatMap((p) => (p.botId === null && p.subscriptionId !== null ? [p.subscriptionId] : [])))];
+  const [botRows, legacyRows] = await Promise.all([
+    workspaceBotsByIds(db, workspaceId, botIds),
+    workspaceSubscriptionsByIds(db, workspaceId, legacyIds),
+  ]);
+  const deliveries = await resolveBotDeliveries(db, workspaceId, [...botRows.values()], now);
+  const ids: string[] = [];
+  for (const p of others) {
+    let id: string | null = null;
+    if (p.botId !== null) {
+      id = deliveries.get(p.botId)?.id ?? null;
+    } else if (p.subscriptionId !== null) {
+      const row = legacyRows.get(p.subscriptionId);
+      id = row !== undefined && isActiveSubscription(row, now) ? row.id : null;
+    }
+    if (id !== null && !ids.includes(id)) ids.push(id);
+  }
+  return ids;
 }
 
 export type MessageRow = {

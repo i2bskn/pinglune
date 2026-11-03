@@ -319,16 +319,24 @@ function ParticipantList({ conversation }: { conversation: ConversationDetail })
   return (
     <ul className="list subscriptions">
       {conversation.participants.map((participant) => {
-        const active = participant.destination_status === "active";
+        const active = participant.destination?.status === "active";
+        const bot = participant.bot;
         return (
           <li key={participant.name} className="subscription">
             <span className="delivery-head">
               <span className="delivery-host">{participant.name}</span>
+              {bot?.deleted === true && <span className="badge badge-off">削除済み</span>}
               <span className={active ? "badge" : "badge badge-off"}>
                 通知先: {participantDestinationStatus(participant)}
               </span>
             </span>
-            <span className="delivery-conditions">MCP 接続: {participant.oauth_client_name}</span>
+            {bot !== null && bot.name !== participant.name && (
+              <span className="delivery-conditions">Bot: {bot.name}</span>
+            )}
+            {bot === null && <span className="delivery-conditions">以前の参加者（Bot ではありません）</span>}
+            <span className="delivery-conditions">
+              MCP 接続: {participant.connection_client_name ?? "なし"}
+            </span>
             <span className="delivery-conditions">通知先: {participantDestinationLabel(participant)}</span>
           </li>
         );

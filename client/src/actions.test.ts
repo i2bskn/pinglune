@@ -1,12 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ApiKey, ConversationDetail, EmailAddress, Source, Subscription, User } from "../../src/api/types";
+import type { ApiKey, Bot, ConversationDetail, EmailAddress, Source, Subscription, User } from "../../src/api/types";
 import {
+  assignMcpConnection,
   changeUserRole,
+  createBot,
   createConversation,
   createSource,
   createQueue,
   createUser,
   createWebhookDestination,
+  deleteBot,
   deleteQueue,
   deleteUser,
   deleteWebhookDestination,
@@ -16,8 +19,11 @@ import {
   resetUserPassword,
   revokeApiKey,
   revokeEmailAddress,
+  revokeMcpConnection,
   revokeUserSessions,
   stopConversation,
+  stopMcpSubscription,
+  updateBot,
   updateSource,
 } from "./actions";
 import { createApiClient, createApiFetch } from "./api";
@@ -391,6 +397,7 @@ const DESTINATION: Subscription = {
   expires_at: null,
   created_at: 1,
   updated_at: 1,
+  connection: null,
 };
 
 describe("createWebhookDestination", () => {
@@ -527,7 +534,7 @@ describe("createConversation", () => {
   const input = {
     title: "相談",
     max_ai_messages: 5,
-    participants: [{ name: "dot", oauth_client_id: "c1", subscription_id: "sub_00000000000000000000000000000002" }],
+    participants: [{ bot_id: "bot_01JC9Z7H2K4M6N8P0Q2R4S6T8V" }],
     message: "hi",
     idempotency_key: "k1",
   };
@@ -605,5 +612,99 @@ describe("stopConversation", () => {
   it("is unknown when fetch rejects", async () => {
     const { client } = setup(() => Promise.reject(new TypeError("Failed to fetch")), 401, url);
     expect(await stopConversation(client, CONVERSATION.id)).toEqual({ kind: "unknown" });
+  });
+});
+
+const BOT: Bot = {
+  id: "bot_01JC9Z7H2K4M6N8P0Q2R4S6T8V",
+  name: "Dot",
+  delivery_kind: "mcp",
+  delivery: null,
+  connection: null,
+  status: "no_connection",
+  created_at: 1,
+  updated_at: 1,
+};
+
+describe("createBot", () => {
+  const url = "/api/v1/bots";
+  const input = { name: "Dot", delivery_kind: "mcp" } as const;
+
+  it("sends the input and is ok with the bot on 201", async () => {
+    const { client, fetch } = setup(() => Response.json(BOT, { status: 201 }), 401, url);
+    expect(await createBot(client, input)).toEqual({ kind: "ok", bot: BOT });
+    const init = fetch.mock.calls[0]?.[1];
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(String(init?.body))).toEqual(input);
+  });
+
+  it("is an error with the API message on 409", async () => {
+    const { client } = setup(apiError(409, "同じ名前の Bot があります"), 401, url);
+    expect(await createBot(client, input)).toEqual({ kind: "error", message: "同じ名前の Bot があります" });
+  });
+});
+
+describe("updateBot and deleteBot", () => {
+  it("sends the changes and is ok with the bot", async () => {
+    const url = `/api/v1/bots/${BOT.id}/update`;
+    const { client, fetch } = setup(() => Response.json({ ...BOT, name: "Dot2" }), 401, url);
+    expect(await updateBot(client, BOT.id, { name: "Dot2" })).toEqual({ kind: "ok", bot: { ...BOT, name: "Dot2" } });
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toEqual({ name: "Dot2" });
+  });
+
+  it("is not found on 404", async () => {
+    const { client } = setup(apiError(404, "Bot が見つかりません"), 401, `/api/v1/bots/${BOT.id}/update`);
+    expect(await updateBot(client, BOT.id, { name: "x" })).toEqual({ kind: "notFound" });
+  });
+
+  it("deletes a bot", async () => {
+    const { client, fetch } = setup(() => new Response(null, { status: 204 }), 401, `/api/v1/bots/${BOT.id}/delete`);
+    expect(await deleteBot(client, BOT.id)).toEqual({ kind: "ok" });
+    expect(fetch.mock.calls[0]?.[1]?.method).toBe("POST");
+  });
+
+  it("does not send an invalid ID", async () => {
+    const { client, fetch } = setup(() => Response.json({}), 401, "/unused");
+    expect(await deleteBot(client, "../x")).toEqual({ kind: "error", message: "Bot が見つかりません" });
+    expect(await updateBot(client, "../x", { name: "x" })).toEqual({ kind: "error", message: "Bot が見つかりません" });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("MCP connections", () => {
+  it("assigns a connection to a bot", async () => {
+    const { client, fetch } = setup(() => Response.json({}), 401, "/api/v1/mcp-connections/assign");
+    const input = { connection_id: "mcn_01JC9Z7H2K4M6N8P0Q2R4S6T8V", bot_id: BOT.id };
+    expect(await assignMcpConnection(client, input)).toEqual({ kind: "ok" });
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toEqual(input);
+  });
+
+  it("shows the error of an assignment", async () => {
+    const { client } = setup(apiError(400, "期限切れの接続は Bot に割り当てられません"), 401, "/api/v1/mcp-connections/assign");
+    expect(await assignMcpConnection(client, { grant_id: "g1", bot_id: null })).toEqual({
+      kind: "error",
+      message: "期限切れの接続は Bot に割り当てられません",
+    });
+  });
+
+  it("disconnects a connection or a legacy grant", async () => {
+    const { client, fetch } = setup(() => new Response(null, { status: 204 }), 401, "/api/v1/mcp-connections/revoke");
+    expect(await revokeMcpConnection(client, { grant_id: "g1" })).toEqual({ kind: "ok" });
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toEqual({ grant_id: "g1" });
+  });
+});
+
+describe("stopMcpSubscription", () => {
+  const ID = "sub_00000000000000000000000000000001";
+
+  it("sends the request and is ok", async () => {
+    const { client, fetch } = setup(() => Response.json({}), 401, `/api/v1/subscriptions/${ID}/delete`);
+    expect(await stopMcpSubscription(client, ID)).toEqual({ kind: "ok" });
+    expect(fetch.mock.calls[0]?.[1]?.method).toBe("POST");
+  });
+
+  it("is not found on 404", async () => {
+    const { client } = setup(apiError(404, "配信先が見つかりません"), 401, `/api/v1/subscriptions/${ID}/delete`);
+    expect(await stopMcpSubscription(client, ID)).toEqual({ kind: "notFound" });
   });
 });

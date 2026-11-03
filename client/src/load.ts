@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type {
   ApiKey,
+  Bot,
   ConversationDetail,
   ConversationList,
   ConversationMessageList,
@@ -212,29 +213,49 @@ export async function loadConversationMessages(
 }
 
 export type ConversationFormData = {
-  // The MCP connections of the user. Empty with connectionsError set when they cannot be read (e.g. 503 where MCP is
-  // not served).
-  connections: McpConnection[];
-  connectionsError: string | null;
-  // The active destinations (MCP subscriptions, webhook destinations and polling queues).
-  subscriptions: Subscription[];
+  // The bots of the workspace, by name.
+  bots: Bot[];
 };
 
 // The choices of the creation form of a conversation.
 export async function loadConversationForm(client: ApiClient): Promise<Loaded<ConversationFormData>> {
-  const [connections, subscriptions] = await Promise.all([
+  const bots = await request(() => client.api.v1.bots.$get());
+  if (bots.kind === "redirecting") return bots;
+  // The list is never missing; a 404 here is an unexpected response.
+  if (bots.kind !== "ok") return { kind: "error", message: bots.message };
+  return { kind: "ready", data: { bots: bots.value.bots } };
+}
+
+export type BotsData = {
+  bots: Bot[];
+  // The MCP connections of the user. Empty with connectionsError set when they cannot be read (e.g. 503 where MCP is
+  // not served).
+  connections: McpConnection[];
+  connectionsError: string | null;
+  // Every subscription, for the destinations of the bots and the subscriptions of the connections.
+  subscriptions: Subscription[];
+};
+
+// The bots, the MCP connections and the subscriptions of the Bot screen.
+export async function loadBotsView(client: ApiClient): Promise<Loaded<BotsData>> {
+  const [bots, connections, subscriptions] = await Promise.all([
+    request(() => client.api.v1.bots.$get()),
     request(() => client.api.v1["mcp-connections"].$get()),
     request(() => client.api.v1.subscriptions.$get()),
   ]);
-  if (connections.kind === "redirecting" || subscriptions.kind === "redirecting") return { kind: "redirecting" };
-  // The list is never missing; a 404 here is an unexpected response.
+  if (bots.kind === "redirecting" || connections.kind === "redirecting" || subscriptions.kind === "redirecting") {
+    return { kind: "redirecting" };
+  }
+  // The lists are never missing; a 404 here is an unexpected response.
+  if (bots.kind !== "ok") return { kind: "error", message: bots.message };
   if (subscriptions.kind !== "ok") return { kind: "error", message: subscriptions.message };
   return {
     kind: "ready",
     data: {
+      bots: bots.value.bots,
       connections: connections.kind === "ok" ? connections.value.connections : [],
       connectionsError: connections.kind === "ok" ? null : connections.message,
-      subscriptions: subscriptions.value.subscriptions.filter((subscription) => subscription.status === "active"),
+      subscriptions: subscriptions.value.subscriptions,
     },
   };
 }

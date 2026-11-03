@@ -256,10 +256,15 @@ export const subscriptions = sqliteTable(
     unsubscribedAt: integer("unsubscribed_at"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
+    // mcp only: the MCP connection (mcp_connections.id) that subscribed last. NULL for the other kinds, and for the
+    // subscriptions of connections made before MCP connections were recorded. No foreign key, like oauth_client_id
+    // elsewhere: bots.delivery_subscription_id refers to this table, and the reference would go round.
+    connectionId: text("connection_id"),
   },
   (t) => [
     index("subscriptions_workspace_id_idx").on(t.workspaceId),
     index("subscriptions_user_id_idx").on(t.userId),
+    index("subscriptions_connection_id_idx").on(t.connectionId),
   ],
 );
 
@@ -343,8 +348,12 @@ export const conversations = sqliteTable(
   ],
 );
 
-// An AI in a conversation: the OAuth client that its messages are matched with, and the destination its
-// notifications go to. Set when the conversation is created, and never changed.
+// An AI in a conversation. A participant created with a bot (bot_id) is matched with the MCP connection of the bot
+// and notified at the destination of the bot, both resolved when they are needed (src/bots/queries.ts). A participant
+// created before bots (bot_id NULL) is matched with its OAuth client and notified at its subscription. Set when the
+// conversation is created, and never changed.
+// The table was rebuilt to make oauth_client_id and subscription_id nullable: an exception to avoiding rebuilds,
+// because a placeholder value would break the meaning of these columns.
 export const conversationParticipants = sqliteTable(
   "conversation_participants",
   {
@@ -356,22 +365,118 @@ export const conversationParticipants = sqliteTable(
     workspaceId: text("workspace_id")
       .notNull()
       .references(() => workspaces.id),
-    // The display name, unique in the conversation.
+    // The display name, unique in the conversation. For a bot, a copy of its name when the conversation was created.
     name: text("name").notNull(),
-    // ctx.auth.clientId of the MCP requests of this AI.
-    oauthClientId: text("oauth_client_id").notNull(),
-    // A subscription of kind mcp, webhook or queue. Nothing is delivered to it once it has ended.
-    subscriptionId: text("subscription_id")
-      .notNull()
-      .references(() => subscriptions.id),
+    // Participants before bots: ctx.auth.clientId of the MCP requests of this AI. NULL for bots.
+    oauthClientId: text("oauth_client_id"),
+    // Participants before bots: a subscription of kind mcp, webhook or queue. Nothing is delivered to it once it has
+    // ended. NULL for bots.
+    subscriptionId: text("subscription_id").references(() => subscriptions.id),
+    botId: text("bot_id").references(() => bots.id),
     createdAt: integer("created_at").notNull(),
   },
   (t) => [
     // Also the index of the participants of a conversation.
     uniqueIndex("conversation_participants_client_unique").on(t.conversationId, t.oauthClientId),
     uniqueIndex("conversation_participants_name_unique").on(t.conversationId, t.name),
+    uniqueIndex("conversation_participants_bot_unique").on(t.conversationId, t.botId),
+    check(
+      "conversation_participants_target_check",
+      sql`${t.botId} IS NOT NULL OR (${t.oauthClientId} IS NOT NULL AND ${t.subscriptionId} IS NOT NULL)`,
+    ),
   ],
 );
 
 export type ConversationRow = typeof conversations.$inferSelect;
 export type ConversationParticipantRow = typeof conversationParticipants.$inferSelect;
+
+// An AI as the user manages it: a name, the way it is notified, and (through mcp_connections.bot_id) the MCP
+// connection it speaks with. Conversations take bots as participants. Deleted with deleted_at (participants refer to
+// it), except when the user is deleted.
+// - mcp: notified at the MCP Events subscription of its connection (subscriptions.connection_id).
+// - webhook / queue: notified at delivery_subscription_id, a webhook destination or a polling queue.
+export const bots = sqliteTable(
+  "bots",
+  {
+    // bot_ + ULID.
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id),
+    createdByUserId: text("created_by_user_id")
+      .notNull()
+      .references(() => users.id),
+    // Trimmed, 1 to 64 characters (normalizeDisplayName). Unique among the bots of the workspace that are not deleted.
+    name: text("name").notNull(),
+    deliveryKind: text("delivery_kind", { enum: ["mcp", "webhook", "queue"] }).notNull(),
+    // webhook / queue only. One destination is used by one bot.
+    deliverySubscriptionId: text("delivery_subscription_id").references(() => subscriptions.id),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+    deletedAt: integer("deleted_at"),
+  },
+  (t) => [
+    uniqueIndex("bots_workspace_name_unique")
+      .on(t.workspaceId, t.name)
+      .where(sql`${t.deletedAt} IS NULL`),
+    uniqueIndex("bots_delivery_subscription_unique")
+      .on(t.deliverySubscriptionId)
+      .where(sql`${t.deletedAt} IS NULL AND ${t.deliverySubscriptionId} IS NOT NULL`),
+    index("bots_workspace_id_idx").on(t.workspaceId),
+    check("bots_delivery_kind_check", sql`${t.deliveryKind} IN ('mcp', 'webhook', 'queue')`),
+    check(
+      "bots_delivery_subscription_check",
+      sql`(${t.deliveryKind} = 'mcp' AND ${t.deliverySubscriptionId} IS NULL) OR (${t.deliveryKind} IN ('webhook', 'queue') AND ${t.deliverySubscriptionId} IS NOT NULL)`,
+    ),
+  ],
+);
+
+// One authorization of an MCP client (one OAuth grant). A grant made by POST /authorize carries the ID in its
+// metadata and props (connectionId); a grant made before this table (a legacy connection) gets a row when the user
+// assigns it to a bot, with grant_id. Rows are revoked rather than deleted, except when the user is deleted.
+export const mcpConnections = sqliteTable(
+  "mcp_connections",
+  {
+    // mcn_ + ULID.
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id),
+    // NULL: not assigned to a bot.
+    botId: text("bot_id").references(() => bots.id),
+    // Legacy connections only: the grant. New connections are found by the connectionId of the grant's metadata.
+    grantId: text("grant_id"),
+    oauthClientId: text("oauth_client_id").notNull(),
+    // The client name when it was authorized (clientName()).
+    clientName: text("client_name").notNull(),
+    // The redirect URI of the authorization request. "" when a legacy grant does not have one.
+    redirectUri: text("redirect_uri").notNull(),
+    createdAt: integer("created_at").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+    revokedAt: integer("revoked_at"),
+    // user: disconnected on the screen. replaced: a newer connection of the same bot or the same app took its place.
+    // sessions_revoked: a password change or the revocation of every session.
+    revokeReason: text("revoke_reason", { enum: ["user", "replaced", "sessions_revoked"] }),
+  },
+  (t) => [
+    // One active connection per bot.
+    uniqueIndex("mcp_connections_active_bot_unique")
+      .on(t.botId)
+      .where(sql`${t.revokedAt} IS NULL AND ${t.botId} IS NOT NULL`),
+    uniqueIndex("mcp_connections_grant_unique")
+      .on(t.grantId)
+      .where(sql`${t.grantId} IS NOT NULL`),
+    index("mcp_connections_user_id_idx").on(t.userId),
+    check(
+      "mcp_connections_revoke_reason_check",
+      sql`${t.revokeReason} IS NULL OR ${t.revokeReason} IN ('user', 'replaced', 'sessions_revoked')`,
+    ),
+    check("mcp_connections_revoked_check", sql`(${t.revokedAt} IS NULL) = (${t.revokeReason} IS NULL)`),
+  ],
+);
+
+export type BotRow = typeof bots.$inferSelect;
+export type McpConnectionRow = typeof mcpConnections.$inferSelect;

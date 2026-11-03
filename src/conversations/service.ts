@@ -278,9 +278,28 @@ export type PostErrorCode =
   | "idempotency_conflict"
   | "temporarily_unavailable";
 
+// unassigned: the MCP connection is not assigned to a bot (or a legacy connection, or its bot is deleted).
+// not_in_conversation: the bot of the connection is not a participant.
+export type NotParticipantReason = "unassigned" | "not_in_conversation";
+
 export type PostResult =
   | { ok: true; eventId: string; duplicate: boolean; conversation: ConversationRow }
-  | { ok: false; code: PostErrorCode };
+  | { ok: false; code: Exclude<PostErrorCode, "not_participant"> }
+  | { ok: false; code: "not_participant"; reason: NotParticipantReason; botName: string | null };
+
+// The bot that an MCP connection is assigned to, when it is not deleted.
+export type ConnectionBot = { id: string; name: string };
+
+// Whether a participant is the AI of an MCP request: a bot by the bot of the connection, a participant created before
+// bots by its OAuth client. Never by a name in the text or the arguments.
+export function isRequestParticipant(
+  participant: ConversationParticipantRow,
+  connectionBot: ConnectionBot | null,
+  clientId: string | null,
+): boolean {
+  if (participant.botId !== null) return connectionBot !== null && participant.botId === connectionBot.id;
+  return clientId !== null && participant.oauthClientId === clientId;
+}
 
 type ReservedCounts = { status: ConversationRow["status"]; ai_message_count: number; max_ai_messages: number };
 
@@ -312,8 +331,7 @@ async function reload(deps: MessageDeps, conversation: ConversationRow): Promise
   return (await findWorkspaceConversation(deps.db, conversation.workspaceId, conversation.id)) ?? conversation;
 }
 
-// A message of an AI, matched with the participants by the OAuth client of the MCP request (never by a name in the
-// text or the arguments). A retry with the same idempotency key returns the stored message whatever the state of
+// A message of an AI, matched with the participants by the MCP connection of the request (isRequestParticipant). A retry with the same idempotency key returns the stored message whatever the state of
 // the conversation, without taking another message out of the limit. A failure after the reservation (R2 or D1)
 // does not give the message back: the conversation only gets one message less, which is the safe side.
 export async function postAiMessage(
@@ -321,18 +339,26 @@ export async function postAiMessage(
   params: {
     conversation: ConversationRow;
     participants: ConversationParticipantRow[];
+    connectionBot: ConnectionBot | null;
     clientId: string | null;
     text: unknown;
     idempotencyKey?: string;
   },
 ): Promise<PostResult> {
-  const { conversation, participants, clientId } = params;
+  const { conversation, participants, connectionBot, clientId } = params;
   // 1. The text.
   const text = validateMessageText(params.text);
   if (text === null) return { ok: false, code: "invalid_text" };
   // 2. The participant.
-  const participant = clientId === null ? undefined : participants.find((p) => p.oauthClientId === clientId);
-  if (participant === undefined) return { ok: false, code: "not_participant" };
+  const participant = participants.find((p) => isRequestParticipant(p, connectionBot, clientId));
+  if (participant === undefined) {
+    return {
+      ok: false,
+      code: "not_participant",
+      reason: connectionBot === null ? "unassigned" : "not_in_conversation",
+      botName: connectionBot?.name ?? null,
+    };
+  }
   const sender: Sender = { kind: "ai", id: participant.id, name: participant.name };
 
   // 3. A retry.
@@ -424,7 +450,8 @@ export async function postUserMessage(
   return { ok: true, eventId: result.eventId, duplicate: result.duplicate, conversation: await reload(deps, conversation) };
 }
 
-export type NewParticipant = { name: string; oauthClientId: string; subscriptionId: string };
+// A bot as a participant: its name is copied when the conversation is created.
+export type NewParticipant = { botId: string; name: string };
 
 // Creates a conversation with its participants and stores the first message of the user, delivered to every AI, in
 // one D1 batch. The caller checks the input, the limit and a retry first. A retry that races with this one returns
@@ -437,6 +464,8 @@ export async function createConversation(
     title: string;
     maxAiMessages: number;
     participants: NewParticipant[];
+    // The destinations of the bots now (resolveBotDeliveries), each once. May be empty: the message is stored anyway.
+    recipients: string[];
     text: ValidText;
     idempotencyKey: string;
   },
@@ -450,8 +479,7 @@ export async function createConversation(
     sender: { kind: "user", id: user.id, name: userSenderName(user) },
     text: params.text,
     idempotencyKey: createIdempotencyKey(user.id, params.idempotencyKey),
-    // The subscriptions were checked to be active by the caller.
-    recipients: params.participants.map((p) => p.subscriptionId),
+    recipients: params.recipients,
     before: [
       d1
         .prepare(
@@ -463,10 +491,10 @@ export async function createConversation(
       ...params.participants.map((p) =>
         d1
           .prepare(
-            `INSERT INTO conversation_participants (id, conversation_id, workspace_id, name, oauth_client_id, subscription_id, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO conversation_participants (id, conversation_id, workspace_id, name, oauth_client_id, subscription_id, bot_id, created_at)
+            VALUES (?, ?, ?, ?, NULL, NULL, ?, ?)`,
           )
-          .bind(newParticipantId(now), conversationId, workspaceId, p.name, p.oauthClientId, p.subscriptionId, now),
+          .bind(newParticipantId(now), conversationId, workspaceId, p.name, p.botId, now),
       ),
     ],
     compareOnRetry: false,

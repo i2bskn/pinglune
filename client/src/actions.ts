@@ -1,5 +1,8 @@
 import type {
   ApiKey,
+  AssignMcpConnectionRequest,
+  Bot,
+  CreateBotRequest,
   ConversationDetail,
   CreateConversationRequest,
   CreateQueueRequest,
@@ -10,6 +13,7 @@ import type {
   PostConversationMessageRequest,
   Source,
   Subscription,
+  UpdateBotRequest,
   UpdateSourceRequest,
   User,
 } from "../../src/api/types";
@@ -326,4 +330,66 @@ export async function stopConversation(client: ApiClient, conversationId: string
   return resourceActionResult(
     await send(() => client.api.v1.conversations[":id"].stop.$post({ param: { id: conversationId } })),
   );
+}
+
+// Stops an MCP Events subscription (one left by an old installation, for example). An AI that still runs may subscribe
+// again. Stopping a stopped one is ok. Never rejects.
+export async function stopMcpSubscription(client: ApiClient, subscriptionId: string): Promise<ResourceActionResult> {
+  if (!isValidId(subscriptionId)) return { kind: "error", message: "購読が見つかりません" };
+  return resourceActionResult(
+    await send(() => client.api.v1.subscriptions[":id"].delete.$post({ param: { id: subscriptionId } })),
+  );
+}
+
+export type BotResult = { kind: "ok"; bot: Bot } | { kind: "notFound" } | SendFailure;
+
+async function botResult<R extends { ok: boolean; status: number; json(): Promise<unknown> }>(
+  sent: { kind: "response"; res: R } | SendFailure,
+): Promise<BotResult> {
+  if (sent.kind !== "response") return sent;
+  const { res } = sent;
+  if (res.ok) {
+    const body = await okJson(res as { status: number; json(): Promise<Bot> });
+    return body.kind === "ok" ? { kind: "ok", bot: body.value } : body;
+  }
+  if (res.status === 404) return { kind: "notFound" };
+  return { kind: "error", message: await responseErrorMessage(res) };
+}
+
+// Creates a bot. Errors, including name_conflict, delivery_in_use and limit_exceeded (409), are shown with the
+// server's message. Never rejects.
+export async function createBot(client: ApiClient, input: CreateBotRequest): Promise<BotResult> {
+  return botResult(await send(() => client.api.v1.bots.$post({ json: input })));
+}
+
+const INVALID_BOT_ID = { kind: "error", message: "Bot が見つかりません" } as const;
+
+// Changes the name or the destination of a bot. Never rejects.
+export async function updateBot(client: ApiClient, botId: string, input: UpdateBotRequest): Promise<BotResult> {
+  if (!isValidId(botId)) return INVALID_BOT_ID;
+  return botResult(await send(() => client.api.v1.bots[":id"].update.$post({ param: { id: botId }, json: input })));
+}
+
+// Deletes a bot. Its MCP connection stays, not assigned to a bot; its destination is not ended. Deleting a deleted bot
+// is ok. Never rejects.
+export async function deleteBot(client: ApiClient, botId: string): Promise<ResourceActionResult> {
+  if (!isValidId(botId)) return INVALID_BOT_ID;
+  return resourceActionResult(await send(() => client.api.v1.bots[":id"].delete.$post({ param: { id: botId } })));
+}
+
+// Assigns an MCP connection (or a legacy grant) to a bot, or removes the assignment with bot_id null. The other
+// connection of the bot, if any, is disconnected. Never rejects.
+export async function assignMcpConnection(
+  client: ApiClient,
+  input: AssignMcpConnectionRequest,
+): Promise<ResourceActionResult> {
+  return resourceActionResult(await send(() => client.api.v1["mcp-connections"].assign.$post({ json: input })));
+}
+
+// Disconnects an MCP connection, or revokes a legacy grant. Disconnecting again is ok. Never rejects.
+export async function revokeMcpConnection(
+  client: ApiClient,
+  target: { connection_id: string } | { grant_id: string },
+): Promise<ResourceActionResult> {
+  return resourceActionResult(await send(() => client.api.v1["mcp-connections"].revoke.$post({ json: target })));
 }

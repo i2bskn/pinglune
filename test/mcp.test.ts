@@ -10,6 +10,7 @@ import type { Bindings } from "../src/env";
 import { mcpHandler } from "../src/mcp/handler";
 import { buildOAuthProviderOptions } from "../src/mcp/provider";
 import {
+  createSubscription,
   createUser,
   db,
   login,
@@ -34,6 +35,10 @@ type FlowOptions = {
   sharedEnv?: Cloudflare.Env;
   redirectUri?: string;
   clientName?: string;
+  // An existing client, instead of registering a new one.
+  clientId?: string;
+  // The bot_id sent with the approval.
+  botId?: string;
 };
 
 type TokenResponse = { access_token: string; refresh_token?: string; resource?: string; expires_in: number };
@@ -84,7 +89,7 @@ async function openConsent(
   options: FlowOptions = {},
 ): Promise<Consent & { clientId: string; verifier: string }> {
   const origin = options.origin ?? ORIGIN;
-  const clientId = await registerClient(options);
+  const clientId = options.clientId ?? (await registerClient(options));
   const { verifier, challenge } = await pkce();
   const res = await send(authorizeUrl(origin, clientId, challenge, options.redirectUri), {
     ...withDefaults(options),
@@ -106,7 +111,7 @@ async function authorizeClient(sessionCookies: Cookies, options: FlowOptions = {
   const approved = await send(`${origin}/authorize`, {
     ...withDefaults(options),
     cookies: consent.cookies,
-    form: { handle: consent.handle, decision: "approve" },
+    form: { handle: consent.handle, decision: "approve", ...(options.botId === undefined ? {} : { bot_id: options.botId }) },
   });
   expect(approved.status).toBe(302);
   const location = new URL(approved.headers.get("Location") ?? "");
@@ -335,6 +340,7 @@ describe("MCP", () => {
     const { access_token } = await authorizeClient(memberCookies);
     await expectMcpOk(await mcpInitialize(access_token));
     await env.DB.batch([
+      env.DB.prepare("DELETE FROM mcp_connections WHERE user_id = ?").bind(member.id),
       env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(member.id),
       env.DB.prepare("DELETE FROM workspaces WHERE owner_user_id = ?").bind(member.id),
       env.DB.prepare("DELETE FROM users WHERE id = ?").bind(member.id),
@@ -508,5 +514,240 @@ describe("origins and configuration", () => {
     await expectMcpOk(await mcpInitialize(second.access_token, { origin: other, sharedEnv: shared }));
     // Tokens are bound to their origin's resource.
     expect((await mcpInitialize(first.access_token, { origin: other, sharedEnv: shared })).status).toBe(401);
+  });
+});
+
+describe("bots and MCP connections", () => {
+  type ConnectionRecord = {
+    id: string;
+    bot_id: string | null;
+    grant_id: string | null;
+    oauth_client_id: string;
+    client_name: string;
+    redirect_uri: string;
+    revoked_at: number | null;
+    revoke_reason: string | null;
+  };
+
+  async function createBot(name: string, cookies: Cookies = memberCookies): Promise<string> {
+    const res = await send("/api/v1/bots", { cookies, json: { name, delivery_kind: "mcp" } });
+    expect(res.status).toBe(201);
+    return ((await res.json()) as { id: string }).id;
+  }
+
+  async function connectionsOf(userId: string): Promise<ConnectionRecord[]> {
+    const { results } = await env.DB.prepare("SELECT * FROM mcp_connections WHERE user_id = ? ORDER BY id")
+      .bind(userId)
+      .all<ConnectionRecord>();
+    return results;
+  }
+
+  async function subscriptionOf(id: string) {
+    return env.DB.prepare("SELECT connection_id, unsubscribed_at FROM subscriptions WHERE id = ?")
+      .bind(id)
+      .first<{ connection_id: string | null; unsubscribed_at: number | null }>();
+  }
+
+  // A subscription made by a connection.
+  async function subscriptionOfConnection(connectionId: string, callbackUrl: string): Promise<string> {
+    const subscription = await createSubscription({ user: member, callbackUrl });
+    await env.DB.prepare("UPDATE subscriptions SET connection_id = ? WHERE id = ?").bind(connectionId, subscription.id).run();
+    return subscription.id;
+  }
+
+  async function callTool(token: string, name: string, args: Record<string, unknown>) {
+    const res = await mcpRequest(token, "tools/call", { name, arguments: args });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { result: { isError?: boolean; content: { text: string }[] } };
+    return JSON.parse(body.result.content[0]?.text ?? "") as Record<string, unknown>;
+  }
+
+  // A grant made before connections were recorded: no connectionId in its metadata or props.
+  async function legacyToken(clientId: string, origin = ORIGIN): Promise<TokenResponse> {
+    const api = oauthApi(origin);
+    const { verifier, challenge } = await pkce();
+    const request = await api.parseAuthRequest(new Request(authorizeUrl(origin, clientId, challenge)));
+    const { redirectTo } = await api.completeAuthorization({
+      request,
+      userId: member.id,
+      metadata: {},
+      scope: ["mcp"],
+      props: { userId: member.id, authMode: "password" },
+    });
+    const code = new URL(redirectTo).searchParams.get("code") ?? "";
+    const res = await send(`${origin}/oauth/token`, {
+      form: { grant_type: "authorization_code", code, redirect_uri: REDIRECT_URI, client_id: clientId, code_verifier: verifier },
+    });
+    expect(res.status).toBe(200);
+    return (await res.json()) as TokenResponse;
+  }
+
+  it("records the connection of the chosen bot, and its token carries the connection", async () => {
+    const bot = await createBot("Dot");
+    const token = await authorizeClient(memberCookies, { botId: bot });
+    await expectMcpOk(await mcpInitialize(token.access_token));
+    const rows = await connectionsOf(member.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      bot_id: bot,
+      grant_id: null,
+      client_name: "Test client",
+      redirect_uri: REDIRECT_URI,
+      revoked_at: null,
+    });
+    const { items } = await oauthApi(ORIGIN).listUserGrants(member.id);
+    expect(items.map((grant) => grant.metadata)).toEqual([{ connectionId: rows[0]?.id }]);
+  });
+
+  it("replaces the connection of the same bot, and moves the subscriptions of the same app to the new one", async () => {
+    const bot = await createBot("Dot");
+    const clientId = await registerClient();
+    const first = await authorizeClient(memberCookies, { clientId, botId: bot });
+    const old = (await connectionsOf(member.id))[0]?.id ?? "";
+    const subscription = await subscriptionOfConnection(old, "https://hooks.example.com/old");
+
+    const second = await authorizeClient(memberCookies, { clientId, botId: bot });
+    expect((await mcpInitialize(first.access_token)).status).toBe(401);
+    await expectMcpOk(await mcpInitialize(second.access_token));
+    const rows = await connectionsOf(member.id);
+    const fresh = rows.find((row) => row.id !== old);
+    expect(rows.find((row) => row.id === old)).toMatchObject({ revoked_at: expect.any(Number), revoke_reason: "replaced" });
+    expect(fresh).toMatchObject({ bot_id: bot, revoked_at: null });
+    // Not ended: it moves to the new connection.
+    expect(await subscriptionOf(subscription)).toEqual({ connection_id: fresh?.id, unsubscribed_at: null });
+    expect((await oauthApi(ORIGIN).listUserGrants(member.id)).items).toHaveLength(1);
+  });
+
+  it("keeps the subscriptions of another app with their connection when the connection of the bot is replaced", async () => {
+    const bot = await createBot("Dot");
+    const first = await authorizeClient(memberCookies, { botId: bot, clientName: "Cursor" });
+    const old = (await connectionsOf(member.id))[0]?.id ?? "";
+    const subscription = await subscriptionOfConnection(old, "https://hooks.example.com/cursor");
+    await authorizeClient(memberCookies, { botId: bot, clientName: "Grok" });
+    expect((await mcpInitialize(first.access_token)).status).toBe(401);
+    expect(await subscriptionOf(subscription)).toEqual({ connection_id: old, unsubscribed_at: null });
+  });
+
+  it("keeps both connections of one app used as two bots", async () => {
+    const dot = await createBot("Dot");
+    const dot2 = await createBot("Dot2");
+    const clientId = await registerClient();
+    const first = await authorizeClient(memberCookies, { clientId, botId: dot });
+    const second = await authorizeClient(memberCookies, { clientId, botId: dot2 });
+    await expectMcpOk(await mcpInitialize(first.access_token));
+    await expectMcpOk(await mcpInitialize(second.access_token));
+    expect((await connectionsOf(member.id)).map((row) => [row.bot_id, row.revoked_at])).toEqual(
+      expect.arrayContaining([
+        [dot, null],
+        [dot2, null],
+      ]),
+    );
+    expect((await oauthApi(ORIGIN).listUserGrants(member.id)).items).toHaveLength(2);
+  });
+
+  it("replaces the connection of the same app that is not assigned to a bot", async () => {
+    const clientId = await registerClient();
+    const first = await authorizeClient(memberCookies, { clientId });
+    const second = await authorizeClient(memberCookies, { clientId });
+    expect((await mcpInitialize(first.access_token)).status).toBe(401);
+    await expectMcpOk(await mcpInitialize(second.access_token));
+    expect((await connectionsOf(member.id)).map((row) => row.revoke_reason).sort()).toEqual([null, "replaced"].sort());
+  });
+
+  it("rejects a bot that is missing or of another user, and keeps the handle usable", async () => {
+    const theirs = await createBot("Admin bot", adminCookies);
+    const consent = await openConsent(memberCookies);
+    for (const botId of [theirs, "bot_x", "bot_01JC9Z7H2K4M6N8P0Q2R4S6T8V"]) {
+      const res = await send("/authorize", {
+        cookies: consent.cookies,
+        form: { handle: consent.handle, decision: "approve", bot_id: botId },
+      });
+      expect(res.status).toBe(400);
+      expect(await res.text()).toContain("選んだ Bot が見つかりません");
+    }
+    const approved = await send("/authorize", {
+      cookies: consent.cookies,
+      form: { handle: consent.handle, decision: "approve", bot_id: "" },
+    });
+    expect(approved.status).toBe(302);
+    expect(await connectionsOf(member.id)).toHaveLength(1);
+  });
+
+  it("asks which bot to connect as, preselecting the bot of the same app when there is one", async () => {
+    const noBots = await openConsent(memberCookies);
+    expect(noBots.html).not.toContain("<select");
+    expect(noBots.html).toContain('name="bot_id" value=""');
+
+    const dot = await createBot("Dot");
+    const clientId = await registerClient();
+    // Another user's connection of the same client is not a candidate.
+    await authorizeClient(adminCookies, { clientId, botId: await createBot("Admin bot", adminCookies) });
+    const before = await openConsent(memberCookies, { clientId });
+    expect(before.html).toMatch(/<option value="" selected/);
+    expect(before.html).not.toMatch(new RegExp(`value="${dot}" selected`));
+
+    await authorizeClient(memberCookies, { clientId, botId: dot });
+    const one = await openConsent(memberCookies, { clientId });
+    expect(one.html).toMatch(new RegExp(`value="${dot}" selected`));
+    expect(one.html).toContain("Bot を選ぶと、この接続がその Bot として会話に参加します");
+
+    const dot2 = await createBot("Dot2");
+    await authorizeClient(memberCookies, { clientId, botId: dot2 });
+    const two = await openConsent(memberCookies, { clientId });
+    expect(two.html).toMatch(/<option value="" selected/);
+    expect(two.html).toContain("このアプリは複数の Bot（Dot、Dot2）で使われています");
+  });
+
+  it("serves a legacy connection, speaks as a bot once it is assigned, and rejects it once disconnected", async () => {
+    const clientId = await registerClient();
+    const legacy = await legacyToken(clientId);
+    await expectMcpOk(await mcpInitialize(legacy.access_token));
+    expect(await connectionsOf(member.id)).toEqual([]);
+
+    const bot = await createBot("Dot");
+    const listed = await send("/api/v1/mcp-connections", { cookies: memberCookies });
+    const grantId = ((await listed.json()) as { connections: { kind: string; grant_id: string | null }[] }).connections.find(
+      (c) => c.kind === "legacy",
+    )?.grant_id;
+    const assigned = await send("/api/v1/mcp-connections/assign", {
+      cookies: memberCookies,
+      json: { grant_id: grantId, bot_id: bot },
+    });
+    expect(assigned.status).toBe(200);
+    const created = await send("/api/v1/conversations", {
+      cookies: memberCookies,
+      json: { title: "相談", participants: [{ bot_id: bot }], message: "こんにちは", idempotency_key: "k1" },
+    });
+    expect(created.status).toBe(201);
+    const conversationId = ((await created.json()) as { id: string }).id;
+    // Found through the grant of the token (unwrapToken).
+    const read = await callTool(legacy.access_token, "get_conversation", { conversation_id: conversationId });
+    expect(read.participants).toEqual([{ name: "Dot", is_you: true }]);
+    expect(read.you).toEqual({ bot_name: "Dot" });
+
+    const [row] = await connectionsOf(member.id);
+    const revoked = await send("/api/v1/mcp-connections/revoke", { cookies: memberCookies, json: { connection_id: row?.id } });
+    expect(revoked.status).toBe(204);
+    expect((await mcpInitialize(legacy.access_token)).status).toBe(401);
+  });
+
+  it("replaces the legacy grants of the same client for this origin only", async () => {
+    const clientId = await registerClient();
+    const here = await legacyToken(clientId);
+    const other = "https://second.pinglune.test";
+    const there = await legacyToken(clientId, other);
+    await authorizeClient(memberCookies, { clientId });
+    expect((await mcpInitialize(here.access_token)).status).toBe(401);
+    await expectMcpOk(await mcpInitialize(there.access_token, { origin: other }));
+  });
+
+  it("marks the connections revoked when the user changes the password", async () => {
+    await authorizeClient(memberCookies, { botId: await createBot("Dot") });
+    const res = await send("/api/v1/me/password", {
+      cookies: memberCookies,
+      json: { current_password: PASSWORD, new_password: "a brand new password" },
+    });
+    expect(res.status).toBe(204);
+    expect((await connectionsOf(member.id)).map((row) => row.revoke_reason)).toEqual(["sessions_revoked"]);
   });
 });

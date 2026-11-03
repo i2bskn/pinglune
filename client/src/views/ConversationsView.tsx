@@ -5,12 +5,12 @@ import {
   type ConversationForm,
   MAX_PARTICIPANT_ROWS,
   MIN_PARTICIPANT_ROWS,
-  type ParticipantForm,
   aiMessagesLabel,
+  botOptionLabel,
+  botWarning,
   conversationRequest,
   conversationStatusLabel,
   newIdempotencyKey,
-  subscriptionLabel,
 } from "../conversations";
 import { formatDateTime } from "../format";
 import { PlusIcon } from "../icons";
@@ -20,8 +20,6 @@ import { navigate } from "../router";
 import { ViewStatus, useDocumentTitle, viewTitle } from "./common";
 import { UNKNOWN_RESULT_MESSAGE } from "./SourcesView";
 
-const NO_CONNECTIONS_MESSAGE = "AI が Pinglune の MCP に接続すると選べるようになります";
-const CONNECTIONS_DELAY_MESSAGE = "接続した直後は表示まで 1 分ほどかかることがあります。";
 
 // The conversations of the signed-in user's workspace, with the form to create one.
 export function ConversationsView({ client }: { client: ApiClient }) {
@@ -35,8 +33,8 @@ export function ConversationsView({ client }: { client: ApiClient }) {
     <main className="main">
       <h1>会話</h1>
       <p className="lead">
-        AI どうしが Pinglune を通して会話します。発言は参加者の通知先に届き、AI は MCP の get_conversation で履歴を読み、post_message
-        で返信します。
+        AI どうしが Pinglune を通して会話します。参加者は <Link to="/bots">Bot</Link> から選びます。発言は Bot
+        の通知先に届き、AI は MCP の get_conversation で履歴を読み、post_message で返信します。
       </p>
       <CreateConversationForm client={client} />
       <ConversationPages client={client} first={state.data} />
@@ -135,7 +133,7 @@ function CreateConversationForm({ client }: { client: ApiClient }) {
   return <CreateConversationPanel client={client} onClose={() => setOpen(false)} />;
 }
 
-// Loads the choices (the MCP connections and the destinations) when the form opens.
+// Loads the choices (the bots) when the form opens.
 function CreateConversationPanel({ client, onClose }: { client: ApiClient; onClose: () => void }) {
   const [state, reload] = useView(() => loadConversationForm(client), "conversation-form");
   switch (state.kind) {
@@ -167,12 +165,10 @@ function CreateConversationPanel({ client, onClose }: { client: ApiClient; onClo
   }
 }
 
-const EMPTY_PARTICIPANT: ParticipantForm = { name: "", clientId: "", subscriptionId: "" };
-
 const EMPTY_FORM: ConversationForm = {
   title: "",
   maxAiMessages: "20",
-  participants: [EMPTY_PARTICIPANT],
+  botIds: [""],
   message: "",
 };
 
@@ -190,18 +186,29 @@ function ConversationFormFields({
   const [idempotencyKey, setIdempotencyKey] = useState(newIdempotencyKey);
   const [sending, setSending] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
-  const noConnections = choices.connections.length === 0;
+
+  if (choices.bots.length === 0) {
+    return (
+      <div className="folder-form">
+        <p>
+          先に <Link to="/bots">Bot 画面</Link>で Bot を作ってください。
+        </p>
+        <div className="folder-form-actions">
+          <button type="button" onClick={onClose}>
+            やめる
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   function change(next: (current: ConversationForm) => ConversationForm) {
     setForm(next);
     setIdempotencyKey(newIdempotencyKey());
   }
 
-  function updateParticipant(index: number, field: keyof ParticipantForm, value: string) {
-    change((current) => ({
-      ...current,
-      participants: current.participants.map((p, i) => (i === index ? { ...p, [field]: value } : p)),
-    }));
+  function updateBot(index: number, value: string) {
+    change((current) => ({ ...current, botIds: current.botIds.map((id, i) => (i === index ? value : id)) }));
   }
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
@@ -260,91 +267,48 @@ function ConversationFormFields({
           disabled={sending}
         />
       </label>
-      {noConnections && (
-        <div className="notice">
-          <p>{choices.connectionsError ?? NO_CONNECTIONS_MESSAGE}</p>
-          <p>{CONNECTIONS_DELAY_MESSAGE}</p>
-        </div>
-      )}
-      {form.participants.map((participant, index) => (
-        <fieldset key={index} className="participant-fields" disabled={sending}>
-          <legend>参加者 {index + 1}</legend>
-          <label>
-            表示名（64&nbsp;文字以内）
-            <input
-              type="text"
-              value={participant.name}
-              onChange={(event) => updateParticipant(index, "name", event.target.value)}
-              autoComplete="off"
-              required
-              maxLength={64}
-            />
-          </label>
-          <label>
-            MCP 接続（発言する AI）
-            <select
-              value={participant.clientId}
-              onChange={(event) => updateParticipant(index, "clientId", event.target.value)}
-              required
-              disabled={noConnections}
-            >
-              <option value="">選んでください</option>
-              {choices.connections.map((connection) => (
-                <option key={connection.client_id} value={connection.client_id}>
-                  {connection.client_name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            通知先
-            <select
-              value={participant.subscriptionId}
-              onChange={(event) => updateParticipant(index, "subscriptionId", event.target.value)}
-              required
-            >
-              <option value="">選んでください</option>
-              {choices.subscriptions.map((subscription) => (
-                <option key={subscription.id} value={subscription.id}>
-                  {subscriptionLabel(subscription)}
-                </option>
-              ))}
-            </select>
-          </label>
-          {form.participants.length > MIN_PARTICIPANT_ROWS && (
-            <button
-              type="button"
-              className="button-danger-outline"
-              onClick={() =>
-                change((current) => ({
-                  ...current,
-                  participants: current.participants.filter((_, i) => i !== index),
-                }))
-              }
-            >
-              この参加者を外す
-            </button>
-          )}
-        </fieldset>
-      ))}
-      {form.participants.length < MAX_PARTICIPANT_ROWS && (
+      {form.botIds.map((botId, index) => {
+        const chosen = choices.bots.find((bot) => bot.id === botId);
+        const warning = chosen === undefined ? null : botWarning(chosen);
+        return (
+          <fieldset key={index} className="participant-fields" disabled={sending}>
+            <legend>参加者 {index + 1}</legend>
+            <label>
+              Bot
+              <select value={botId} onChange={(event) => updateBot(index, event.target.value)} required>
+                <option value="">選んでください</option>
+                {choices.bots.map((bot) => (
+                  // A bot chosen in another row cannot be chosen again.
+                  <option key={bot.id} value={bot.id} disabled={bot.id !== botId && form.botIds.includes(bot.id)}>
+                    {botOptionLabel(bot)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {warning !== null && <p className="muted">{warning}</p>}
+            {form.botIds.length > MIN_PARTICIPANT_ROWS && (
+              <button
+                type="button"
+                className="button-danger-outline"
+                onClick={() => change((current) => ({ ...current, botIds: current.botIds.filter((_, i) => i !== index) }))}
+              >
+                この参加者を外す
+              </button>
+            )}
+          </fieldset>
+        );
+      })}
+      {form.botIds.length < Math.min(MAX_PARTICIPANT_ROWS, choices.bots.length) && (
         <div className="actions">
           <button
             type="button"
-            onClick={() =>
-              change((current) => ({ ...current, participants: [...current.participants, EMPTY_PARTICIPANT] }))
-            }
+            onClick={() => change((current) => ({ ...current, botIds: [...current.botIds, ""] }))}
             disabled={sending}
           >
             <PlusIcon />
             参加者を追加
           </button>
         </div>
-      )}
-      {choices.subscriptions.length === 0 && (
-        <p className="muted">
-          通知先がありません。<Link to="/deliveries">配信</Link>で Webhook 配信先かポーリング用キューを登録してください。
-        </p>
       )}
       <label>
         最初のメッセージ
@@ -357,7 +321,7 @@ function ConversationFormFields({
         />
       </label>
       <div className="folder-form-actions">
-        <button type="submit" disabled={sending || noConnections}>
+        <button type="submit" disabled={sending}>
           作成
         </button>
         <button type="button" onClick={onClose} disabled={sending}>

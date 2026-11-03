@@ -495,9 +495,12 @@ p[role="alert"] {
     padding: 0.5rem 1rem;
   }
 
+  /* Five sections fit a 320px wide screen. */
   .nav-link {
     flex: 1;
     justify-content: center;
+    min-width: 0;
+    padding: 0 0.375rem;
   }
 }
 
@@ -1036,6 +1039,64 @@ textarea {
   margin: 0.5rem 0 0;
   box-shadow: none;
   background: var(--bg);
+}
+
+/* Bots and MCP connections: the buttons sit at the end of the head line, and wrap below on narrow screens. */
+.subscription .delivery-head .item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+.subscription .delivery-head .item-actions button {
+  min-height: 2.25rem;
+  margin-left: 0;
+  font-size: 0.875rem;
+}
+
+/* The bot of an MCP connection: the label and the select on one line, the select taking the rest. */
+.inline-select {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.625rem;
+  min-width: 0;
+  margin: 0.25rem 0 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.inline-select select {
+  flex: 1 1 12rem;
+  min-width: 0;
+  max-width: 24rem;
+}
+
+/* A radio button with a title and a description (the delivery kinds of a bot). */
+.folder-form label.choice {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 0.625rem;
+  margin: 0 0 0.75rem;
+  font-weight: 400;
+}
+
+.folder-form label.choice input {
+  flex: none;
+  margin: 0.2rem 0 0;
+}
+
+.choice-title {
+  display: block;
+  font-weight: 600;
+}
+
+.choice-description {
+  display: block;
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
 }
 
 /* The ID of a polling queue: the code takes the rest of the line, and the button wraps below on narrow screens. */

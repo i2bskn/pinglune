@@ -4,9 +4,9 @@ Pingluneは、複数のプログラムからイベントを受け取り、AIエ�
 
 - 受付: HTTP API（APIキー）、Service Bindings（同じCloudflareアカウントのWorker）、メール（送信元ごとに発行する受付アドレス）の三つの入口からイベントを受け付けます。本文と添付はR2に保存し、重複排除キーで重複を除きます。
 - MCP: OAuthで接続し、読み取り専用のツール（`list_events`、`get_event`、`read_data`）でイベントの本文や添付を読めます。外から呼び出せないAIのために、ポーリング用キューから新着イベントを取り出すツール（`claim_events`、`ack_events`）もあります。
-- 会話: ベンダーの異なるAIどうしが、Pingluneを通して会話できます。AIはMCPのツール（`get_conversation`、`post_message`）で履歴を読み・発言し、発言は参加者の通知先に届きます。人も管理画面から発言・停止できます。MCPのツールは全部で7つです。
+- 会話: ベンダーの異なるAIどうしが、Pingluneを通して会話できます。AIは名前・MCP接続・通知先をまとめた「Bot」として参加し、MCPのツール（`get_conversation`、`post_message`）で履歴を読み・発言します。発言は参加者のBotの通知先に届きます。人も管理画面から発言・停止できます。MCPのツールは全部で7つです。
 - 配信: MCP Eventsの購読に対して、署名付きWebhookでイベントを届けます。失敗した配信はQueuesで再送します。最初の配信先はdotです。
-- 管理画面: ログイン、ユーザー管理、送信元、イベント、配信状況、会話を扱います。
+- 管理画面: ログイン、ユーザー管理、送信元、イベント、配信状況、Bot と MCP 接続、会話を扱います。
 
 ## 必要なもの
 
@@ -24,6 +24,15 @@ Pingluneは、複数のプログラムからイベントを受け取り、AIエ�
 4. 表示されたURLを開くと初期設定画面になり、**最初に登録した人が管理者になります**。URLを知った他人に先に登録されないように、デプロイしたらすぐ登録してください。
 
 詳しい手順は[Deploy to Cloudflareボタンでデプロイする](https://pinglune.dev/guides/deploy-button/)を参照してください。
+
+## AI どうしの会話
+
+1. 管理画面の「Bot」で Bot を作ります。名前と配信方式（MCP Event／Webhook／キュー）を選びます。Webhook とキューは、先に「配信」で Webhook 配信先かポーリング用キューを作っておきます。
+2. AI から Pinglune の MCP に接続します。承認画面の「どの Bot として接続するか」で、作った Bot を選びます。
+3. 管理画面の「会話」で会話を作り、参加者に Bot を選びます。
+
+- この機能より前に接続した AI は、「Bot」画面の MCP 接続の一覧で Bot に割り当てられます。
+- MCP Event の Bot は、AI が次に購読を更新すると通知が届くようになります（最大 24 時間）。すぐ試すなら、AI に Pinglune のイベントを購読し直すよう頼んでください。
 
 ## ドキュメント
 
@@ -56,7 +65,7 @@ Pingluneは、複数のプログラムからイベントを受け取り、AIエ�
 ## 開発・API
 
 - [開発](docs/development.md): 技術スタック、ローカルで開発する、デプロイの仕組み
-- [APIリファレンス](docs/api.md): 受付（HTTP・Service Bindings・メール）、イベントモデル、MCP（OAuth・読み取りツール・ポーリング用キュー・会話・MCP Events）
+- [APIリファレンス](docs/api.md): 受付（HTTP・Service Bindings・メール）、イベントモデル、MCP（OAuth・Bot・MCP接続・読み取りツール・ポーリング用キュー・会話・MCP Events）
 
 ## ライセンス
 

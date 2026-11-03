@@ -8,12 +8,12 @@ import type {
   ConversationMessageList,
   ConversationParticipant,
   CreateConversationRequest,
-  McpConnectionList,
   PostConversationMessageRequest,
   PostedConversationMessage,
 } from "../api/types";
 import { apiError, requireUser } from "../auth/middleware";
 import { isJsonObject } from "../auth/validate";
+import { activeConnectionsByBot, resolveBotDeliveries, workspaceBotsByIds } from "../bots/queries";
 import { clock } from "../clock";
 import {
   CONVERSATION_PAGE_SIZE,
@@ -40,34 +40,25 @@ import {
   readMessageText,
   validateMessageText,
   type MessageDeps,
-  type NewParticipant,
   type ValidText,
 } from "../conversations/service";
-import type { ConversationParticipantRow, ConversationRow } from "../db/schema";
+import type { ConversationParticipantRow, ConversationRow, SubscriptionRow } from "../db/schema";
 import { callbackHost } from "../deliveries/queries";
 import type { AppEnv } from "../env";
-import { CONVERSATION_ID_PATTERN, EVENT_ID_PATTERN, SUBSCRIPTION_ID_PATTERN } from "../ids";
-import { codePointLength } from "../intake/validation";
-import { clientName, listUserClients } from "../mcp/grants";
-import { isActiveSubscription } from "../subscriptions/queries";
+import { BOT_ID_PATTERN, CONVERSATION_ID_PATTERN, EVENT_ID_PATTERN } from "../ids";
 import { jsonBody } from "./api";
 import { normalizeDisplayName, unknownField } from "./sources";
 import { statusOf } from "./subscriptions";
 import { requirePersonalWorkspace } from "./workspace";
 
-const OAUTH_CLIENT_ID_MAX_LENGTH = 2048;
-const CONTROL = /[\u0000-\u001F\u007F-\u009F]/;
-
 const conversationNotFound = "会話が見つかりません";
 const invalidTitleMessage = "件名は制御文字を含まない 1〜64 文字にしてください";
 const invalidLimitMessage = "AI の発言の上限は 1〜100 の整数にしてください";
-const invalidParticipantsMessage =
-  "参加者は 1〜5 人にしてください。表示名（制御文字を含まない 1〜64 文字）・MCP 接続・通知先は重複できません";
+const invalidParticipantsMessage = "参加者は 1〜5 個の Bot にしてください。同じ Bot は選べません";
 const invalidTextMessage =
   "本文は空白だけでない 1〜65,536 バイトのテキストにしてください（改行とタブ以外の制御文字は使えません）";
 const invalidIdempotencyKeyMessage = "idempotency_key が正しくありません";
 const unavailableMessage = "一時的に受け付けられません。もう一度送ってください";
-const oauthUnavailableMessage = "この接続先では MCP 接続を確認できません";
 
 type AppContext = Context<AppEnv>;
 
@@ -83,42 +74,24 @@ function cursorQuery(pattern: RegExp) {
   });
 }
 
-// The participants of a new conversation, or null if invalid: 1 to 5, with valid names, OAuth client IDs and
-// subscription IDs, none of them given twice. Whether the clients and the subscriptions are the user's is checked
-// later.
-function parseParticipants(value: unknown): NewParticipant[] | null {
+// The bots of the participants of a new conversation, or null if invalid: 1 to 5 bot IDs, none of them given twice.
+// Whether the bots are the user's is checked later.
+function parseParticipants(value: unknown): string[] | null {
   if (!Array.isArray(value) || value.length < 1 || value.length > MAX_PARTICIPANTS) return null;
-  const participants: NewParticipant[] = [];
-  const names = new Set<string>();
-  const clients = new Set<string>();
-  const subscriptionIds = new Set<string>();
+  const botIds: string[] = [];
   for (const item of value) {
-    if (!isJsonObject(item) || unknownField(item, ["name", "oauth_client_id", "subscription_id"]) !== null) return null;
-    const name = normalizeDisplayName(item.name);
-    const { oauth_client_id: oauthClientId, subscription_id: subscriptionId } = item;
-    if (name === null) return null;
-    if (
-      typeof oauthClientId !== "string" ||
-      oauthClientId === "" ||
-      codePointLength(oauthClientId) > OAUTH_CLIENT_ID_MAX_LENGTH ||
-      CONTROL.test(oauthClientId)
-    ) {
-      return null;
-    }
-    if (typeof subscriptionId !== "string" || !SUBSCRIPTION_ID_PATTERN.test(subscriptionId)) return null;
-    if (names.has(name) || clients.has(oauthClientId) || subscriptionIds.has(subscriptionId)) return null;
-    names.add(name);
-    clients.add(oauthClientId);
-    subscriptionIds.add(subscriptionId);
-    participants.push({ name, oauthClientId, subscriptionId });
+    if (!isJsonObject(item) || unknownField(item, ["bot_id"]) !== null) return null;
+    const botId = item.bot_id;
+    if (typeof botId !== "string" || !BOT_ID_PATTERN.test(botId) || botIds.includes(botId)) return null;
+    botIds.push(botId);
   }
-  return participants;
+  return botIds;
 }
 
 type CreateInput = {
   title: string;
   maxAiMessages: number;
-  participants: NewParticipant[];
+  botIds: string[];
   text: ValidText;
   idempotencyKey: string;
 };
@@ -137,15 +110,15 @@ const createConversationBody = jsonBody<CreateConversationRequest, CreateInput>(
   ) {
     return apiError(c, 400, "invalid_limit", invalidLimitMessage);
   }
-  const participants = parseParticipants(body.participants);
-  if (participants === null) return apiError(c, 400, "invalid_participants", invalidParticipantsMessage);
+  const botIds = parseParticipants(body.participants);
+  if (botIds === null) return apiError(c, 400, "invalid_participants", invalidParticipantsMessage);
   const text = validateMessageText(body.message);
   if (text === null) return apiError(c, 400, "invalid_text", invalidTextMessage);
   const key = body.idempotency_key;
   if (typeof key !== "string" || !MESSAGE_IDEMPOTENCY_KEY_PATTERN.test(key)) {
     return apiError(c, 400, "invalid_idempotency_key", invalidIdempotencyKeyMessage);
   }
-  return { ok: true, value: { title, maxAiMessages, participants, text, idempotencyKey: key } };
+  return { ok: true, value: { title, maxAiMessages, botIds, text, idempotencyKey: key } };
 });
 
 const postMessageBody = jsonBody<PostConversationMessageRequest, { text: ValidText; idempotencyKey: string }>(
@@ -183,36 +156,48 @@ function toApiConversation(row: ConversationRow, participants: ConversationParti
   return { ...conversationFields(row), participants: participants.map((p) => ({ name: p.name })) };
 }
 
-// The conversation with its participants, their destinations and the names of their MCP connections. Without
-// OAUTH_PROVIDER (src/index.ts), the connections are named by their client IDs.
+type ParticipantDestination = ConversationParticipant["destination"];
+
+function toDestination(row: SubscriptionRow | null | undefined, now: number): ParticipantDestination {
+  if (row === null || row === undefined) return null;
+  return { kind: row.kind, name: row.name, callback_host: callbackHost(row.callbackUrl), status: statusOf(row, now) };
+}
+
+// The conversation with its participants: for a bot, its current name, MCP connection and destination; for a
+// participant created before bots, its OAuth client ID and its subscription. OAUTH_PROVIDER is not used.
 async function conversationDetail(c: AppContext, row: ConversationRow): Promise<ConversationDetail> {
   const db = c.get("db");
-  const participants = await listConversationParticipants(db, row.id);
-  const subscriptions = await workspaceSubscriptionsByIds(
-    db,
-    row.workspaceId,
-    participants.map((p) => p.subscriptionId),
-  );
-  const oauth = c.env.OAUTH_PROVIDER;
-  const clientIds = [...new Set(participants.map((p) => p.oauthClientId))];
-  const names = new Map(
-    await Promise.all(
-      clientIds.map(async (id) => [id, oauth ? await clientName(oauth, id) : id] as const),
-    ),
-  );
   const now = clock.now();
+  const participants = await listConversationParticipants(db, row.id);
+  const botIds = participants.flatMap((p) => (p.botId === null ? [] : [p.botId]));
+  const [botRows, connections, subscriptions] = await Promise.all([
+    workspaceBotsByIds(db, row.workspaceId, botIds),
+    activeConnectionsByBot(db, row.workspaceId, botIds),
+    workspaceSubscriptionsByIds(
+      db,
+      row.workspaceId,
+      participants.flatMap((p) => (p.botId === null && p.subscriptionId !== null ? [p.subscriptionId] : [])),
+    ),
+  ]);
+  const deliveries = await resolveBotDeliveries(db, row.workspaceId, [...botRows.values()], now, connections);
   return {
     ...conversationFields(row),
     participants: participants.map((p): ConversationParticipant => {
-      const subscription = subscriptions.get(p.subscriptionId);
+      if (p.botId === null) {
+        return {
+          name: p.name,
+          bot: null,
+          connection_client_name: p.oauthClientId,
+          destination: toDestination(p.subscriptionId === null ? null : subscriptions.get(p.subscriptionId), now),
+        };
+      }
+      const bot = botRows.get(p.botId);
+      const deleted = bot === undefined || bot.deletedAt !== null;
       return {
         name: p.name,
-        oauth_client_id: p.oauthClientId,
-        oauth_client_name: names.get(p.oauthClientId) ?? p.oauthClientId,
-        destination_kind: subscription?.kind ?? null,
-        destination_name: subscription?.name ?? null,
-        callback_host: subscription === undefined ? null : callbackHost(subscription.callbackUrl),
-        destination_status: subscription === undefined ? null : statusOf(subscription, now),
+        bot: { id: p.botId, name: bot?.name ?? p.name, deleted },
+        connection_client_name: deleted ? null : (connections.get(p.botId)?.clientName ?? null),
+        destination: toDestination(deliveries.get(p.botId), now),
       };
     }),
   };
@@ -263,39 +248,36 @@ const conversationsApi = new Hono<AppEnv>()
       return c.json(detail, 200);
     }
 
-    // The MCP connections are the OAuth clients of the user's grants.
-    const oauth = c.env.OAUTH_PROVIDER;
-    if (!oauth) return apiError(c, 503, "temporarily_unavailable", oauthUnavailableMessage);
-    const clients = new Set((await listUserClients(oauth, user.id)).map((client) => client.clientId));
-    if (!input.participants.every((p) => clients.has(p.oauthClientId))) {
-      return apiError(c, 400, "invalid_participants", "MCP 接続が見つかりません。選び直してください");
-    }
-    // The destinations must be active subscriptions of the workspace now.
-    const subscriptions = await workspaceSubscriptionsByIds(
-      db,
-      workspaceId,
-      input.participants.map((p) => p.subscriptionId),
-    );
-    const now = deps.now;
-    if (
-      !input.participants.every((p) => {
-        const subscription = subscriptions.get(p.subscriptionId);
-        return subscription !== undefined && isActiveSubscription(subscription, now);
-      })
-    ) {
-      return apiError(c, 400, "invalid_participants", "通知先が見つからないか、終了しています。選び直してください");
+    // The participants are bots of the workspace that are not deleted. A bot without a connection or a destination
+    // may take part: it can be connected later.
+    const botRows = await workspaceBotsByIds(db, workspaceId, input.botIds);
+    const participants = input.botIds.flatMap((id) => {
+      const bot = botRows.get(id);
+      return bot === undefined || bot.deletedAt !== null ? [] : [bot];
+    });
+    if (participants.length !== input.botIds.length) {
+      return apiError(c, 400, "invalid_participants", "Bot が見つからないか、削除されています。選び直してください");
     }
     // A loose limit: concurrent requests may go slightly over it.
     if ((await countOpenConversations(db, workspaceId)) >= MAX_OPEN_CONVERSATIONS_PER_WORKSPACE) {
       return apiError(c, 409, "limit_exceeded", "進行中の会話は 20 件までです");
     }
 
+    // The first message goes to the destination of each bot now; a bot without one gets nothing.
+    const deliveries = await resolveBotDeliveries(db, workspaceId, participants, deps.now);
+    const recipients = [
+      ...new Set(participants.flatMap((bot) => {
+        const id = deliveries.get(bot.id)?.id;
+        return id === undefined ? [] : [id];
+      })),
+    ];
     const result = await createConversation(deps, {
       workspaceId,
       user,
       title: input.title,
       maxAiMessages: input.maxAiMessages,
-      participants: input.participants,
+      participants: participants.map((bot) => ({ botId: bot.id, name: bot.name })),
+      recipients,
       text: input.text,
       idempotencyKey: input.idempotencyKey,
     });
@@ -379,16 +361,5 @@ const conversationsApi = new Hono<AppEnv>()
     if (!detail) return apiError(c, 404, "not_found", conversationNotFound);
     return c.json(detail, 200);
   });
-
-// The MCP connections of the signed-in user, for the participants of a new conversation.
-export const mcpConnectionsApi = new Hono<AppEnv>().use("*", requireUser).get("/", async (c) => {
-  const oauth = c.env.OAUTH_PROVIDER;
-  if (!oauth) return apiError(c, 503, "temporarily_unavailable", oauthUnavailableMessage);
-  const clients = await listUserClients(oauth, c.get("user").id);
-  const body: McpConnectionList = {
-    connections: clients.map((client) => ({ client_id: client.clientId, client_name: client.clientName })),
-  };
-  return c.json(body, 200);
-});
 
 export default conversationsApi;

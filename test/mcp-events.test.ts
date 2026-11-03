@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { canonicalJson } from "../src/canonical-json";
 import { clock } from "../src/clock";
 import { subscriptions, type SubscriptionRow, type UserRow } from "../src/db/schema";
+import { newMcpConnectionId } from "../src/ids";
 import { acceptEvent } from "../src/intake/service";
 import { mcpHandler } from "../src/mcp/handler";
 import { endSubscription, NO_EXPIRY } from "../src/subscriptions/queries";
@@ -858,5 +859,57 @@ describe("losing access", () => {
       expect(await readSubscription(id)).toBeUndefined();
       expect(await readSubscription(other)).toBeDefined();
     });
+  });
+});
+
+describe("the MCP connection of a subscription", () => {
+  async function connection(user: UserRow): Promise<string> {
+    const id = newMcpConnectionId(now);
+    await env.DB.prepare(
+      `INSERT INTO mcp_connections (id, user_id, workspace_id, bot_id, grant_id, oauth_client_id, client_name, redirect_uri, created_at, updated_at)
+      VALUES (?, ?, ?, NULL, NULL, 'client-1', 'ChatGPT', 'https://chatgpt.com/cb', ?, ?)`,
+    )
+      .bind(id, user.id, (await personalWorkspaceOf(user)).id, now, now)
+      .run();
+    return id;
+  }
+
+  async function subscribeAs(user: UserRow, connectionId: string, params: Record<string, unknown>): Promise<SubscribeResult> {
+    const ctx = Object.assign(createExecutionContext(), {
+      props: { userId: user.id, authMode: "password", connectionId },
+      auth: { token: "t", audience: `${ORIGIN}/mcp`, scope: ["mcp"] },
+    }) as unknown as OAuthResourceContext<unknown>;
+    const request = new Request(`${ORIGIN}/mcp`, {
+      method: "POST",
+      headers: { Accept: MCP_ACCEPT, "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "events/subscribe", params }),
+    });
+    const res = await mcpHandler.fetch(request, env, ctx);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as RpcBody;
+    expect(body.error).toBeUndefined();
+    return body.result as SubscribeResult;
+  }
+
+  async function connectionOf(id: string): Promise<string | null> {
+    const row = await env.DB.prepare("SELECT connection_id FROM subscriptions WHERE id = ?")
+      .bind(id)
+      .first<{ connection_id: string | null }>();
+    return row?.connection_id ?? null;
+  }
+
+  it("records the connection that subscribed last, and none for a legacy connection", async () => {
+    const first = await connection(alice);
+    const second = await connection(alice);
+    const params = subscribeParams();
+    const created = await subscribeAs(alice, first, params);
+    expect(await connectionOf(created.id)).toBe(first);
+    now += MINUTE;
+    // The same callback, event and arguments from another connection: the same subscription, now of that connection.
+    await subscribeAs(alice, second, params);
+    expect(await connectionOf(created.id)).toBe(second);
+    now += MINUTE;
+    await subscribe(alice, params);
+    expect(await connectionOf(created.id)).toBeNull();
   });
 });

@@ -56,6 +56,8 @@ export const DATA_REF_PATTERN = new RegExp(`^dat_${ULID_PATTERN}$`);
 export const SOURCE_ID_PATTERN = new RegExp(`^src_${ULID_PATTERN}$`);
 export const DELIVERY_ID_PATTERN = new RegExp(`^dlv_${ULID_PATTERN}$`);
 export const CONVERSATION_ID_PATTERN = new RegExp(`^cnv_${ULID_PATTERN}$`);
+export const BOT_ID_PATTERN = new RegExp(`^bot_${ULID_PATTERN}$`);
+export const MCP_CONNECTION_ID_PATTERN = new RegExp(`^mcn_${ULID_PATTERN}$`);
 // MCP Events subscriptions (sub_ + 32 hex digits of SHA-256), webhook destinations and polling queues (sub_ + 16
 // random bytes in hex) share this form.
 export const SUBSCRIPTION_ID_PATTERN = /^sub_[0-9a-f]{32}$/;
@@ -82,6 +84,14 @@ export function newConversationId(now: number): string {
 
 export function newParticipantId(now: number): string {
   return `cpt_${newUlid(now)}`;
+}
+
+export function newBotId(now: number): string {
+  return `bot_${newUlid(now)}`;
+}
+
+export function newMcpConnectionId(now: number): string {
+  return `mcn_${newUlid(now)}`;
 }
 
 const RANDOM_SUBSCRIPTION_ID_BYTES = 16;
