@@ -5,6 +5,7 @@ import { Link } from "../Link";
 import { type ApiClient, loadEvents, useView } from "../load";
 import { ViewStatus, useDocumentTitle, viewTitle } from "./common";
 import { EventLabels } from "./EventDetailView";
+import { FlowMap } from "./FlowMap";
 
 // The home screen: the events of the signed-in user's workspace, newest first.
 export function HomeView({ client }: { client: ApiClient }) {
@@ -58,6 +59,8 @@ function EventList({
   return (
     <main className="main">
       <h1>イベント</h1>
+      <FlowMap client={client} />
+      <h2 className="sr-only">イベント一覧</h2>
       {events.length === 0 ? (
         <div className="notice">
           <p>まだイベントはありません。</p>

@@ -20,6 +20,7 @@ import {
   loadConversations,
   loadDeliveriesView,
   loadEvents,
+  loadFlow,
   loadSourceDetail,
   loadUsersView,
 } from "./load";
@@ -144,6 +145,59 @@ describe("loadBotsView", () => {
       "/api/v1/sources": [json(200, { sources: [] })],
     });
     expect(await loadBotsView(client)).toEqual({ kind: "error", message: "サーバーでエラーが発生しました" });
+  });
+});
+
+describe("loadFlow", () => {
+  const SOURCE: Source = {
+    id: "src_01JC9Z7H2K4M6N8P0Q2R4S6T8V",
+    name: "app",
+    enabled: true,
+    created_at: 1,
+    updated_at: 1,
+    active_key_count: 0,
+  };
+
+  it("loads the sources and the bots", async () => {
+    const { client } = setup({
+      "/api/v1/sources": [json(200, { sources: [SOURCE] })],
+      "/api/v1/bots": [json(200, { bots: [BOT] })],
+    });
+    expect(await loadFlow(client)).toEqual({ kind: "ready", data: { sources: [SOURCE], bots: [BOT] } });
+  });
+
+  it("is an error when the sources cannot be read", async () => {
+    const { client } = setup({
+      "/api/v1/sources": [apiError(500, "サーバーでエラーが発生しました")],
+      "/api/v1/bots": [json(200, { bots: [BOT] })],
+    });
+    expect(await loadFlow(client)).toEqual({ kind: "error", message: "サーバーでエラーが発生しました" });
+  });
+
+  it("is an error when the bots cannot be read, also on 404", async () => {
+    const { client } = setup({
+      "/api/v1/sources": [json(200, { sources: [SOURCE] })],
+      "/api/v1/bots": [apiError(404, "見つかりません")],
+    });
+    expect(await loadFlow(client)).toEqual({ kind: "error", message: "見つかりません" });
+  });
+
+  it("takes the message of the sources when both fail", async () => {
+    const { client } = setup({
+      "/api/v1/sources": [apiError(500, "送信元のエラー")],
+      "/api/v1/bots": [apiError(500, "Bot のエラー")],
+    });
+    expect(await loadFlow(client)).toEqual({ kind: "error", message: "送信元のエラー" });
+  });
+
+  it("moves to the login page when a list stays 401 after the refresh", async () => {
+    const { client, redirectToLogin } = setup({
+      "/api/v1/sources": [json(200, { sources: [SOURCE] })],
+      "/api/v1/bots": [unauthorized, unauthorized],
+      "/auth/refresh": [() => new Response(null, { status: 401 })],
+    });
+    expect(await loadFlow(client)).toEqual({ kind: "redirecting" });
+    expect(redirectToLogin).toHaveBeenCalledTimes(1);
   });
 });
 

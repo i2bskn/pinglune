@@ -160,6 +160,21 @@ export async function loadSources(client: ApiClient): Promise<Loaded<Source[]>> 
   return { kind: "ready", data: list.value.sources };
 }
 
+export type FlowData = { sources: Source[]; bots: Bot[] };
+
+// The sources and the bots of the flow map of the home screen.
+export async function loadFlow(client: ApiClient): Promise<Loaded<FlowData>> {
+  const [sources, bots] = await Promise.all([
+    request(() => client.api.v1.sources.$get()),
+    request(() => client.api.v1.bots.$get()),
+  ]);
+  if (sources.kind === "redirecting" || bots.kind === "redirecting") return { kind: "redirecting" };
+  // Neither list is ever missing; a 404 here is an unexpected response.
+  if (sources.kind !== "ok") return { kind: "error", message: sources.message };
+  if (bots.kind !== "ok") return { kind: "error", message: bots.message };
+  return { kind: "ready", data: { sources: sources.value.sources, bots: bots.value.bots } };
+}
+
 export type SourceDetailData = { source: Source; apiKeys: ApiKey[]; emailAddresses: EmailAddressList };
 
 // There is no API for one source; it is taken from the list.

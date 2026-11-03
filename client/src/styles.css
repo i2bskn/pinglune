@@ -1247,6 +1247,257 @@ textarea {
   }
 }
 
+/* ---------- Flow map (home) ---------- */
+
+/* Sources → bots → destinations: three columns with lines between the cards on wide screens, one card per bot on
+   phones. Both are in the DOM; the one not shown is display: none. */
+.flow {
+  margin: 0 0 1.25rem;
+  padding: 0.75rem 1rem 1rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+}
+
+.flow-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.flow-head h2 {
+  min-width: 0;
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: 1.125rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.flow-head + div {
+  margin-top: 0.75rem;
+}
+
+.flow p {
+  margin: 0 0 0.5rem;
+}
+
+.flow p:last-child {
+  margin-bottom: 0;
+}
+
+.flow-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+}
+
+.flow-empty-column {
+  font-size: 0.875rem;
+  color: var(--ink-3);
+}
+
+.flow-canvas {
+  position: relative;
+}
+
+.flow-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem 2.5rem;
+  align-items: start;
+}
+
+.flow-column-head {
+  min-width: 0;
+  margin: 0;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--ink-3);
+}
+
+.flow-sources {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+/* A bot and its destination share a row, so that they are as tall as each other. */
+.flow-rows {
+  grid-column: 2 / 4;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem 2.5rem;
+  min-width: 0;
+}
+
+.flow-node {
+  display: flex;
+  min-width: 0;
+  transition: opacity 0.15s;
+}
+
+/* Positioned, so that the hidden text in it stays inside the card. */
+.flow-card {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.25rem;
+  min-width: 0;
+  padding: 0.5rem 0.75rem;
+  color: var(--ink);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  transition: border-color 0.15s;
+}
+
+.flow-card:hover {
+  text-decoration: none;
+  border-color: var(--line-strong);
+}
+
+.flow-node.is-on .flow-card {
+  border-color: var(--accent);
+}
+
+.flow-node.is-dimmed {
+  opacity: 0.45;
+}
+
+.flow-node.is-disabled .flow-card {
+  opacity: 0.6;
+}
+
+.flow-name {
+  max-width: 100%;
+  min-width: 0;
+  font-weight: 600;
+}
+
+.flow-kind {
+  font-size: 0.75rem;
+  color: var(--ink-3);
+}
+
+.flow-note {
+  font-size: 0.8125rem;
+  color: var(--ink-3);
+}
+
+.flow-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+/* The lines are decoration over the columns; the cards tell the same relations in text. */
+.flow-lines {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.flow-edge {
+  fill: none;
+  stroke: var(--ink-3);
+  stroke-width: 1.5;
+  transition:
+    opacity 0.15s,
+    stroke 0.15s;
+}
+
+.flow-edge.is-dashed {
+  stroke-dasharray: 4 3;
+}
+
+.flow-edge.is-on {
+  stroke: var(--accent);
+}
+
+.flow-edge.is-dimmed {
+  opacity: 0.25;
+}
+
+.flow-arrow {
+  fill: var(--ink-3);
+}
+
+.flow-arrow.is-on {
+  fill: var(--accent);
+}
+
+.flow-stack {
+  display: none;
+}
+
+.flow-stack-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0 0 0.5rem;
+  padding: 0;
+  list-style: none;
+}
+
+.flow-stack-list:last-child {
+  margin-bottom: 0;
+}
+
+.flow-stack-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.125rem;
+  min-width: 0;
+  padding: 0.625rem 0.75rem;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.flow .flow-stack-item p {
+  max-width: 100%;
+  min-width: 0;
+  margin: 0;
+}
+
+.flow-stack-arrow {
+  padding-left: 0.25rem;
+  line-height: 1;
+  color: var(--ink-3);
+}
+
+.flow .flow-stack-delivery {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.125rem 0.5rem;
+}
+
+.flow-unlinked {
+  font-size: 0.875rem;
+}
+
+@media (max-width: 639px) {
+  .flow-canvas {
+    display: none;
+  }
+
+  .flow-stack {
+    display: block;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
