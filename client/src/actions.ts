@@ -14,6 +14,7 @@ import type {
   PostConversationMessageRequest,
   Source,
   Subscription,
+  UpdateBotConversationStartRequest,
   UpdateBotRequest,
   UpdateSourceRequest,
   User,
@@ -289,8 +290,8 @@ export async function deleteQueue(client: ApiClient, subscriptionId: string): Pr
 export type CreateConversationResult = { kind: "ok"; conversation: ConversationDetail } | SendFailure;
 
 // Creates a conversation and sends its first message. A retry with the same idempotency_key returns the
-// conversation created first (200). Errors, including limit_exceeded (409) and temporarily_unavailable (503), are
-// shown with the server's message. Never rejects.
+// conversation created first (200). Errors, including idempotency_conflict (409) and temporarily_unavailable (503),
+// are shown with the server's message. Never rejects.
 export async function createConversation(
   client: ApiClient,
   input: CreateConversationRequest,
@@ -369,6 +370,24 @@ const INVALID_BOT_ID = { kind: "error", message: "Bot が見つかりません" 
 export async function updateBot(client: ApiClient, botId: string, input: UpdateBotRequest): Promise<BotResult> {
   if (!isValidId(botId)) return INVALID_BOT_ID;
   return botResult(await send(() => client.api.v1.bots[":id"].update.$post({ param: { id: botId }, json: input })));
+}
+
+// Changes whether the AI of a bot may start conversations, and its limits. Errors (400) are shown with the server's
+// message. Never rejects.
+export async function updateConversationStart(
+  client: ApiClient,
+  botId: string,
+  input: { enabled: boolean; dailyLimit: number; maxAiMessages: number },
+): Promise<BotResult> {
+  if (!isValidId(botId)) return INVALID_BOT_ID;
+  const json: UpdateBotConversationStartRequest = {
+    enabled: input.enabled,
+    daily_limit: input.dailyLimit,
+    max_ai_messages: input.maxAiMessages,
+  };
+  return botResult(
+    await send(() => client.api.v1.bots[":id"]["conversation-start"].$post({ param: { id: botId }, json })),
+  );
 }
 
 export type DeleteBotResult =

@@ -21,6 +21,7 @@ function bot(id: string, overrides: Partial<Bot> = {}): Bot {
     connection: null,
     status: "no_connection",
     sources: [],
+    conversation_start: { enabled: false, daily_limit: 10, max_ai_messages: 10 },
     created_at: 0,
     updated_at: 0,
     ...overrides,

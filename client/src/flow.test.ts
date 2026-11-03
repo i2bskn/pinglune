@@ -24,6 +24,7 @@ function bot(id: string, name: string, sources: Source[], overrides: Partial<Bot
     connection: null,
     status: "ready",
     sources: sources.map((s) => ({ id: s.id, name: s.name, enabled: s.enabled })),
+    conversation_start: { enabled: false, daily_limit: 10, max_ai_messages: 10 },
     created_at: 1,
     updated_at: 1,
     ...overrides,
@@ -271,5 +272,22 @@ describe("relatedIds", () => {
     expect(relatedIds(model, "bot:b2")).toEqual(expected);
     // A destination leads back to its bot and the bot's sources.
     expect(relatedIds(model, "delivery:b2")).toEqual(expected);
+  });
+});
+
+describe("buildFlow with many sources and bots", () => {
+  it("builds the flow of 100 sources and 100 bots, each bot receiving every source", () => {
+    const sources = Array.from({ length: 100 }, (_, i) => source(`s${i}`, `source ${i}`, i % 10 !== 0));
+    const bots = Array.from({ length: 100 }, (_, i) => bot(`b${i}`, `bot ${i}`, sources));
+    const model = buildFlow(sources, bots);
+    const nodeIds = [...model.sources.map((s) => s.id), ...model.bots.flatMap((b) => [b.id, b.delivery.id])];
+    expect(nodeIds).toHaveLength(300);
+    expect(new Set(nodeIds).size).toBe(nodeIds.length);
+    // One edge for each link and one from each bot to its destination.
+    const links = bots.reduce((count, b) => count + b.sources.length, 0);
+    expect(links).toBe(100 * 100);
+    expect(model.edges.filter((e) => e.from.startsWith("source:"))).toHaveLength(links);
+    expect(model.edges).toHaveLength(links + bots.length);
+    expect(new Set(model.edges.map((e) => e.id)).size).toBe(model.edges.length);
   });
 });

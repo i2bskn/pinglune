@@ -21,6 +21,7 @@ import worker from "../src/index";
 import {
   formatApiKey,
   newBotId,
+  newConversationId,
   newEmailLocalPart,
   newKeyId,
   newKeySecret,
@@ -255,6 +256,26 @@ export function dbChangingBefore(pattern: RegExp, before: () => Promise<unknown>
   return createDb(d1);
 }
 
+// Inserts open conversations of the user's personal workspace directly, started by the bot (or on the screen with
+// null).
+export async function insertOpenConversations(
+  user: UserRow,
+  count: number,
+  startedByBotId: string | null,
+  now = Date.now(),
+): Promise<void> {
+  const workspaceId = (await personalWorkspaceOf(user)).id;
+  for (let i = 0; i < count; i++) {
+    await env.DB.prepare(
+      `INSERT INTO conversations (id, workspace_id, title, status, max_ai_messages, ai_message_count, created_by_user_id,
+        started_by_bot_id, created_at, updated_at)
+      VALUES (?, ?, 'open', 'open', 10, 0, ?, ?, ?, ?)`,
+    )
+      .bind(newConversationId(now), workspaceId, user.id, startedByBotId, now, now)
+      .run();
+  }
+}
+
 export async function personalWorkspaceOf(user: UserRow): Promise<WorkspaceRow> {
   const workspace = await db.select().from(workspaces).where(eq(workspaces.ownerUserId, user.id)).get();
   if (!workspace) throw new Error("personal workspace not found");
@@ -332,6 +353,43 @@ export function d1With(overrides: Partial<Record<keyof D1Database, unknown>>): D
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
+}
+
+// The most values that D1 accepts in one statement.
+export const D1_MAX_BOUND_VALUES = 100;
+
+export type LargeBind = { sql: string; count: number };
+
+// A D1 binding that records the statements bound with more than D1_MAX_BOUND_VALUES values, which the local D1 may
+// accept but D1 does not. Nothing is thrown, since some callers (acceptEvent) swallow errors: the tests check that
+// large is empty. prepare returns the real statement with only bind replaced, and bind returns the real bound
+// statement, so that batch and the statements run without bind work as they are.
+export function d1RecordingLargeBinds(): { d1: D1Database; large: LargeBind[] } {
+  const large: LargeBind[] = [];
+  const d1 = new Proxy(env.DB, {
+    get(target, prop) {
+      if (prop === "prepare") {
+        return (query: string) => {
+          const statement = target.prepare(query);
+          return new Proxy(statement, {
+            get(statementTarget, statementProp) {
+              if (statementProp === "bind") {
+                return (...values: unknown[]) => {
+                  if (values.length > D1_MAX_BOUND_VALUES) large.push({ sql: query, count: values.length });
+                  return statementTarget.bind(...values);
+                };
+              }
+              const value: unknown = Reflect.get(statementTarget, statementProp, statementTarget);
+              return typeof value === "function" ? value.bind(statementTarget) : value;
+            },
+          });
+        };
+      }
+      const value: unknown = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return { d1, large };
 }
 
 // An R2 binding with some methods replaced, e.g. put.

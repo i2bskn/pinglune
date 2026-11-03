@@ -40,7 +40,6 @@ const UTF8_BOUNDARY_MARGIN = 6;
 export const DEFAULT_MAX_AI_MESSAGES = 20;
 export const MAX_AI_MESSAGES_LIMIT = 100;
 export const MAX_PARTICIPANTS = 5;
-export const MAX_OPEN_CONVERSATIONS_PER_WORKSPACE = 20;
 // The idempotency keys given by the AIs and the screen.
 export const MESSAGE_IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
 
@@ -453,14 +452,22 @@ export async function postUserMessage(
 // A bot as a participant: its name is copied when the conversation is created.
 export type NewParticipant = { botId: string; name: string };
 
-// Creates a conversation with its participants and stores the first message of the user, delivered to every AI, in
-// one D1 batch. The caller checks the input, the limit and a retry first. A retry that races with this one returns
-// the conversation of the message stored first (conversationId of the result).
+// Creates a conversation with its participants and stores its first message in one D1 batch. The caller checks the
+// input, the limits and a retry first. A retry that races with this one returns the conversation of the message
+// stored first (conversationId of the result).
+// - Started on the management screen (startedByBotId left out): the first message is the user's, delivered to every
+//   AI, and not counted in the limit.
+// - Started by the AI of a bot (startedByBotId, one of participants): the first message is that bot's participant's
+//   (an AI message, counted in the limit). With maxAiMessages 1 the conversation is stopped by its limit as it is
+//   created; the first message is still delivered.
+// user is created_by_user_id: the user of the screen, or the user of the MCP token. idempotencyKey is stored as is
+// (createIdempotencyKey for the screen).
 export async function createConversation(
   deps: MessageDeps,
   params: {
     workspaceId: string;
     user: UserRow;
+    startedByBotId?: string;
     title: string;
     maxAiMessages: number;
     participants: NewParticipant[];
@@ -473,28 +480,53 @@ export async function createConversation(
   const { d1, now } = deps;
   const { workspaceId, user } = params;
   const conversationId = newConversationId(now);
+  // The IDs come first: the sender of a message of an AI is its participant ID.
+  const participants = params.participants.map((p) => ({ ...p, id: newParticipantId(now) }));
+  const startedByBotId = params.startedByBotId ?? null;
+  let sender: Sender;
+  if (startedByBotId === null) {
+    sender = { kind: "user", id: user.id, name: userSenderName(user) };
+  } else {
+    const starter = participants.find((p) => p.botId === startedByBotId);
+    if (starter === undefined) throw new Error("the bot that starts a conversation must be one of its participants");
+    sender = { kind: "ai", id: starter.id, name: starter.name };
+  }
+  const aiMessageCount = sender.kind === "ai" ? 1 : 0;
+  const stopped = aiMessageCount >= params.maxAiMessages;
   return storeMessage(deps, {
     workspaceId,
     conversationId,
-    sender: { kind: "user", id: user.id, name: userSenderName(user) },
+    sender,
     text: params.text,
-    idempotencyKey: createIdempotencyKey(user.id, params.idempotencyKey),
+    idempotencyKey: params.idempotencyKey,
     recipients: params.recipients,
     before: [
       d1
         .prepare(
           `INSERT INTO conversations (id, workspace_id, title, status, stop_reason, max_ai_messages, ai_message_count,
-            created_by_user_id, created_at, updated_at, stopped_at)
-          VALUES (?1, ?2, ?3, 'open', NULL, ?4, 0, ?5, ?6, ?6, NULL)`,
+            created_by_user_id, started_by_bot_id, created_at, updated_at, stopped_at)
+          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?11)`,
         )
-        .bind(conversationId, workspaceId, params.title, params.maxAiMessages, user.id, now),
-      ...params.participants.map((p) =>
+        .bind(
+          conversationId,
+          workspaceId,
+          params.title,
+          stopped ? "stopped" : "open",
+          stopped ? "limit" : null,
+          params.maxAiMessages,
+          aiMessageCount,
+          user.id,
+          startedByBotId,
+          now,
+          stopped ? now : null,
+        ),
+      ...participants.map((p) =>
         d1
           .prepare(
             `INSERT INTO conversation_participants (id, conversation_id, workspace_id, name, oauth_client_id, subscription_id, bot_id, created_at)
             VALUES (?, ?, ?, ?, NULL, NULL, ?, ?)`,
           )
-          .bind(newParticipantId(now), conversationId, workspaceId, p.name, p.botId, now),
+          .bind(p.id, conversationId, workspaceId, p.name, p.botId, now),
       ),
     ],
     compareOnRetry: false,

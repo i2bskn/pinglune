@@ -5,6 +5,7 @@ import {
   aiMessagesLabel,
   conversationStatusLabel,
   newIdempotencyKey,
+  startedByLabel,
   participantStopReason,
 } from "../conversations";
 import { formatDateTime, keepNumbersWithUnits } from "../format";
@@ -68,6 +69,7 @@ function ConversationContent({
 }) {
   const { conversation } = data;
   const open = conversation.status === "open";
+  const startedBy = startedByLabel(conversation);
   return (
     <main className="main">
       <p className="breadcrumb">
@@ -77,6 +79,7 @@ function ConversationContent({
       <p className="conversation-state">
         <span className={open ? "badge" : "badge badge-off"}>{conversationStatusLabel(conversation)}</span>
         <span>{aiMessagesLabel(conversation)}</span>
+        {startedBy !== null && <span>{startedBy}</span>}
       </p>
       {notice !== null && (
         <p className="notice" role="status">

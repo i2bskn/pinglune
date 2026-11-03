@@ -6,6 +6,8 @@ import {
   botDeliveryLabel,
   botForm,
   botSourcesLabel,
+  conversationStartForm,
+  conversationStartRequest,
   createBotRequest,
   replacementWarning,
   sourceChoices,
@@ -37,6 +39,7 @@ const DOT: Bot = {
   connection: { id: "mcn_01JC9Z7H2K4M6N8P0Q2R4S6T8V", client_name: "ChatGPT", redirect_host: "chatgpt.com", created_at: 1 },
   status: "no_delivery",
   sources: [],
+  conversation_start: { enabled: false, daily_limit: 10, max_ai_messages: 10 },
   created_at: 1,
   updated_at: 1,
 };
@@ -170,5 +173,41 @@ describe("bot choices and labels", () => {
     expect(botConnectionExpired(DOT, [expired])).toBe(true);
     expect(botConnectionExpired(DOT, [CONNECTION])).toBe(false);
     expect(botConnectionExpired(GROK, [expired])).toBe(false);
+  });
+});
+
+describe("conversationStartRequest", () => {
+  const SAVED = { conversation_start: { enabled: true, daily_limit: 5, max_ai_messages: 8 } };
+
+  it("fills the form with the saved settings", () => {
+    expect(conversationStartForm(SAVED)).toEqual({ enabled: true, dailyLimit: "5", maxAiMessages: "8" });
+  });
+
+  it("sends the numbers of the form when it is on", () => {
+    expect(conversationStartRequest(SAVED, { enabled: true, dailyLimit: " 1000 ", maxAiMessages: "1" })).toEqual({
+      ok: true,
+      value: { enabled: true, dailyLimit: 1000, maxAiMessages: 1 },
+    });
+  });
+
+  it("sends the saved numbers without checking the form when it is off", () => {
+    expect(conversationStartRequest(SAVED, { enabled: false, dailyLimit: "", maxAiMessages: "abc" })).toEqual({
+      ok: true,
+      value: { enabled: false, dailyLimit: 5, maxAiMessages: 8 },
+    });
+  });
+
+  it.each(["", "0", "1001", "1.5", "-1", "abc"])("rejects a daily limit of %j", (dailyLimit) => {
+    expect(conversationStartRequest(SAVED, { enabled: true, dailyLimit, maxAiMessages: "8" })).toEqual({
+      ok: false,
+      message: "1日に始められる会話の数は 1〜1000 の整数にしてください",
+    });
+  });
+
+  it.each(["", "0", "101", "2.5", "x"])("rejects a limit of AI messages of %j", (maxAiMessages) => {
+    expect(conversationStartRequest(SAVED, { enabled: true, dailyLimit: "5", maxAiMessages })).toEqual({
+      ok: false,
+      message: "AI の発言の上限は 1〜100 の整数にしてください",
+    });
   });
 });

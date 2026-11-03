@@ -50,6 +50,7 @@ const MUSE: BotDetail = {
   connection: null,
   status: "no_connection",
   sources: [],
+  conversation_start: { enabled: false, daily_limit: 10, max_ai_messages: 10 },
   created_at: 1,
   updated_at: 1,
   destination: QUEUE_DESTINATION,

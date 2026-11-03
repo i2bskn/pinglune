@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Subscription, SubscriptionList } from "../src/api/types";
 import { clock } from "../src/clock";
+import { MAX_ACTIVE_WEBHOOK_DESTINATIONS_PER_WORKSPACE } from "../src/routes/subscriptions";
 import type { SourceRow, UserRow } from "../src/db/schema";
 import { acceptEvent } from "../src/intake/service";
 import { findSubscriptionById, NO_EXPIRY } from "../src/subscriptions/queries";
@@ -245,13 +246,15 @@ describe("POST /api/v1/subscriptions/webhooks", () => {
     expect(await errorOf(res)).toMatchObject({ status: 400, code: "unknown_field" });
   });
 
-  it("allows 20 active destinations per workspace, not counting deleted ones", async () => {
+  it("allows 100 active destinations per workspace, not counting deleted ones", async () => {
     const first = await created();
-    for (let i = 1; i < 20; i++) await created();
+    for (let i = 1; i < MAX_ACTIVE_WEBHOOK_DESTINATIONS_PER_WORKSPACE; i++) {
+      await createSubscription({ user: alice, kind: "webhook", name: `w${i}`, expiresAt: NO_EXPIRY });
+    }
     expect(await errorOf(await create({ name: "x", url: URL_WITH_SECRET, token: TOKEN }))).toEqual({
       status: 409,
       code: "limit_exceeded",
-      message: "Webhook 配信先は 20 件までです",
+      message: "Webhook 配信先は 100 件までです",
     });
     // Other workspaces and MCP subscriptions have their own counts.
     await created({}, bobCookies);
@@ -260,7 +263,7 @@ describe("POST /api/v1/subscriptions/webhooks", () => {
   });
 
   it("does not count MCP subscriptions", async () => {
-    for (let i = 0; i < 20; i++) await createSubscription({ user: alice });
+    for (let i = 0; i < MAX_ACTIVE_WEBHOOK_DESTINATIONS_PER_WORKSPACE; i++) await createSubscription({ user: alice });
     expect((await create({ name: "x", url: URL_WITH_SECRET, token: TOKEN })).status).toBe(201);
   });
 

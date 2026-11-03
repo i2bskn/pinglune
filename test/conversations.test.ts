@@ -30,6 +30,7 @@ import {
   createSubscription,
   createUser,
   fakeQueue,
+  insertOpenConversations,
   listDeliveries,
   login,
   ORIGIN,
@@ -192,6 +193,9 @@ async function createBot(name: string, kind: "mcp" | "webhook" | "queue", subscr
     name,
     deliveryKind: kind,
     deliverySubscriptionId: subscriptionId,
+    canStartConversations: row.can_start_conversations as number,
+    startDailyLimit: row.start_daily_limit as number,
+    startMaxAiMessages: row.start_max_ai_messages as number,
     createdAt: now,
     updatedAt: now,
     deletedAt: null,
@@ -455,16 +459,8 @@ describe("POST /api/v1/conversations", () => {
     expect(await listDeliveries()).toEqual([]);
   });
 
-  it("allows 20 open conversations", async () => {
-    for (let i = 0; i < 20; i++) await createConversation();
-    await expectApiError(await createConversationRequest(createBody()), 409, "limit_exceeded");
-    // A stopped conversation does not count.
-    const list = (await (await send("/api/v1/conversations", { cookies: aliceCookies })).json()) as ConversationList;
-    const res = await send(`/api/v1/conversations/${list.conversations[0]?.id}/stop`, {
-      method: "POST",
-      cookies: aliceCookies,
-    });
-    expect(res.status).toBe(200);
+  it("creates a conversation after 25 open conversations", async () => {
+    await insertOpenConversations(alice, 25, null, now);
     expect((await createConversationRequest(createBody())).status).toBe(201);
   });
 

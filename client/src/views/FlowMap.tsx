@@ -129,9 +129,20 @@ function FlowDiagram({ model, collapsed, uid }: { model: FlowModel; collapsed: b
     // Not laid out: closed, or a phone, where the diagram is not shown.
     if (origin.width === 0) return;
     const next: Record<string, string> = {};
-    // The lines that share a card are spread around its anchor, 12px apart, ordered by the height of their other ends,
-    // so that they leave and enter without crossing each other at the card.
-    const top = (id: string) => nodes.current.get(id)?.getBoundingClientRect().top ?? 0;
+    // Each card is measured once: with many cards and lines, the sorts below would measure them again and again.
+    const rects = new Map<string, DOMRect>();
+    const rect = (id: string): DOMRect | undefined => {
+      let found = rects.get(id);
+      if (found === undefined) {
+        found = nodes.current.get(id)?.getBoundingClientRect();
+        if (found !== undefined) rects.set(id, found);
+      }
+      return found;
+    };
+    // The lines that share a card are spread around its anchor, 12px apart (closer when there are many, so that they
+    // stay within the card), ordered by the height of their other ends, so that they leave and enter without crossing
+    // each other at the card.
+    const top = (id: string) => rect(id)?.top ?? 0;
     const outgoing = new Map<string, string[]>();
     const incoming = new Map<string, string[]>();
     for (const edge of model.edges) {
@@ -141,20 +152,22 @@ function FlowDiagram({ model, collapsed, uid }: { model: FlowModel; collapsed: b
     const ends = new Map(model.edges.map((edge) => [edge.id, edge]));
     for (const ids of outgoing.values()) ids.sort((a, b) => top(ends.get(a)?.to ?? "") - top(ends.get(b)?.to ?? ""));
     for (const ids of incoming.values()) ids.sort((a, b) => top(ends.get(a)?.from ?? "") - top(ends.get(b)?.from ?? ""));
-    const spread = (ids: string[] | undefined, id: string) => {
+    const spread = (ids: string[] | undefined, id: string, card: DOMRect) => {
       if (ids === undefined || ids.length < 2) return 0;
-      return (ids.indexOf(id) - (ids.length - 1) / 2) * 12;
+      // 8px of margin above and below the card.
+      const step = Math.min(12, Math.max(0, card.height - 16) / (ids.length - 1));
+      return (ids.indexOf(id) - (ids.length - 1) / 2) * step;
     };
     for (const edge of model.edges) {
-      const from = nodes.current.get(edge.from);
-      const to = nodes.current.get(edge.to);
+      const from = rect(edge.from);
+      const to = rect(edge.to);
       if (from === undefined || to === undefined) continue;
       next[edge.id] = edgePath(
-        from.getBoundingClientRect(),
-        to.getBoundingClientRect(),
+        from,
+        to,
         origin,
-        spread(outgoing.get(edge.from), edge.id),
-        spread(incoming.get(edge.to), edge.id),
+        spread(outgoing.get(edge.from), edge.id, from),
+        spread(incoming.get(edge.to), edge.id, to),
       );
     }
     setPaths(next);

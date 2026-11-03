@@ -1,7 +1,15 @@
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { validator } from "hono/validator";
-import type { Bot, BotDeliveryKind, BotDetail, BotList, CreateBotRequest, UpdateBotRequest } from "../api/types";
+import type {
+  Bot,
+  BotDeliveryKind,
+  BotDetail,
+  BotList,
+  CreateBotRequest,
+  UpdateBotConversationStartRequest,
+  UpdateBotRequest,
+} from "../api/types";
 import { apiError, requireUser } from "../auth/middleware";
 import { isUniqueViolation } from "../auth/users";
 import { isJsonObject } from "../auth/validate";
@@ -17,6 +25,7 @@ import {
   type BotSourceSummary,
 } from "../bots/queries";
 import { clock } from "../clock";
+import { MAX_AI_MESSAGES_LIMIT } from "../conversations/service";
 import type { Db } from "../db/client";
 import type { BotRow, McpConnectionRow, SubscriptionRow } from "../db/schema";
 import { canonicalJson } from "../canonical-json";
@@ -66,6 +75,12 @@ const webhookKindMessage = "webhook は配信方式が Webhook のときだけ�
 const conditionsWithIdMessage = "conditions は新しく作る配信先にだけ指定できます";
 const destinationEndedMessage = "配信先が終了しています";
 const botChangedMessage = "Bot がほかの操作で変わりました。読み込み直してください";
+const CONVERSATION_START_FIELDS = ["enabled", "daily_limit", "max_ai_messages"];
+// The ranges of the conversation start settings of a bot (bots.start_daily_limit, bots.start_max_ai_messages).
+const START_DAILY_LIMIT_MAX = 1000;
+const START_MAX_AI_MESSAGES_MAX = MAX_AI_MESSAGES_LIMIT;
+const invalidDailyLimitMessage = `1日に始められる会話の数は 1〜${START_DAILY_LIMIT_MAX} の整数にしてください`;
+const invalidStartMaxAiMessagesMessage = `AI の発言の上限は 1〜${START_MAX_AI_MESSAGES_MAX} の整数にしてください`;
 
 function isDeliveryKind(value: unknown): value is BotDeliveryKind {
   return typeof value === "string" && (DELIVERY_KINDS as readonly string[]).includes(value);
@@ -103,6 +118,11 @@ export function toApiBot(
           },
     status: connection === undefined ? "no_connection" : resolved === null ? "no_delivery" : "ready",
     sources: sources.map((source) => ({ id: source.id, name: source.name, enabled: source.enabled })),
+    conversation_start: {
+      enabled: bot.canStartConversations === 1,
+      daily_limit: bot.startDailyLimit,
+      max_ai_messages: bot.startMaxAiMessages,
+    },
     created_at: bot.createdAt,
     updated_at: bot.updatedAt,
   };
@@ -266,6 +286,31 @@ const updateBotBody = jsonBody<UpdateBotRequest, UpdateInput>((body, c) => {
     value.conditions = conditions;
   }
   return { ok: true, value };
+});
+
+type ConversationStartInput = { enabled: boolean; dailyLimit: number; maxAiMessages: number };
+
+function isIntegerIn(value: unknown, min: number, max: number): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max;
+}
+
+// All three fields are required.
+const conversationStartBody = jsonBody<UpdateBotConversationStartRequest, ConversationStartInput>((body, c) => {
+  const unknown = unknownField(body, CONVERSATION_START_FIELDS);
+  if (unknown !== null) return apiError(c, 400, "unknown_field", `未知の項目があります: ${unknown}`);
+  if (typeof body.enabled !== "boolean") {
+    return apiError(c, 400, "invalid_request", "enabled は true か false で指定してください");
+  }
+  if (!isIntegerIn(body.daily_limit, 1, START_DAILY_LIMIT_MAX)) {
+    return apiError(c, 400, "invalid_limit", invalidDailyLimitMessage);
+  }
+  if (!isIntegerIn(body.max_ai_messages, 1, START_MAX_AI_MESSAGES_MAX)) {
+    return apiError(c, 400, "invalid_limit", invalidStartMaxAiMessagesMessage);
+  }
+  return {
+    ok: true,
+    value: { enabled: body.enabled, dailyLimit: body.daily_limit, maxAiMessages: body.max_ai_messages },
+  };
 });
 
 // Whether the destination of a webhook or queue bot is an active subscription of that kind in the workspace.
@@ -628,6 +673,27 @@ const botsApi = new Hono<AppEnv>()
       throw error;
     }
     const updated = await findActiveWorkspaceBot(db, workspaceId, bot.id);
+    if (!updated) return apiError(c, 404, "not_found", botNotFound);
+    const [body] = await botsToApi(db, workspaceId, [updated], now);
+    return c.json(body as Bot, 200);
+  })
+  // The conversation start settings, apart from update: they do not touch the destination. Turning them off does not
+  // stop the conversations the bot has started.
+  .post("/:id/conversation-start", conversationStartBody, async (c) => {
+    const input = c.req.valid("json");
+    const db = c.get("db");
+    const workspaceId = c.get("workspace").id;
+    const id = c.req.param("id") ?? "";
+    if (!BOT_ID_PATTERN.test(id)) return apiError(c, 404, "not_found", botNotFound);
+    const now = clock.now();
+    const result = await c.env.DB.prepare(
+      `UPDATE bots SET can_start_conversations = ?, start_daily_limit = ?, start_max_ai_messages = ?, updated_at = ?
+      WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL`,
+    )
+      .bind(input.enabled ? 1 : 0, input.dailyLimit, input.maxAiMessages, now, id, workspaceId)
+      .run();
+    if ((result.meta.changes ?? 0) === 0) return apiError(c, 404, "not_found", botNotFound);
+    const updated = await findActiveWorkspaceBot(db, workspaceId, id);
     if (!updated) return apiError(c, 404, "not_found", botNotFound);
     const [body] = await botsToApi(db, workspaceId, [updated], now);
     return c.json(body as Bot, 200);

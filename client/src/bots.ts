@@ -324,3 +324,47 @@ export function sourceTabOf(params: URLSearchParams): SourceTab {
 export function sourceTabPath(sourceId: string, tab: SourceTab): string {
   return tab === "overview" ? `/sources/${sourceId}` : `/sources/${sourceId}?tab=${tab}`;
 }
+
+// The conversation start settings of a bot, as the form edits them. The numbers are the text of the inputs.
+export type ConversationStartForm = { enabled: boolean; dailyLimit: string; maxAiMessages: string };
+
+export function conversationStartForm(bot: Pick<Bot, "conversation_start">): ConversationStartForm {
+  return {
+    enabled: bot.conversation_start.enabled,
+    dailyLimit: String(bot.conversation_start.daily_limit),
+    maxAiMessages: String(bot.conversation_start.max_ai_messages),
+  };
+}
+
+export type ConversationStartInput = { enabled: boolean; dailyLimit: number; maxAiMessages: number };
+
+// A whole number from min to max written in the input, or null.
+function wholeNumberIn(value: string, min: number, max: number): number | null {
+  const trimmed = value.trim();
+  if (!/^\d{1,4}$/.test(trimmed)) return null;
+  const number = Number(trimmed);
+  return number >= min && number <= max ? number : null;
+}
+
+// The request of the conversation start form. When it is off, the numbers are not checked and the saved ones are
+// sent as they are (the inputs are hidden).
+export function conversationStartRequest(
+  bot: Pick<Bot, "conversation_start">,
+  form: ConversationStartForm,
+): FormResult<ConversationStartInput> {
+  if (!form.enabled) {
+    return {
+      ok: true,
+      value: {
+        enabled: false,
+        dailyLimit: bot.conversation_start.daily_limit,
+        maxAiMessages: bot.conversation_start.max_ai_messages,
+      },
+    };
+  }
+  const dailyLimit = wholeNumberIn(form.dailyLimit, 1, 1000);
+  if (dailyLimit === null) return { ok: false, message: "1日に始められる会話の数は 1〜1000 の整数にしてください" };
+  const maxAiMessages = wholeNumberIn(form.maxAiMessages, 1, 100);
+  if (maxAiMessages === null) return { ok: false, message: "AI の発言の上限は 1〜100 の整数にしてください" };
+  return { ok: true, value: { enabled: true, dailyLimit, maxAiMessages } };
+}

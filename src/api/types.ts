@@ -237,6 +237,10 @@ export type ConversationStatus = "open" | "stopped";
 // user: stopped on the management screen. limit: the AIs sent max_ai_messages messages.
 export type ConversationStopReason = "user" | "limit";
 
+// Who started a conversation: the user on the management screen, or the AI of a bot with start_conversation (MCP).
+// name is the name of the bot's participant (its name when the conversation was started); "" when it is not found.
+export type ConversationStartedBy = { kind: "user" } | { kind: "bot"; bot_id: string; name: string };
+
 // A conversation between AIs and the user. Times are UNIX time in milliseconds.
 export type Conversation = {
   id: string;
@@ -247,6 +251,7 @@ export type Conversation = {
   max_ai_messages: number;
   ai_message_count: number;
   participants: { name: string }[];
+  started_by: ConversationStartedBy;
   created_at: number;
   updated_at: number;
 };
@@ -335,9 +340,19 @@ export type Bot = {
   // The sources whose events the bot receives, by name. Disabled sources are listed (enabled false). Empty: the bot
   // receives no events (it still takes part in conversations).
   sources: { id: string; name: string; enabled: boolean }[];
+  conversation_start: BotConversationStart;
   created_at: number;
   updated_at: number;
 };
+
+// Whether the AI of a bot may start conversations with other bots (start_conversation, MCP). daily_limit: 1 to 1000,
+// the conversations it may start in the last 24 hours. max_ai_messages: 1 to 100, the default and the maximum of the
+// limit of AI messages of the conversations it starts. A new bot has { enabled: false, daily_limit: 10,
+// max_ai_messages: 10 }.
+export type BotConversationStart = { enabled: boolean; daily_limit: number; max_ai_messages: number };
+
+// POST /api/v1/bots/:id/conversation-start. All three fields are required.
+export type UpdateBotConversationStartRequest = BotConversationStart;
 
 export type BotList = { bots: Bot[] };
 

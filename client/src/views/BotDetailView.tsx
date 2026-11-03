@@ -1,6 +1,6 @@
 import { type FormEvent, useState } from "react";
 import type { BotDetail, DeliveryListItem } from "../../../src/api/types";
-import { type BotResult, deleteBot, updateBot } from "../actions";
+import { type BotResult, deleteBot, updateBot, updateConversationStart } from "../actions";
 import {
   DELIVERY_KIND_DESCRIPTIONS,
   DELIVERY_KIND_LABELS,
@@ -13,6 +13,8 @@ import {
   conditionsFormOf,
   conditionsRequest,
   connectionLabel,
+  conversationStartForm,
+  conversationStartRequest,
   deliveryChangeKinds,
   deliveryChangeRequest,
   deliveryChangeWarning,
@@ -161,6 +163,7 @@ function BotContent({
       <SourcesSection client={client} data={data} onDone={onDone} />
       <DeliverySection client={client} bot={bot} onDone={onDone} />
       <ConnectionSection bot={bot} />
+      <ConversationStartSection client={client} bot={bot} onDone={onDone} />
       <RecentDeliveries client={client} bot={bot} />
     </main>
   );
@@ -643,6 +646,100 @@ function ConnectionSection({ bot }: { bot: BotDetail }) {
           </div>
         </dl>
       )}
+    </section>
+  );
+}
+
+// Whether the AI of the bot may start conversations with other bots over MCP, and its limits.
+function ConversationStartSection({ client, bot, onDone }: { client: ApiClient; bot: BotDetail; onDone: Done }) {
+  const [form, setForm] = useState(() => conversationStartForm(bot));
+  const [sending, setSending] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+
+  async function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const request = conversationStartRequest(bot, form);
+    if (!request.ok) {
+      setFailure(request.message);
+      return;
+    }
+    setSending(true);
+    setFailure(null);
+    const result = await updateConversationStart(client, bot.id, request.value);
+    setSending(false);
+    if (result.kind === "ok") {
+      onDone("会話の開始の設定を保存しました");
+      return;
+    }
+    if (result.kind === "notFound") {
+      onDone(BOT_GONE_MESSAGE);
+      return;
+    }
+    setFailure(updateFailure(result));
+  }
+
+  return (
+    <section className="source-section" aria-labelledby="bot-conversation-start">
+      <div className="section-head">
+        <h2 id="bot-conversation-start">会話の開始</h2>
+      </div>
+      <form className="folder-form" aria-label="会話の開始" onSubmit={(event) => void onSubmit(event)}>
+        <label className="choice">
+          <input
+            type="checkbox"
+            name="can_start_conversations"
+            checked={form.enabled}
+            onChange={(event) => setForm({ ...form, enabled: event.target.checked })}
+            disabled={sending}
+          />
+          <span>
+            <span className="choice-title">この Bot が自分から会話を始めることを許可する</span>
+            <span className="choice-description">
+              許可すると、この Bot の AI が MCP で別の Bot との会話を始められます。AI の判断で会話が始まり、相手の AI
+              の利用料が増えることがあります
+            </span>
+          </span>
+        </label>
+        {form.enabled && (
+          <>
+            <label>
+              1日に始められる会話（1〜1000&nbsp;件）
+              <input
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={1000}
+                step={1}
+                value={form.dailyLimit}
+                onChange={(event) => setForm({ ...form, dailyLimit: event.target.value })}
+                required
+                disabled={sending}
+              />
+            </label>
+            <label>
+              AI の発言の上限（1〜100&nbsp;回）
+              <input
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={100}
+                step={1}
+                value={form.maxAiMessages}
+                onChange={(event) => setForm({ ...form, maxAiMessages: event.target.value })}
+                required
+                disabled={sending}
+              />
+            </label>
+          </>
+        )}
+        <p className="muted">許可を外しても、すでに始まった会話はそのまま続きます。</p>
+        <div className="folder-form-actions">
+          <button type="submit" disabled={sending}>
+            保存
+          </button>
+        </div>
+        {failure !== null && <p role="alert">{failure}</p>}
+      </form>
     </section>
   );
 }

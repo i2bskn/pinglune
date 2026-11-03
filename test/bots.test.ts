@@ -1,10 +1,10 @@
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Bot, BotList } from "../src/api/types";
-import { resolveBotDeliveries } from "../src/bots/queries";
+import { MAX_BOTS_PER_WORKSPACE, resolveBotDeliveries } from "../src/bots/queries";
 import { clock } from "../src/clock";
 import type { BotRow, SourceRow, SubscriptionRow, UserRow } from "../src/db/schema";
-import { newMcpConnectionId } from "../src/ids";
+import { newBotId, newMcpConnectionId } from "../src/ids";
 import {
   countTable,
   createQueue,
@@ -106,6 +106,9 @@ async function botRow(id: string): Promise<BotRow> {
     name: raw.name as string,
     deliveryKind: raw.delivery_kind as BotRow["deliveryKind"],
     deliverySubscriptionId: raw.delivery_subscription_id as string | null,
+    canStartConversations: raw.can_start_conversations as number,
+    startDailyLimit: raw.start_daily_limit as number,
+    startMaxAiMessages: raw.start_max_ai_messages as number,
     createdAt: raw.created_at as number,
     updatedAt: raw.updated_at as number,
     deletedAt: raw.deleted_at as number | null,
@@ -123,6 +126,7 @@ describe("POST /api/v1/bots", () => {
       connection: null,
       status: "no_connection",
       sources: [],
+      conversation_start: { enabled: false, daily_limit: 10, max_ai_messages: 10 },
       created_at: now,
       updated_at: now,
     });
@@ -182,9 +186,23 @@ describe("POST /api/v1/bots", () => {
     await created({ name: "Grok", delivery_kind: "mcp" }, bobCookies);
   });
 
-  it("allows 20 bots", async () => {
-    for (let i = 0; i < 20; i++) await created({ name: `bot ${i}`, delivery_kind: "mcp" });
-    await expectApiError(await create({ name: "one more", delivery_kind: "mcp" }), 409, "limit_exceeded");
+  it("allows 100 bots", async () => {
+    const workspaceId = (await personalWorkspaceOf(alice)).id;
+    await env.DB.batch(
+      Array.from({ length: MAX_BOTS_PER_WORKSPACE - 1 }, (_, i) =>
+        env.DB.prepare(
+          `INSERT INTO bots (id, workspace_id, created_by_user_id, name, delivery_kind, delivery_subscription_id, created_at, updated_at)
+          VALUES (?, ?, ?, ?, 'mcp', NULL, ?, ?)`,
+        ).bind(newBotId(now), workspaceId, alice.id, `bot ${i}`, now, now),
+      ),
+    );
+    await created({ name: "the last", delivery_kind: "mcp" });
+    const res = await create({ name: "one more", delivery_kind: "mcp" });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: { code: string; message: string } }).error).toMatchObject({
+      code: "limit_exceeded",
+      message: "Bot は 100 個までです",
+    });
   });
 
   it("requires a login", async () => {

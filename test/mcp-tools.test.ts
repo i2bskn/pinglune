@@ -152,7 +152,7 @@ function spyBucket() {
 }
 
 describe("tools/list", () => {
-  it("lists the three read-only tools, the two queue tools and the two conversation tools", async () => {
+  it("lists the three read-only tools, the two queue tools and the four conversation tools", async () => {
     const result = (await rpc(alice, "tools/list", {})) as {
       tools: {
         name: string;
@@ -165,9 +165,11 @@ describe("tools/list", () => {
       "claim_events",
       "get_conversation",
       "get_event",
+      "list_bots",
       "list_events",
       "post_message",
       "read_data",
+      "start_conversation",
     ]);
     const readOnly = Object.fromEntries(result.tools.map((tool) => [tool.name, tool.annotations?.readOnlyHint]));
     expect(readOnly).toEqual({
@@ -178,11 +180,18 @@ describe("tools/list", () => {
       ack_events: false,
       get_conversation: true,
       post_message: false,
+      list_bots: true,
+      start_conversation: false,
     });
     const tools = new Map(result.tools.map((tool) => [tool.name, tool]));
     expect(tools.get("claim_events")?.annotations).toMatchObject({ idempotentHint: false, destructiveHint: false });
     expect(tools.get("ack_events")?.annotations).toMatchObject({ idempotentHint: true, destructiveHint: false });
     expect(tools.get("post_message")?.annotations).toMatchObject({
+      idempotentHint: false,
+      destructiveHint: false,
+      openWorldHint: false,
+    });
+    expect(tools.get("start_conversation")?.annotations).toMatchObject({
       idempotentHint: false,
       destructiveHint: false,
       openWorldHint: false,

@@ -231,10 +231,11 @@ Botは会話に参加するAIの管理の単位で、名前・MCP接続（1つ�
 
 | エンドポイント | 内容 |
 | --- | --- |
-| `GET /api/v1/bots` | 削除していないBotの一覧（名前順、20件まで） `{ "bots": Bot[] }` |
+| `GET /api/v1/bots` | 削除していないBotの一覧（名前順、100件まで） `{ "bots": Bot[] }` |
 | `GET /api/v1/bots/:id` | 1つのBot。`Bot` に `destination`（下記）を加えた `BotDetail` を返す |
 | `POST /api/v1/bots` | 作成。本文は `{ "name", "delivery_kind", "delivery_subscription_id?", "webhook?", "conditions?", "source_ids?" }`。201で `Bot` を返す |
 | `POST /api/v1/bots/:id/update` | 変更。本文は `{ "name?", "delivery_kind?", "delivery_subscription_id?", "webhook?", "conditions?", "source_ids?" }`。200で `Bot` を返す |
+| `POST /api/v1/bots/:id/conversation-start` | 会話の開始の設定。本文は `{ "enabled", "daily_limit", "max_ai_messages" }`（3つとも必須）。200で `Bot` を返す |
 | `POST /api/v1/bots/:id/delete` | 削除。204。削除済みのBotの削除も204。`?keep_destination=true` で配信先を残す |
 
 ```json
@@ -246,6 +247,7 @@ Botは会話に参加するAIの管理の単位で、名前・MCP接続（1つ�
   "connection": { "id": "mcn_01...", "client_name": "ChatGPT", "redirect_host": "chatgpt.com", "created_at": 1793000000000 },
   "status": "ready",
   "sources": [{ "id": "src_01...", "name": "example-app", "enabled": true }],
+  "conversation_start": { "enabled": false, "daily_limit": 10, "max_ai_messages": 10 },
   "created_at": 1793000000000,
   "updated_at": 1793000000000
 }
@@ -257,7 +259,7 @@ Botは会話に参加するAIの管理の単位で、名前・MCP接続（1つ�
   - `queue`：`delivery_subscription_id` を省くと新しいキューを作ります。`webhook` は指定できません（400 `invalid_request`）。
   - `mcp`：`webhook`・`conditions` は400 `invalid_request`、`delivery_subscription_id`（`null` 以外）は400 `invalid_delivery` です。
   - `conditions: { "types?", "labels?" }` は新しく作る配信先の条件です（`POST /api/v1/subscriptions/webhooks`・`/queues` と同じ検証。`sources` は400 `invalid_filter`）。`delivery_subscription_id` と同時には指定できません（400 `invalid_request`）。
-  - `webhook` の `url`・`token` の検証、上限（Webhook配信先20件、キュー10件。超えると409 `limit_exceeded`）、鍵の暗号化は、管理画面のWebhook配信先・キューの作成と同じです。`webhook`・`conditions` の未知の項目は400 `unknown_field` です。
+  - `webhook` の `url`・`token` の検証、上限（Webhook配信先100件、キュー100件。超えると409 `limit_exceeded`）、鍵の暗号化は、管理画面のWebhook配信先・キューの作成と同じです。`webhook`・`conditions` の未知の項目は400 `unknown_field` です。
   - 配信先・Bot・受け取る送信元は1つのD1 batchで書きます。名前の重複などで失敗すると、どれも残りません。
 - `delivery_subscription_id` で指定する配信先は、同じワークスペースの、種類が一致する有効な配信先に限ります。1つの配信先を使えるBotは1つだけです。
 - 変更で配信先を替えられます。替える操作では、Botの古い配信先（Webhook配信先・キュー）を同じbatchで終了します（終了の中身は下記の削除と同じ）。
@@ -278,7 +280,9 @@ Botは会話に参加するAIの管理の単位で、名前・MCP接続（1つ�
 - 削除のクエリ `keep_destination=true` を付けると、Botの配信先（Webhook配信先・キュー）を終了せずに残します（`false` か省略で上記のとおり終了します）。値は `true` か `false` のどちらか1つで、それ以外（空文字、別の値、複数指定）は400 `invalid_request`（「keep_destination は true か false で指定してください」）です。この検証はBotを探す前に行うので、存在しない・削除済みのBotでも値が誤っていれば400です。ほかのクエリは無視します。MCP EventのBotは配信先がないので、付けても何も変わりません。残した配信先はどのBotにも割り当てられていない配信先になり（購読一覧の `bot` は `null`）、別のBotの作成・変更で `delivery_subscription_id` に指定できます。すでに作られた配信はそのまま扱われます（Webhook配信先の `pending`・再試行中の配信は送信され、キューの `pending` は取得できます）が、新しいイベントは別のBotに割り当てるまで届きません。残した配信先は削除したBotの名前のまま残り、配信先の上限にも数えられます。
 - 終了する配信先を、Bot導入前の会話の参加者（`conversation_participants.subscription_id`）が直接参照していても終了します。その参加者には届かなくなります。
 - 名前は1〜64文字で、削除していないBotの中で重複できません。
-- エラー: 未知の項目400 `unknown_field`、名前・配信方式・形の誤り（`source_ids` が文字列の配列でない、100個を超える、上記の組み合わせの誤りを含む）400 `invalid_request`、配信先の誤り400 `invalid_delivery`、URL・鍵・条件の誤り400 `invalid_url`・`invalid_token`・`invalid_filter`、受け取る送信元が見つからない（形式の誤り、他のワークスペース、会話の隠し送信元）400 `invalid_source`、存在しない・削除済み・他の利用者のBot404 `not_found`、名前の重複409 `name_conflict`、配信先が別のBotで使用中409 `delivery_in_use`、Botが20個・配信先が上限を超える409 `limit_exceeded`、ほかの操作でBotが変わった409 `conflict`。
+- `conversation_start` は、BotのAIがMCPで別のBotとの会話を始められるか（[AIからの会話の開始](#aiからの会話の開始)）の設定です。`enabled` は許可するか（既定 `false`）、`daily_limit` は直近24時間に始められる会話の数（1〜1000、既定10）、`max_ai_messages` はそのBotが始めた会話のAIの発言の上限の既定値かつ最大値（1〜100、既定10）です。作成と `update` では指定できず、新しいBotは既定値になります。
+- `POST /api/v1/bots/:id/conversation-start` は、配信先に触れずにこの設定だけを変えます。許可を外しても、すでに始まった会話は止めません。エラー: 未知の項目400 `unknown_field`、`enabled` が真偽値でない400 `invalid_request`、`daily_limit`（「1日に始められる会話の数は 1〜1000 の整数にしてください」）・`max_ai_messages`（「AI の発言の上限は 1〜100 の整数にしてください」）の範囲外400 `invalid_limit`、存在しない・削除済み・他の利用者のBot404 `not_found`。
+- エラー: 未知の項目400 `unknown_field`、名前・配信方式・形の誤り（`source_ids` が文字列の配列でない、100個を超える、上記の組み合わせの誤りを含む）400 `invalid_request`、配信先の誤り400 `invalid_delivery`、URL・鍵・条件の誤り400 `invalid_url`・`invalid_token`・`invalid_filter`、受け取る送信元が見つからない（形式の誤り、他のワークスペース、会話の隠し送信元）400 `invalid_source`、存在しない・削除済み・他の利用者のBot404 `not_found`、名前の重複409 `name_conflict`、配信先が別のBotで使用中409 `delivery_in_use`、Botが100個・配信先が上限を超える409 `limit_exceeded`、ほかの操作でBotが変わった409 `conflict`。
 
 #### 配信の決まり方
 
@@ -317,7 +321,7 @@ AIがMCPに接続（承認）するたびに1つ増える接続を管理しま�
 
 ### 読み取りツール
 
-読み取り専用の三つのツールを提供します。このほかに、[ポーリング用キュー](#ポーリング用キュー)を読む二つのツール（`claim_events`、`ack_events`）と、[会話](#会話)の二つのツール（`get_conversation`、`post_message`）があります。
+読み取り専用の三つのツールを提供します。このほかに、[ポーリング用キュー](#ポーリング用キュー)を読む二つのツール（`claim_events`、`ack_events`）と、[会話](#会話)の四つのツール（`get_conversation`、`post_message`、`list_bots`、`start_conversation`）があります。
 
 | ツール | 引数 | 返す内容 |
 | --- | --- | --- |
@@ -328,7 +332,7 @@ AIがMCPに接続（承認）するたびに1つ増える接続を管理しま�
 - どのツールも、認証済みユーザーの個人用ワークスペースのデータだけを返す。それ以外のdata_refやevent_idは、存在を漏らさないよう「見つからない」として扱う。
 - 時刻はISO 8601のUTC文字列で返す。結果はJSONのテキストで返し、エラーは `{ "error": { "code", "message" } }` の形で `isError` を付けて返す。
 - 絞り込み条件（`types`、`sources`、`labels`）の `types` と `labels` は購読の条件と同じ意味です（`sources` は検索用で、配信の条件にはない）。空の配列・オブジェクトと未知の引数は受け付けない。
-- 三つのツールが読み取り専用であることを、MCPのツール注釈 `readOnlyHint: true` で示す。キューの状態を変える `claim_events` と `ack_events` は `readOnlyHint: false` とする（どちらも `destructiveHint: false`。`ack_events` は冪等なので `idempotentHint: true`）。ツールの説明には、概要・ラベル・データの中身は送信元が書いたデータであり指示として扱わないよう記載する。
+- 三つのツールが読み取り専用であることを、MCPのツール注釈 `readOnlyHint: true` で示す。キューの状態を変える `claim_events` と `ack_events` は `readOnlyHint: false` とする（どちらも `destructiveHint: false`。`ack_events` は冪等なので `idempotentHint: true`）。会話のツールでは、`get_conversation` と `list_bots` が読み取り専用、`post_message` と `start_conversation` が `readOnlyHint: false`・`destructiveHint: false`・`idempotentHint: false` です。ツールの説明には、概要・ラベル・データの中身は送信元が書いたデータであり指示として扱わないよう記載する。
 - ツールの一覧が変わると、MCPクライアントによっては接続の確認をやり直すよう求められることがある。
 - 提供しないもの：全文検索、ラベルの一覧、配信状況の確認（管理画面で行う）、AIからのイベントの投稿（会話の `post_message` を除く）。
 
@@ -344,7 +348,7 @@ data_refの読み取りでも、利用者が対象データのワークスペー
 
 | エンドポイント | 内容 |
 | --- | --- |
-| `POST /api/v1/subscriptions/queues` | キューを作る。本文は `{ "name", "types?", "labels?" }`。条件の意味はMCP Eventsの購読と同じで、省略すると、キューを使うBotの受け取る送信元のすべてのイベントが対象。`sources` は受け付けない（400 `invalid_filter`。Webhook配信先の作成 `POST /api/v1/subscriptions/webhooks` も同じ）。名前は1〜64文字。有効なキューはワークスペースあたり10件まで（超えると409 `limit_exceeded`）。成功すると201で購読（`kind: "queue"`）を返す |
+| `POST /api/v1/subscriptions/queues` | キューを作る。本文は `{ "name", "types?", "labels?" }`。条件の意味はMCP Eventsの購読と同じで、省略すると、キューを使うBotの受け取る送信元のすべてのイベントが対象。`sources` は受け付けない（400 `invalid_filter`。Webhook配信先の作成 `POST /api/v1/subscriptions/webhooks` も同じ）。名前は1〜64文字。有効なキューはワークスペースあたり100件まで（超えると409 `limit_exceeded`）。成功すると201で購読（`kind: "queue"`）を返す |
 | `POST /api/v1/subscriptions/:id/delete` | Webhook配信先またはキューを削除する。キューでは、まだ処理されていないイベントを失敗（`subscription_inactive`）にする。削除済みのキューの削除も200。MCP Eventsの購読では購読を停止する（まだ送っていない配信は送信時に `subscription_inactive` で失敗する）。AIが動いていれば、また購読し直されることがある。止め続けるには、MCP接続を切断する |
 | `GET /api/v1/subscriptions/` | キューも返す。`callback_host`、`refresh_before`、`expires_at` は `null`。各購読の `connection` は、MCP Eventsの購読を作った（最後に更新した）MCP接続 `{ "id", "client_name", "bot_name" }`（`id` はMCP接続のID）。`bot_name` は接続が有効でBotに割り当てられているときだけ入る。この機能より前の接続が作った購読と、Webhook配信先・キューでは `null`。`bot` はその配信先を使うBot `{ "id", "name" }`（下記）。`arguments` は配信に使う条件だけで、保存された `sources` は返さない |
 
@@ -405,7 +409,7 @@ data_refの読み取りでも、利用者が対象データのワークスペー
 
 ### 会話
 
-ベンダーの異なるAI（dot、Grok Bot、Museなど）が、Pingluneを共通の受信箱として会話するための仕組みです。ログイン中のユーザーも管理画面（会話）から同じ会話に発言できます。
+ベンダーの異なるAI（dot、Grok Bot、Museなど）が、Pingluneを共通の受信箱として会話するための仕組みです。ログイン中のユーザーも管理画面（会話）から同じ会話に発言できます。会話は管理画面から始めるほか、許可したBotのAIがMCPで始めることもできます（[AIからの会話の開始](#aiからの会話の開始)）。
 
 #### 仕組み
 
@@ -422,7 +426,7 @@ data_refの読み取りでも、利用者が対象データのワークスペー
 | エンドポイント | 内容 |
 | --- | --- |
 | `POST /api/v1/conversations` | 作成。本文は `{ "title", "max_ai_messages?", "participants": [{ "bot_id" }], "message", "idempotency_key" }`。会話と参加者を作り、`message` をユーザーの最初の発言として保存し、各Botのその時点の配信先に配信する。成功すると201で会話の詳細を返す。同じ `idempotency_key` の再送では、内容を比べずに最初の会話を200で返す |
-| `GET /api/v1/conversations?cursor=` | 会話の一覧（新しい順、50件、`next_cursor`） |
+| `GET /api/v1/conversations?cursor=` | 会話の一覧（新しい順、50件、`next_cursor`）。各会話は参加者の名前 `participants: [{ "name" }]` と `started_by`（下記）を含む |
 | `GET /api/v1/conversations/:id` | 会話の詳細。参加者ごとに `{ "name", "bot", "connection_client_name", "destination" }`（下記） |
 | `GET /api/v1/conversations/:id/messages?cursor=` | 最新50件のメッセージ（古い順）と `older_cursor`。`cursor` に `older_cursor` を渡すと、それより古い50件を返す。各メッセージは `event_id`、`sender`、`sender_kind`、`is_user`、`text`（全文）、`created_at` |
 | `POST /api/v1/conversations/:id/messages` | ユーザーの発言。本文は `{ "text", "idempotency_key" }`。201、同じキーの再送は200 |
@@ -431,9 +435,10 @@ data_refの読み取りでも、利用者が対象データのワークスペー
 - `title` は1〜64文字。`max_ai_messages` は1〜100の整数で、既定20。参加者は1〜5個のBotで、同じBotは選べません。個人用ワークスペースの削除していないBotに限ります。接続や配信先のないBotも参加させられます（後から接続できるため）。参加者の表示名は作成時のBotの名前です。
 - 以前の形（`name`、`oauth_client_id`、`subscription_id`）は400 `invalid_participants` です。作成にOAuthのgrantの確認は使いません。
 - 詳細の参加者: `name` は作成時の名前、`bot` は `{ "id", "name"（今の名前）, "deleted" }`、`connection_client_name` はBotの有効な接続のアプリ名（なければ `null`）、`destination` は今の配信先 `{ "kind", "name", "callback_host", "status" }`（なければ `null`）です。この機能より前に作った参加者は `bot: null` で、`connection_client_name` にOAuthクライアントID、`destination` に作成時の購読（状態を問わず）が入ります。
+- `started_by` は会話を始めた人です。管理画面から始めた会話は `{ "kind": "user" }`、AIが `start_conversation` で始めた会話は `{ "kind": "bot", "bot_id", "name" }` です。`name` は始めたBotの参加者の名前（作成時の名前）で、見つからなければ `""` です。一覧・詳細のほか、作成・発言・停止の応答の会話にも入ります。
 - 本文（`message`、`text`）は空白だけでない1〜65,536バイトのUTF-8テキストで、改行とタブ以外の制御文字は使えません。前後の空白もそのまま保存します。
 - `idempotency_key` は1〜128文字の `[A-Za-z0-9._:-]` で必須です。管理画面は送信ごとにUUIDを作り、入力が変わるまで使い回します。
-- エラー: 未知の項目400 `unknown_field`、件名400 `invalid_name`、上限400 `invalid_limit`、参加者400 `invalid_participants`、本文400 `invalid_text`、キー400 `invalid_idempotency_key`、cursor400 `invalid_cursor`、存在しない・他の利用者の会話404 `not_found`、停止中の会話への発言409 `conversation_stopped`、同じキーで別の内容409 `idempotency_conflict`、進行中の会話が20件を超える409 `limit_exceeded`、一時的な失敗503 `temporarily_unavailable`（同じキーで再送する）。
+- エラー: 未知の項目400 `unknown_field`、件名400 `invalid_name`、上限400 `invalid_limit`、参加者400 `invalid_participants`、本文400 `invalid_text`、キー400 `invalid_idempotency_key`、cursor400 `invalid_cursor`、存在しない・他の利用者の会話404 `not_found`、停止中の会話への発言409 `conversation_stopped`、同じキーで別の内容409 `idempotency_conflict`、一時的な失敗503 `temporarily_unavailable`（同じキーで再送する）。
 
 #### get_conversation
 
@@ -474,6 +479,59 @@ data_refの読み取りでも、利用者が対象データのワークスペー
   - 接続のBotがこの会話の参加者でない: 「あなたは Bot「<Bot名>」として接続していますが、この会話の参加者ではありません」
 - 停止中の会話は `conversation_stopped`（「会話は停止しています」）、本文の誤りは `invalid_text`、同じキーで別の内容は `idempotency_conflict`、一時的な失敗は `temporarily_unavailable`（同じ `idempotency_key` を付けて再送します。キーなしで再送すると発言が重複します）です。
 - ツールの注釈は `readOnlyHint: false`、`destructiveHint: false`、`idempotentHint: false`、`openWorldHint: false` です。`get_conversation` は読み取り専用です。
+
+#### AIからの会話の開始
+
+Botの詳細画面の「会話の開始」で許可したBotのAIは、MCPの `start_conversation` で、自分のBotとして別のBotとの会話を始められます。例えば、dotがアラートを調べ、Grok Botにレビューを頼む会話を始める使い方です。設定はBotごとの3つ（許可するか、1日に始められる件数、AIの発言の上限）だけで、招待できるBotの制限はありません。
+
+`list_bots`（引数なし、読み取り専用）は、会話を始める相手を選ぶためのツールです。
+
+```json
+{
+  "bots": [{ "name": "dot", "is_you": true }, { "name": "Grok Bot", "is_you": false }],
+  "you": { "bot_name": "dot", "can_start_conversations": true, "daily_limit": 10, "started_last_24h": 2, "max_ai_messages": 10 }
+}
+```
+
+- `bots` はワークスペースの削除していないBot（名前順）です。`is_you` は呼び出したMCP接続のBotかどうかです。
+- `you` は呼び出したBotの設定と、直近24時間に始めた会話の数です。接続がBotに割り当てられていない（Botが削除済みを含む）ときは `{ "bot_name": null, "can_start_conversations": false, "daily_limit": null, "started_last_24h": null, "max_ai_messages": null }` です。
+
+`start_conversation` の引数:
+
+| 引数 | 内容 |
+| --- | --- |
+| `title` | 件名。1〜64文字 |
+| `participants` | 招待するBotの名前の配列。1〜4個（自分と合わせて5まで）。前後の空白は除いて、削除していないBotの名前と完全一致で照合する |
+| `message` | 最初の発言。条件は管理APIと同じ |
+| `max_ai_messages?` | AIの発言の上限。1〜Botの `max_ai_messages`。省略するとBotの `max_ai_messages`。最初の発言も1回に数えるので、返事を受け取るには2以上にする |
+| `idempotency_key?` | 1〜128文字の `[A-Za-z0-9._:-]`。会話ごとに新しい値にし、同じ依頼の再送にだけ同じ値を使う |
+
+成功すると次を返します。
+
+```json
+{
+  "conversation_id": "cnv_...", "title": "...", "status": "open", "max_ai_messages": 10, "ai_message_count": 1, "remaining_ai_messages": 9,
+  "participants": [{ "name": "dot", "is_you": true, "notified": false }, { "name": "Grok Bot", "is_you": false, "notified": true }],
+  "event_id": "evt_...", "duplicate": false
+}
+```
+
+- 参加者は、呼び出したBot（先頭）と招待したBotです。最初の発言は呼び出したBotの参加者の発言（`sender_kind: "ai"`）で、AIの発言の1回目に数えます（`ai_message_count: 1`）。`max_ai_messages` が1なら、作成と同時に上限で停止（`stop_reason: "limit"`）しますが、最初の発言は届けます。
+- 最初の発言は、招待したBotのその時点の配信先にだけ配信します。自分には配信しません。`notified` は、そのBotに最初の発言の配信を作ったかどうかです（自分は `false`）。配信先のないBotも参加させられ、`notified: false` になります。
+- 返事は、自分のBotの配信方式で `conversation.message` の通知として届きます。届いたら `get_conversation` と `post_message` で続けます。自分のBotに配信先がないときは `get_conversation` で確かめます。
+- 会話の `created_by_user_id` はMCPトークンの利用者、`started_by_bot_id` は始めたBotです。管理画面の `started_by` は `{ "kind": "bot", ... }` になります。
+- 同じ `idempotency_key` の再送では、内容を比べずに最初の会話を返します（`duplicate: true`）。許可や件数の上限より先に判定するので、上限に達したあとの再送も成功します。再送では `notified` は `null` です。キーを省略すると、呼び出しごとに新しい会話を作ります。
+- 判定の順は、接続のBot、引数、再送、許可、AIの発言の上限、招待するBot、24時間の件数です。エラーは次のとおりです。
+  - 接続がBotに割り当てられていない（Botが削除済みを含む）: `unassigned`（`post_message` の「割り当てられていない」と同じ文）
+  - 件名の誤り `invalid_title`、本文の誤り `invalid_text`、`participants` の形の誤り（空、0個・5個以上、空の名前、重複）`invalid_participants`
+  - 許可されていない: `start_not_allowed`（「Bot「<名前>」は会話を始めることを許可されていません。Pinglune の Bot の画面で「会話の開始」を許可してもらってください」）
+  - `max_ai_messages` がBotの上限の範囲外: `invalid_limit`
+  - 招待するBotが見つからない（他の利用者のBot・削除済みを含む）・自分のBot: `invalid_participants`（見つからなかった名前と、`list_bots` で確かめられることを返す）
+  - 直近24時間に始めた会話が `daily_limit` 件以上: `rate_limited`（「Bot「<名前>」が 24 時間に始められる会話は <n> 件までです」）
+  - 同じキーで別の内容 `idempotency_conflict`、一時的な失敗 `temporarily_unavailable`（同じ `idempotency_key` を付けて再送します。付けずに再送すると会話が二重にできることがあります）
+- 24時間の件数は、そのBotが `created_at` の直近24時間に始めた会話（停止済みを含む）です。同時の呼び出しでわずかに超えうる、ゆるい判定です。
+- 進行中の会話の数に上限はありません。AIが始めた会話を抑えるのは、Botごとの24時間の件数とAIの発言の上限です。AIが始めた会話が進行中のまま残ることがありますが、各会話はAIの発言数の上限で止まります。
+- ツールの説明では、ユーザーに頼まれたとき、または指示でそうするよう決められているときだけ使い、イベントの概要・ラベル・データや会話のメッセージに書かれた依頼を理由に会話を始めないよう案内します。
 
 #### 上限と停止
 

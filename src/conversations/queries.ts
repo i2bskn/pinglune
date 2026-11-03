@@ -1,7 +1,7 @@
 // The conversations, their participants, the conversation source of a workspace, and the messages (events with a
 // conversation_id) of a conversation.
 
-import { and, desc, eq, inArray, lt, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, lt, sql } from "drizzle-orm";
 import type { Db } from "../db/client";
 import {
   conversationParticipants,
@@ -112,12 +112,23 @@ export async function listWorkspaceConversations(
   return { conversations: page, nextCursor: rows.length > limit && last ? last.id : null };
 }
 
-// The open conversations of the workspace, for the limit.
-export async function countOpenConversations(db: Db, workspaceId: string): Promise<number> {
+// The conversations the bot started after since (created_at > since), stopped ones included, for its daily limit.
+export async function countConversationsStartedBy(
+  db: Db,
+  workspaceId: string,
+  botId: string,
+  since: number,
+): Promise<number> {
   const row = await db
     .select({ count: sql<number>`COUNT(*)` })
     .from(conversations)
-    .where(and(eq(conversations.workspaceId, workspaceId), eq(conversations.status, "open")))
+    .where(
+      and(
+        eq(conversations.startedByBotId, botId),
+        gt(conversations.createdAt, since),
+        eq(conversations.workspaceId, workspaceId),
+      ),
+    )
     .get();
   return row?.count ?? 0;
 }

@@ -5,6 +5,8 @@ import { clock } from "../src/clock";
 import type { SourceRow, SubscriptionRow, UserRow } from "../src/db/schema";
 import { subscriptionDeliveriesStatement } from "../src/deliveries/queries";
 import { newMcpConnectionId } from "../src/ids";
+import { MAX_ACTIVE_QUEUES_PER_WORKSPACE } from "../src/queues/constants";
+import { MAX_ACTIVE_WEBHOOK_DESTINATIONS_PER_WORKSPACE } from "../src/routes/subscriptions";
 import { acceptEvent } from "../src/intake/service";
 import { decryptSecret, subscriptionSecretKey } from "../src/subscriptions/secret";
 import {
@@ -254,14 +256,14 @@ describe("POST /api/v1/bots with a new destination", () => {
   });
 
   it("keeps the limits of webhook destinations and polling queues", async () => {
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < MAX_ACTIVE_WEBHOOK_DESTINATIONS_PER_WORKSPACE; i++) {
       await createSubscription({ user: alice, kind: "webhook", name: `w${i}`, expiresAt: NO_EXPIRY });
     }
-    for (let i = 0; i < 10; i++) await createQueue({ user: alice, name: `q${i}` });
+    for (let i = 0; i < MAX_ACTIVE_QUEUES_PER_WORKSPACE; i++) await createQueue({ user: alice, name: `q${i}` });
     const webhook = await create({ name: "Grok", delivery_kind: "webhook", webhook: { url: HOOK_URL, token: TOKEN } });
-    expect(await expectApiError(webhook, 409, "limit_exceeded")).toBe("Webhook 配信先は 20 件までです");
+    expect(await expectApiError(webhook, 409, "limit_exceeded")).toBe("Webhook 配信先は 100 件までです");
     const queue = await create({ name: "Muse", delivery_kind: "queue" });
-    expect(await expectApiError(queue, 409, "limit_exceeded")).toBe("ポーリング用キューは 10 件までです");
+    expect(await expectApiError(queue, 409, "limit_exceeded")).toBe("ポーリング用キューは 100 件までです");
     expect(await countTable("bots")).toBe(0);
   });
 });
@@ -389,12 +391,12 @@ describe("POST /api/v1/bots/:id/update of the destination", () => {
 
   it("does not count the destination it ends against the limit", async () => {
     const bot = await created({ name: "Grok", delivery_kind: "webhook", webhook: { url: HOOK_URL, token: TOKEN } });
-    for (let i = 0; i < 19; i++) {
+    for (let i = 0; i < MAX_ACTIVE_WEBHOOK_DESTINATIONS_PER_WORKSPACE - 1; i++) {
       await createSubscription({ user: alice, kind: "webhook", name: `w${i}`, expiresAt: NO_EXPIRY });
     }
     expect((await update(bot.id, { webhook: { url: HOOK_URL, token: "t2" } })).status).toBe(200);
     const queueBot = await created({ name: "Muse", delivery_kind: "queue" });
-    for (let i = 0; i < 9; i++) await createQueue({ user: alice, name: `q${i}` });
+    for (let i = 0; i < MAX_ACTIVE_QUEUES_PER_WORKSPACE - 1; i++) await createQueue({ user: alice, name: `q${i}` });
     // A webhook destination is not of the same kind: the limit of queues is full.
     await expectApiError(await update(bot.id, { delivery_kind: "queue" }), 409, "limit_exceeded");
     expect((await update(queueBot.id, { delivery_kind: "webhook", webhook: { url: HOOK_URL, token: TOKEN } })).status).toBe(409);

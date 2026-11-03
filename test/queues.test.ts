@@ -9,6 +9,7 @@ import worker from "../src/index";
 import { acceptEvent } from "../src/intake/service";
 import { runDailyMaintenance } from "../src/maintenance/daily";
 import { mcpHandler } from "../src/mcp/handler";
+import { MAX_ACTIVE_QUEUES_PER_WORKSPACE } from "../src/queues/constants";
 import { claimableDeliveriesStatement } from "../src/queues/queries";
 import { findSubscriptionById, NO_EXPIRY } from "../src/subscriptions/queries";
 import {
@@ -222,16 +223,16 @@ describe("POST /api/v1/subscriptions/queues", () => {
     });
   });
 
-  it("allows 10 active queues per workspace, not counting deleted ones or webhook destinations", async () => {
-    for (let i = 0; i < 20; i++) {
+  it("allows 100 active queues per workspace, not counting deleted ones or webhook destinations", async () => {
+    for (let i = 0; i < MAX_ACTIVE_QUEUES_PER_WORKSPACE; i++) {
       await createSubscription({ user: alice, kind: "webhook", name: "w", expiresAt: NO_EXPIRY });
     }
     const first = (await (await create({ name: "q" })).json()) as Subscription;
-    for (let i = 1; i < 10; i++) expect((await create({ name: "q" })).status).toBe(201);
+    for (let i = 1; i < MAX_ACTIVE_QUEUES_PER_WORKSPACE; i++) await createQueue({ user: alice, name: "q" });
     expect(await errorOf(await create({ name: "q" }))).toEqual({
       status: 409,
       code: "limit_exceeded",
-      message: "ポーリング用キューは 10 件までです",
+      message: "ポーリング用キューは 100 件までです",
     });
     expect((await send(`/api/v1/subscriptions/${first.id}/delete`, { method: "POST", cookies: aliceCookies })).status).toBe(
       200,

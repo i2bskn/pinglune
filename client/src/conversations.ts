@@ -12,6 +12,13 @@ export function conversationStatusLabel(conversation: Pick<Conversation, "status
   return conversation.stop_reason === "limit" ? "停止（上限）" : "停止（手動）";
 }
 
+// "開始: Dot（AI）" for a conversation started by the AI of a bot; null for one started by the user.
+export function startedByLabel(conversation: Pick<Conversation, "started_by">): string | null {
+  const startedBy = conversation.started_by;
+  if (startedBy.kind !== "bot") return null;
+  return `開始: ${startedBy.name === "" ? "（名前なし）" : startedBy.name}（AI）`;
+}
+
 export function aiMessagesLabel(conversation: Pick<Conversation, "ai_message_count" | "max_ai_messages">): string {
   return `AI の発言 ${conversation.ai_message_count} / 上限 ${conversation.max_ai_messages}`;
 }

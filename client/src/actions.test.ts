@@ -34,6 +34,7 @@ import {
   stopConversation,
   stopMcpSubscription,
   updateBot,
+  updateConversationStart,
   updateSource,
 } from "./actions";
 import { createApiClient, createApiFetch } from "./api";
@@ -425,7 +426,7 @@ describe("createWebhookDestination", () => {
 
   it.each([
     [400, "URL が正しくありません（https のみ）"],
-    [409, "Webhook 配信先は 20 件までです"],
+    [409, "Webhook 配信先は 100 件までです"],
   ])("is an error with the API message on %i", async (code, message) => {
     const { client } = setup(apiError(code, message), 401, url);
     expect(await createWebhookDestination(client, input)).toEqual({ kind: "error", message });
@@ -494,8 +495,8 @@ describe("createQueue", () => {
   });
 
   it("is an error with the API message on 409", async () => {
-    const { client } = setup(apiError(409, "ポーリング用キューは 10 件までです"), 401, url);
-    expect(await createQueue(client, input)).toEqual({ kind: "error", message: "ポーリング用キューは 10 件までです" });
+    const { client } = setup(apiError(409, "ポーリング用キューは 100 件までです"), 401, url);
+    expect(await createQueue(client, input)).toEqual({ kind: "error", message: "ポーリング用キューは 100 件までです" });
   });
 
   it("is unknown when fetch rejects", async () => {
@@ -536,6 +537,7 @@ const CONVERSATION: ConversationDetail = {
   max_ai_messages: 20,
   ai_message_count: 0,
   participants: [],
+  started_by: { kind: "user" },
   created_at: 1,
   updated_at: 1,
 };
@@ -564,8 +566,11 @@ describe("createConversation", () => {
   });
 
   it("is an error with the API message on 409", async () => {
-    const { client } = setup(apiError(409, "進行中の会話は 20 件までです"), 401, url);
-    expect(await createConversation(client, input)).toEqual({ kind: "error", message: "進行中の会話は 20 件までです" });
+    const { client } = setup(apiError(409, "同じ idempotency_key で別の内容が送られました"), 401, url);
+    expect(await createConversation(client, input)).toEqual({
+      kind: "error",
+      message: "同じ idempotency_key で別の内容が送られました",
+    });
   });
 
   it("is unknown when fetch rejects", async () => {
@@ -634,6 +639,7 @@ const BOT: Bot = {
   connection: null,
   status: "no_connection",
   sources: [],
+  conversation_start: { enabled: false, daily_limit: 10, max_ai_messages: 10 },
   created_at: 1,
   updated_at: 1,
 };
@@ -653,6 +659,40 @@ describe("createBot", () => {
   it("is an error with the API message on 409", async () => {
     const { client } = setup(apiError(409, "同じ名前の Bot があります"), 401, url);
     expect(await createBot(client, input)).toEqual({ kind: "error", message: "同じ名前の Bot があります" });
+  });
+});
+
+describe("updateConversationStart", () => {
+  const url = `/api/v1/bots/${BOT.id}/conversation-start`;
+  const input = { enabled: true, dailyLimit: 5, maxAiMessages: 8 };
+
+  it("sends the settings and is ok with the bot", async () => {
+    const saved = { ...BOT, conversation_start: { enabled: true, daily_limit: 5, max_ai_messages: 8 } };
+    const { client, fetch } = setup(() => Response.json(saved), 401, url);
+    expect(await updateConversationStart(client, BOT.id, input)).toEqual({ kind: "ok", bot: saved });
+    const init = fetch.mock.calls[0]?.[1];
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(String(init?.body))).toEqual({ enabled: true, daily_limit: 5, max_ai_messages: 8 });
+  });
+
+  it("is an error with the API message on 400 and not found on 404", async () => {
+    const message = "1日に始められる会話の数は 1〜1000 の整数にしてください";
+    expect(await updateConversationStart(setup(apiError(400, message), 401, url).client, BOT.id, input)).toEqual({
+      kind: "error",
+      message,
+    });
+    expect(
+      await updateConversationStart(setup(apiError(404, "Bot が見つかりません"), 401, url).client, BOT.id, input),
+    ).toEqual({ kind: "notFound" });
+  });
+
+  it("is an error without sending for an invalid ID", async () => {
+    const { client, fetch } = setup(() => Response.json(BOT), 401, url);
+    expect(await updateConversationStart(client, "../sources", input)).toEqual({
+      kind: "error",
+      message: "Bot が見つかりません",
+    });
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
 

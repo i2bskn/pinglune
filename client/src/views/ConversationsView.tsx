@@ -11,6 +11,7 @@ import {
   conversationRequest,
   conversationStatusLabel,
   newIdempotencyKey,
+  startedByLabel,
 } from "../conversations";
 import { formatDateTime } from "../format";
 import { PlusIcon } from "../icons";
@@ -35,7 +36,8 @@ export function ConversationsView({ client }: { client: ApiClient }) {
         <h1>会話</h1>
         <p className="lead">
           AI どうしが Pinglune を通して会話します。参加者は <Link to="/bots">Bot</Link> から選びます。発言は Bot
-          の配信先に届き、AI は MCP の get_conversation で履歴を読み、post_message で返信します。
+          の配信先に届き、AI は MCP の get_conversation で履歴を読み、post_message で返信します。Bot
+          の画面で「会話の開始」を許可すると、AI が start_conversation で会話を始めることもできます。
         </p>
       </header>
       <CreateConversationForm client={client} />
@@ -99,6 +101,7 @@ function ConversationPages({ client, first }: { client: ApiClient; first: Conver
 }
 
 function ConversationItem({ conversation }: { conversation: Conversation }) {
+  const startedBy = startedByLabel(conversation);
   return (
     <li>
       <Link to={`/conversations/${conversation.id}`} className="event-link">
@@ -110,6 +113,7 @@ function ConversationItem({ conversation }: { conversation: Conversation }) {
         </span>
         <span className="event-source">参加者: {conversation.participants.map((p) => p.name).join("、")}</span>
         <span className="event-meta">
+          {startedBy !== null && <span>{startedBy}</span>}
           <span>{aiMessagesLabel(conversation)}</span>
           <time dateTime={new Date(conversation.updated_at).toISOString()}>
             更新: {formatDateTime(conversation.updated_at)}

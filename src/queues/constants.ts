@@ -13,4 +13,4 @@ export const QUEUE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 export const CLAIM_DEFAULT_LIMIT = 10;
 export const CLAIM_MAX_LIMIT = 50;
 export const ACK_MAX_IDS = 50;
-export const MAX_ACTIVE_QUEUES_PER_WORKSPACE = 10;
+export const MAX_ACTIVE_QUEUES_PER_WORKSPACE = 100;

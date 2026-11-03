@@ -64,6 +64,7 @@ const BOT: Bot = {
   connection: null,
   status: "no_connection",
   sources: [],
+  conversation_start: { enabled: false, daily_limit: 10, max_ai_messages: 10 },
   created_at: 1,
   updated_at: 1,
 };
@@ -506,6 +507,7 @@ describe("conversations", () => {
         destination: { kind: "webhook", name: "dot", callback_host: "hooks.example.com", status: "active" },
       },
     ],
+    started_by: { kind: "user" },
     created_at: 1,
     updated_at: 2,
   };

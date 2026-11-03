@@ -7,6 +7,7 @@ import type {
   ConversationList,
   ConversationMessageList,
   ConversationParticipant,
+  ConversationStartedBy,
   CreateConversationRequest,
   PostConversationMessageRequest,
   PostedConversationMessage,
@@ -17,7 +18,6 @@ import { activeConnectionsByBot, resolveBotDeliveries, workspaceBotsByIds } from
 import { clock } from "../clock";
 import {
   CONVERSATION_PAGE_SIZE,
-  countOpenConversations,
   findWorkspaceConversation,
   listConversationMessages,
   listConversationParticipants,
@@ -33,7 +33,6 @@ import {
   duplicateMessage,
   findExistingMessage,
   MAX_AI_MESSAGES_LIMIT,
-  MAX_OPEN_CONVERSATIONS_PER_WORKSPACE,
   MAX_PARTICIPANTS,
   MESSAGE_IDEMPOTENCY_KEY_PATTERN,
   postUserMessage,
@@ -139,7 +138,18 @@ function messageDeps(c: AppContext): MessageDeps {
   return { d1: c.env.DB, db: c.get("db"), bucket: c.env.EVENT_DATA, queue: c.env.DELIVERY_QUEUE, now: clock.now() };
 }
 
-function conversationFields(row: ConversationRow): Omit<Conversation, "participants"> {
+// The bot that started the conversation (start_conversation, MCP) is named by its participant: the bot is not read
+// again.
+function startedBy(row: ConversationRow, participants: ConversationParticipantRow[]): ConversationStartedBy {
+  if (row.startedByBotId === null) return { kind: "user" };
+  const name = participants.find((p) => p.botId === row.startedByBotId)?.name ?? "";
+  return { kind: "bot", bot_id: row.startedByBotId, name };
+}
+
+function conversationFields(
+  row: ConversationRow,
+  participants: ConversationParticipantRow[],
+): Omit<Conversation, "participants"> {
   return {
     id: row.id,
     title: row.title,
@@ -147,13 +157,14 @@ function conversationFields(row: ConversationRow): Omit<Conversation, "participa
     stop_reason: row.stopReason,
     max_ai_messages: row.maxAiMessages,
     ai_message_count: row.aiMessageCount,
+    started_by: startedBy(row, participants),
     created_at: row.createdAt,
     updated_at: row.updatedAt,
   };
 }
 
 function toApiConversation(row: ConversationRow, participants: ConversationParticipantRow[]): Conversation {
-  return { ...conversationFields(row), participants: participants.map((p) => ({ name: p.name })) };
+  return { ...conversationFields(row, participants), participants: participants.map((p) => ({ name: p.name })) };
 }
 
 type ParticipantDestination = ConversationParticipant["destination"];
@@ -181,7 +192,7 @@ async function conversationDetail(c: AppContext, row: ConversationRow): Promise<
   ]);
   const deliveries = await resolveBotDeliveries(db, row.workspaceId, [...botRows.values()], now, connections);
   return {
-    ...conversationFields(row),
+    ...conversationFields(row, participants),
     participants: participants.map((p): ConversationParticipant => {
       if (p.botId === null) {
         return {
@@ -258,11 +269,6 @@ const conversationsApi = new Hono<AppEnv>()
     if (participants.length !== input.botIds.length) {
       return apiError(c, 400, "invalid_participants", "Bot が見つからないか、削除されています。選び直してください");
     }
-    // A loose limit: concurrent requests may go slightly over it.
-    if ((await countOpenConversations(db, workspaceId)) >= MAX_OPEN_CONVERSATIONS_PER_WORKSPACE) {
-      return apiError(c, 409, "limit_exceeded", "進行中の会話は 20 件までです");
-    }
-
     // The first message goes to the destination of each bot now; a bot without one gets nothing.
     const deliveries = await resolveBotDeliveries(db, workspaceId, participants, deps.now);
     const recipients = [
@@ -279,7 +285,7 @@ const conversationsApi = new Hono<AppEnv>()
       participants: participants.map((bot) => ({ botId: bot.id, name: bot.name })),
       recipients,
       text: input.text,
-      idempotencyKey: input.idempotencyKey,
+      idempotencyKey: createIdempotencyKey(user.id, input.idempotencyKey),
     });
     if (!result.ok) return apiError(c, 503, "temporarily_unavailable", unavailableMessage);
     const detail = await detailById(c, result.conversationId);

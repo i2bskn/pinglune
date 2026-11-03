@@ -130,6 +130,7 @@ function BotRow({ bot, expired }: { bot: Bot; expired: boolean }) {
           ) : (
             <span>受け取る送信元 {bot.sources.length} 件</span>
           )}
+          {bot.conversation_start.enabled && <span className="kind-chip">会話を開始できる</span>}
         </span>
       </span>
       <ChevronRightIcon />

@@ -2,6 +2,7 @@
 
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { canonicalJson } from "../canonical-json";
+import { chunks } from "../db/chunks";
 import type { Db } from "../db/client";
 import {
   botSources,
@@ -16,7 +17,7 @@ import {
 import { parseStoredFilter } from "../events/filter";
 import { isActiveSubscription } from "../subscriptions/queries";
 
-export const MAX_BOTS_PER_WORKSPACE = 20;
+export const MAX_BOTS_PER_WORKSPACE = 100;
 
 // The bots of the workspace that are not deleted, by name.
 export function listWorkspaceBots(db: Db, workspaceId: string, limit: number): Promise<BotRow[]> {
@@ -47,15 +48,20 @@ export function findWorkspaceBot(db: Db, workspaceId: string, id: string): Promi
     .get();
 }
 
-// The bots of the workspace with these IDs, deleted or not, by ID.
+// The bots of the workspace with these IDs, deleted or not, by ID. Read in chunks: the callers may pass any number of
+// IDs.
 export async function workspaceBotsByIds(db: Db, workspaceId: string, ids: string[]): Promise<Map<string, BotRow>> {
   if (ids.length === 0) return new Map();
-  const rows = await db
-    .select()
-    .from(bots)
-    .where(and(eq(bots.workspaceId, workspaceId), inArray(bots.id, [...new Set(ids)])))
-    .all();
-  return new Map(rows.map((row) => [row.id, row]));
+  const rows = await Promise.all(
+    chunks([...new Set(ids)]).map((chunk) =>
+      db
+        .select()
+        .from(bots)
+        .where(and(eq(bots.workspaceId, workspaceId), inArray(bots.id, chunk)))
+        .all(),
+    ),
+  );
+  return new Map(rows.flat().map((row) => [row.id, row]));
 }
 
 // The bots of the workspace that are not deleted, for the limit.
@@ -76,19 +82,70 @@ export async function activeConnectionsByBot(
 ): Promise<Map<string, McpConnectionRow>> {
   const result = new Map<string, McpConnectionRow>();
   if (botIds.length === 0) return result;
-  const rows = await db
-    .select()
-    .from(mcpConnections)
-    .where(
-      and(
-        eq(mcpConnections.workspaceId, workspaceId),
-        inArray(mcpConnections.botId, [...new Set(botIds)]),
-        isNull(mcpConnections.revokedAt),
-      ),
-    )
-    .all();
-  for (const row of rows) if (row.botId !== null) result.set(row.botId, row);
+  const rows = await Promise.all(
+    chunks([...new Set(botIds)]).map((chunk) =>
+      db
+        .select()
+        .from(mcpConnections)
+        .where(
+          and(
+            eq(mcpConnections.workspaceId, workspaceId),
+            inArray(mcpConnections.botId, chunk),
+            isNull(mcpConnections.revokedAt),
+          ),
+        )
+        .all(),
+    ),
+  );
+  for (const row of rows.flat()) if (row.botId !== null) result.set(row.botId, row);
   return result;
+}
+
+// The subscriptions of the workspace with these IDs, in chunks. Empty for no IDs.
+async function subscriptionsByIds(db: Db, workspaceId: string, ids: string[]): Promise<SubscriptionRow[]> {
+  if (ids.length === 0) return [];
+  const rows = await Promise.all(
+    chunks([...new Set(ids)]).map((chunk) =>
+      db
+        .select()
+        .from(subscriptions)
+        .where(and(eq(subscriptions.workspaceId, workspaceId), inArray(subscriptions.id, chunk)))
+        .all(),
+    ),
+  );
+  return rows.flat();
+}
+
+// The active MCP Events subscriptions of these connections, newest first within each connection, in chunks. All the
+// subscriptions of a connection are in one chunk, so the chunks are joined without sorting them again. Empty for no
+// connections.
+async function activeMcpSubscriptionsOfConnections(
+  db: Db,
+  workspaceId: string,
+  connectionIds: string[],
+  now: number,
+): Promise<SubscriptionRow[]> {
+  if (connectionIds.length === 0) return [];
+  const rows = await Promise.all(
+    chunks([...new Set(connectionIds)]).map((chunk) =>
+      db
+        .select()
+        .from(subscriptions)
+        .where(
+          and(
+            eq(subscriptions.workspaceId, workspaceId),
+            eq(subscriptions.kind, "mcp"),
+            isNotNull(subscriptions.connectionId),
+            inArray(subscriptions.connectionId, chunk),
+            isNull(subscriptions.unsubscribedAt),
+            gt(subscriptions.expiresAt, now),
+          ),
+        )
+        .orderBy(desc(subscriptions.updatedAt), desc(subscriptions.id))
+        .all(),
+    ),
+  );
+  return rows.flat();
 }
 
 // The destination of each bot now, by bot ID; null when there is none:
@@ -119,30 +176,8 @@ export async function resolveBotDeliveries(
   });
 
   const [destinations, mcpRows] = await Promise.all([
-    destinationIds.length === 0
-      ? Promise.resolve([] as SubscriptionRow[])
-      : db
-          .select()
-          .from(subscriptions)
-          .where(and(eq(subscriptions.workspaceId, workspaceId), inArray(subscriptions.id, [...new Set(destinationIds)])))
-          .all(),
-    connectionIds.length === 0
-      ? Promise.resolve([] as SubscriptionRow[])
-      : db
-          .select()
-          .from(subscriptions)
-          .where(
-            and(
-              eq(subscriptions.workspaceId, workspaceId),
-              eq(subscriptions.kind, "mcp"),
-              isNotNull(subscriptions.connectionId),
-              inArray(subscriptions.connectionId, connectionIds),
-              isNull(subscriptions.unsubscribedAt),
-              gt(subscriptions.expiresAt, now),
-            ),
-          )
-          .orderBy(desc(subscriptions.updatedAt), desc(subscriptions.id))
-          .all(),
+    subscriptionsByIds(db, workspaceId, destinationIds),
+    activeMcpSubscriptionsOfConnections(db, workspaceId, connectionIds, now),
   ]);
   const destinationById = new Map(destinations.map((row) => [row.id, row]));
   // Newest first, so the first one seen for a connection is the one used.
@@ -171,19 +206,18 @@ export async function activeBotsOfSource(db: Db, workspaceId: string, sourceId: 
     .where(and(eq(botSources.sourceId, sourceId), eq(botSources.workspaceId, workspaceId)))
     .all();
   if (links.length === 0) return [];
-  // At most MAX_BOTS_PER_WORKSPACE bots are not deleted, but deleted bots never keep links, so the IN list stays
-  // small.
-  return db
-    .select()
-    .from(bots)
-    .where(
-      and(
-        eq(bots.workspaceId, workspaceId),
-        inArray(bots.id, [...new Set(links.map((link) => link.botId))]),
-        isNull(bots.deletedAt),
-      ),
-    )
-    .all();
+  // Deleted bots never keep links, so there are about as many as the bots that are not deleted (at most
+  // MAX_BOTS_PER_WORKSPACE, more by concurrent creations): read in chunks.
+  const rows = await Promise.all(
+    chunks([...new Set(links.map((link) => link.botId))]).map((chunk) =>
+      db
+        .select()
+        .from(bots)
+        .where(and(eq(bots.workspaceId, workspaceId), inArray(bots.id, chunk), isNull(bots.deletedAt)))
+        .all(),
+    ),
+  );
+  return rows.flat();
 }
 
 // The key under which MCP Events subscriptions of one connection deliver the same events: the callback, the event
@@ -226,30 +260,8 @@ export async function resolveBotEventDestinations(
   });
 
   const [destinations, mcpRows] = await Promise.all([
-    destinationIds.length === 0
-      ? Promise.resolve([] as SubscriptionRow[])
-      : db
-          .select()
-          .from(subscriptions)
-          .where(and(eq(subscriptions.workspaceId, workspaceId), inArray(subscriptions.id, [...new Set(destinationIds)])))
-          .all(),
-    connectionIds.length === 0
-      ? Promise.resolve([] as SubscriptionRow[])
-      : db
-          .select()
-          .from(subscriptions)
-          .where(
-            and(
-              eq(subscriptions.workspaceId, workspaceId),
-              eq(subscriptions.kind, "mcp"),
-              isNotNull(subscriptions.connectionId),
-              inArray(subscriptions.connectionId, connectionIds),
-              isNull(subscriptions.unsubscribedAt),
-              gt(subscriptions.expiresAt, now),
-            ),
-          )
-          .orderBy(desc(subscriptions.updatedAt), desc(subscriptions.id))
-          .all(),
+    subscriptionsByIds(db, workspaceId, destinationIds),
+    activeMcpSubscriptionsOfConnections(db, workspaceId, connectionIds, now),
   ]);
 
   const result = new Map<string, SubscriptionRow>();
@@ -281,12 +293,16 @@ export async function linkedSourcesByBot(
   const result = new Map<string, BotSourceSummary[]>();
   for (const id of botIds) result.set(id, []);
   if (botIds.length === 0) return result;
-  const [links, sourceRows] = await Promise.all([
-    db
-      .select({ botId: botSources.botId, sourceId: botSources.sourceId })
-      .from(botSources)
-      .where(and(eq(botSources.workspaceId, workspaceId), inArray(botSources.botId, [...new Set(botIds)])))
-      .all(),
+  const [linkChunks, sourceRows] = await Promise.all([
+    Promise.all(
+      chunks([...new Set(botIds)]).map((chunk) =>
+        db
+          .select({ botId: botSources.botId, sourceId: botSources.sourceId })
+          .from(botSources)
+          .where(and(eq(botSources.workspaceId, workspaceId), inArray(botSources.botId, chunk)))
+          .all(),
+      ),
+    ),
     db
       .select({ id: sources.id, name: sources.name, enabled: sources.enabled })
       .from(sources)
@@ -294,7 +310,7 @@ export async function linkedSourcesByBot(
       .all(),
   ]);
   const sourceById = new Map(sourceRows.map((row) => [row.id, row]));
-  for (const link of links) {
+  for (const link of linkChunks.flat()) {
     const source = sourceById.get(link.sourceId);
     if (source === undefined) continue;
     result.get(link.botId)?.push({ id: source.id, name: source.name, enabled: source.enabled });

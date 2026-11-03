@@ -9,9 +9,21 @@ import {
   participantDestinationLabel,
   participantDestinationStatus,
   participantStopReason,
+  startedByLabel,
   subscriptionLabel,
 } from "./conversations";
 import { errorLabel } from "./deliveries";
+
+describe("startedByLabel", () => {
+  it("names the bot whose AI started the conversation", () => {
+    expect(startedByLabel({ started_by: { kind: "bot", bot_id: "bot_1", name: "dot" } })).toBe("開始: dot（AI）");
+    expect(startedByLabel({ started_by: { kind: "bot", bot_id: "bot_1", name: "" } })).toBe("開始: （名前なし）（AI）");
+  });
+
+  it("is null for a conversation started by the user", () => {
+    expect(startedByLabel({ started_by: { kind: "user" } })).toBeNull();
+  });
+});
 
 describe("conversation labels", () => {
   it("tells the state and the number of AI messages", () => {

@@ -44,7 +44,7 @@ import { requirePersonalWorkspace } from "./workspace";
 // No paging: a workspace has few subscriptions. Each kind is listed up to this many, so that MCP subscriptions
 // never push the webhook destinations or the polling queues out of the list.
 const SUBSCRIPTION_LIST_LIMIT = 100;
-export const MAX_ACTIVE_WEBHOOK_DESTINATIONS_PER_WORKSPACE = 20;
+export const MAX_ACTIVE_WEBHOOK_DESTINATIONS_PER_WORKSPACE = 100;
 // The connections are read with IN lists of at most this many IDs, within the 100 bound variables of D1.
 const CONNECTION_ID_CHUNK = 90;
 
