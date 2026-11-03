@@ -12,11 +12,30 @@ export function conversationStatusLabel(conversation: Pick<Conversation, "status
   return conversation.stop_reason === "limit" ? "停止（上限）" : "停止（手動）";
 }
 
-// "開始: Dot（AI）" for a conversation started by the AI of a bot; null for one started by the user.
+// "開始: Dot（AI）" for a conversation started by the AI of a bot, "開始: Nightly（プログラム）" for one started by a
+// source; null for one started by the user.
 export function startedByLabel(conversation: Pick<Conversation, "started_by">): string | null {
   const startedBy = conversation.started_by;
-  if (startedBy.kind !== "bot") return null;
-  return `開始: ${startedBy.name === "" ? "（名前なし）" : startedBy.name}（AI）`;
+  if (startedBy.kind === "user") return null;
+  const name = startedBy.name === "" ? "（名前なし）" : startedBy.name;
+  return startedBy.kind === "bot" ? `開始: ${name}（AI）` : `開始: ${name}（プログラム）`;
+}
+
+// The curl example of POST /ingest/v1/conversations on the screen of a source. origin is the origin of the screen
+// (window.location.origin). The key is shown as a placeholder: an issued key cannot be shown again.
+export function conversationCurlExample(origin: string): string {
+  const body = {
+    title: "夜間ビルドの結果",
+    participants: ["<Bot の名前>"],
+    message: "夜間ビルドが失敗しました。原因を調べてください。",
+    idempotency_key: "nightly-2026-11-04",
+  };
+  return [
+    `curl -X POST ${origin}/ingest/v1/conversations \\`,
+    `  -H "Authorization: Bearer pl_<キーID>_<秘密>" \\`,
+    `  -H "Content-Type: application/json" \\`,
+    `  -d '${JSON.stringify(body)}'`,
+  ].join("\n");
 }
 
 export function aiMessagesLabel(conversation: Pick<Conversation, "ai_message_count" | "max_ai_messages">): string {

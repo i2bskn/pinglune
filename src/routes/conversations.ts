@@ -37,13 +37,16 @@ import {
   MESSAGE_IDEMPOTENCY_KEY_PATTERN,
   postUserMessage,
   readMessageText,
+  senderKind,
   validateMessageText,
   type MessageDeps,
   type ValidText,
 } from "../conversations/service";
+import type { Db } from "../db/client";
 import type { ConversationParticipantRow, ConversationRow, SubscriptionRow } from "../db/schema";
 import { callbackHost } from "../deliveries/queries";
 import type { AppEnv } from "../env";
+import { sourceNames } from "../events/queries";
 import { BOT_ID_PATTERN, CONVERSATION_ID_PATTERN, EVENT_ID_PATTERN } from "../ids";
 import { jsonBody } from "./api";
 import { normalizeDisplayName, unknownField } from "./sources";
@@ -138,17 +141,31 @@ function messageDeps(c: AppContext): MessageDeps {
   return { d1: c.env.DB, db: c.get("db"), bucket: c.env.EVENT_DATA, queue: c.env.DELIVERY_QUEUE, now: clock.now() };
 }
 
-// The bot that started the conversation (start_conversation, MCP) is named by its participant: the bot is not read
-// again.
-function startedBy(row: ConversationRow, participants: ConversationParticipantRow[]): ConversationStartedBy {
+// A source that started the conversation is named by its current name ("" when it is not found). The
+// bot that started it (start_conversation, MCP) is named by its participant: the bot is not read again.
+function startedBy(
+  row: ConversationRow,
+  participants: ConversationParticipantRow[],
+  startingSources: Map<string, string>,
+): ConversationStartedBy {
+  if (row.startedBySourceId !== null) {
+    return { kind: "source", source_id: row.startedBySourceId, name: startingSources.get(row.startedBySourceId) ?? "" };
+  }
   if (row.startedByBotId === null) return { kind: "user" };
   const name = participants.find((p) => p.botId === row.startedByBotId)?.name ?? "";
   return { kind: "bot", bot_id: row.startedByBotId, name };
 }
 
+// The names of the sources that started these conversations, read only when there are any.
+function startingSourceNames(db: Db, rows: ConversationRow[]): Promise<Map<string, string>> {
+  const ids = rows.flatMap((row) => (row.startedBySourceId === null ? [] : [row.startedBySourceId]));
+  return ids.length === 0 ? Promise.resolve(new Map()) : sourceNames(db, ids);
+}
+
 function conversationFields(
   row: ConversationRow,
   participants: ConversationParticipantRow[],
+  startingSources: Map<string, string>,
 ): Omit<Conversation, "participants"> {
   return {
     id: row.id,
@@ -157,14 +174,21 @@ function conversationFields(
     stop_reason: row.stopReason,
     max_ai_messages: row.maxAiMessages,
     ai_message_count: row.aiMessageCount,
-    started_by: startedBy(row, participants),
+    started_by: startedBy(row, participants, startingSources),
     created_at: row.createdAt,
     updated_at: row.updatedAt,
   };
 }
 
-function toApiConversation(row: ConversationRow, participants: ConversationParticipantRow[]): Conversation {
-  return { ...conversationFields(row, participants), participants: participants.map((p) => ({ name: p.name })) };
+function toApiConversation(
+  row: ConversationRow,
+  participants: ConversationParticipantRow[],
+  startingSources: Map<string, string>,
+): Conversation {
+  return {
+    ...conversationFields(row, participants, startingSources),
+    participants: participants.map((p) => ({ name: p.name })),
+  };
 }
 
 type ParticipantDestination = ConversationParticipant["destination"];
@@ -181,7 +205,7 @@ async function conversationDetail(c: AppContext, row: ConversationRow): Promise<
   const now = clock.now();
   const participants = await listConversationParticipants(db, row.id);
   const botIds = participants.flatMap((p) => (p.botId === null ? [] : [p.botId]));
-  const [botRows, connections, subscriptions] = await Promise.all([
+  const [botRows, connections, subscriptions, names] = await Promise.all([
     workspaceBotsByIds(db, row.workspaceId, botIds),
     activeConnectionsByBot(db, row.workspaceId, botIds),
     workspaceSubscriptionsByIds(
@@ -189,10 +213,11 @@ async function conversationDetail(c: AppContext, row: ConversationRow): Promise<
       row.workspaceId,
       participants.flatMap((p) => (p.botId === null && p.subscriptionId !== null ? [p.subscriptionId] : [])),
     ),
+    startingSourceNames(db, [row]),
   ]);
   const deliveries = await resolveBotDeliveries(db, row.workspaceId, [...botRows.values()], now, connections);
   return {
-    ...conversationFields(row, participants),
+    ...conversationFields(row, participants, names),
     participants: participants.map((p): ConversationParticipant => {
       if (p.botId === null) {
         return {
@@ -232,12 +257,15 @@ const conversationsApi = new Hono<AppEnv>()
     const { cursor } = c.req.valid("query");
     const db = c.get("db");
     const page = await listWorkspaceConversations(db, c.get("workspace").id, cursor);
-    const participants = await participantsByConversation(
-      db,
-      page.conversations.map((row) => row.id),
-    );
+    const [participants, names] = await Promise.all([
+      participantsByConversation(
+        db,
+        page.conversations.map((row) => row.id),
+      ),
+      startingSourceNames(db, page.conversations),
+    ]);
     const body: ConversationList = {
-      conversations: page.conversations.map((row) => toApiConversation(row, participants.get(row.id) ?? [])),
+      conversations: page.conversations.map((row) => toApiConversation(row, participants.get(row.id) ?? [], names)),
       next_cursor: page.nextCursor,
     };
     return c.json(body, 200);
@@ -311,12 +339,12 @@ const conversationsApi = new Hono<AppEnv>()
     const texts = await Promise.all(page.messages.map((message) => readMessageText(c.env.EVENT_DATA, message.body, null)));
     const body: ConversationMessageList = {
       messages: page.messages.map((message, index) => {
-        const isUser = message.labels.sender_kind === "user";
+        const kind = senderKind(message.labels.sender_kind);
         return {
           event_id: message.eventId,
           sender: message.labels.sender ?? "",
-          sender_kind: isUser ? "user" : "ai",
-          is_user: isUser,
+          sender_kind: kind,
+          is_user: kind === "user",
           text: texts[index]?.text ?? "",
           created_at: message.receivedAt,
         };

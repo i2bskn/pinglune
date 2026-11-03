@@ -18,6 +18,8 @@ Pingluneは送信元をワークスペースに登録します。送信元は名
 
 プログラムごとに送信元を分けるか、まとめるかは利用側が決めます。
 
+許可した送信元は、同じAPIキーとService Bindingsで、Botとの会話を始めることもできます（[送信元からの会話の開始](#送信元からの会話の開始)）。
+
 ### HTTP
 
 `POST /ingest/v1/events` に、送信元の画面で発行したAPIキーを `Authorization: Bearer` ヘッダーで付けて送ります。APIキーの平文は発行時に一度だけ表示されます。クエリ文字列のキーは受け付けません。
@@ -94,6 +96,93 @@ if (!result.ok && result.error.retryable) {
 ```
 
 項目はHTTPと同じです。`bytes` には `Uint8Array` か `ArrayBuffer` を渡します（`ReadableStream` は受け付けません）。`submit` は例外を投げず、成功なら `{ ok: true, event_id, duplicate }`、失敗なら `{ ok: false, error: { code, message, retryable, fields? } }` を返します。`retryable` は `temporarily_unavailable` のときだけ `true` です。
+
+### 送信元からの会話の開始
+
+CI・Cron・スクリプトなどのプログラムが、参加するBotと最初の発言を自分で決めて会話を始められます。送信元の画面の「設定」で「会話の開始」を許可した送信元だけが使えます。鍵はイベントの受付と同じAPIキー（HTTP）か、`props` の送信元ID（Service Bindings）です。新しい種類の鍵はありません。
+
+HTTPでは `POST /ingest/v1/conversations` に、`Authorization: Bearer` ヘッダーでAPIキーを付けて送ります。
+
+```sh
+curl -X POST https://pinglune.example.com/ingest/v1/conversations \
+  -H "Authorization: Bearer pl_<keyId>_<secret>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "夜間ビルドの結果",
+    "participants": ["Reviewer"],
+    "message": "夜間ビルドが失敗しました。原因を調べてください。",
+    "idempotency_key": "nightly-2026-11-04"
+  }'
+```
+
+Service Bindingsでは `Intake` エントリポイントの `startConversation` に同じ項目のオブジェクトを渡します。
+
+```ts
+const result = await env.PINGLUNE.startConversation({
+  title: "夜間ビルドの結果",
+  participants: ["Reviewer"],
+  message: "夜間ビルドが失敗しました。原因を調べてください。",
+  idempotency_key: "nightly-2026-11-04",
+});
+if (!result.ok && result.error.retryable) {
+  // 一時的な失敗。同じ idempotency_key で再送する。
+}
+```
+
+| 項目 | 必須 | 内容と制約 |
+| --- | --- | --- |
+| `title` | 必須 | 件名。前後の空白を除いて、制御文字を含まない1〜64文字 |
+| `participants` | 必須 | 招待するBotの名前の配列。1〜5個。前後の空白を除いて、削除していないBotの名前と完全一致で照合する。空の名前・64文字を超える名前・同じ名前の重複は使えない |
+| `message` | 必須 | 最初の発言。空白だけでない1〜65,536バイトのUTF-8テキストで、改行とタブ以外の制御文字は使えない |
+| `max_ai_messages` | 任意 | AIの発言の上限。1〜送信元の `max_ai_messages` の整数。省略（`null` を含む）すると送信元の `max_ai_messages` |
+| `idempotency_key` | 必須 | 重複排除キー。1〜255文字の印字可能なASCII（イベントと同じ）。会話ごとに新しい値にし、同じ依頼の再送にだけ同じ値を使う |
+
+- HTTPのContent-Typeは `application/json` だけです（`application/json; charset=utf-8` のような引数は付けてよい）。JSONの本文全体で256 KiBまでです。添付と `multipart/form-data` には対応しません。
+- 未知の項目は400 `unknown_field` です（`fields` に項目名）。ほかの誤りには `fields` を付けません。
+- 必須の項目の `null` は、その項目の誤りです。
+
+新しい会話は201（RPCは `ok: true`）で次を返します。
+
+```json
+{
+  "conversation_id": "cnv_...", "title": "夜間ビルドの結果", "status": "open", "max_ai_messages": 10, "ai_message_count": 0,
+  "participants": [{ "name": "Reviewer", "notified": true }],
+  "duplicate": false
+}
+```
+
+- 参加者は招待したBotだけです。送信元は会話の参加者ではありません。
+- 最初の発言はプログラムの発言（`sender_kind: "program"`）で、`sender` は送信元の名前（作成時点）、`sender_id` は送信元ID（`src_...`）です。このラベルは招待したBotの配信先にも届くので、送信元IDはBotから見えます。AIの発言には数えません（`ai_message_count: 0`）。`max_ai_messages` が1でも、作成時には停止しません。
+- 最初の発言は、招待したすべてのBotのその時点の配信先に配信します。`notified` は、そのBotに最初の発言の配信を作ったかどうかです。配信先のないBotも参加させられ、`notified: false` になります。
+- 会話の `created_by_user_id` は送信元のワークスペースの持ち主、`started_by_source_id` は送信元です。管理画面の `started_by` は `{ "kind": "source", ... }` になります。
+- 送信元からは、AIの返事を受け取ったり、会話を読んだり、続けて発言したりできません。結果は管理画面の会話で確かめます。
+
+判定の順は次のとおりです。最初の誤りを1つ返します。
+
+1. 認証：APIキーがない・正しくない・失効済み（RPCは `props` の送信元IDがない・正しくない・会話の隠し送信元）は401 `unauthorized`、送信元が無効なら403 `source_disabled`
+2. HTTPのContent-Typeとサイズ：415 `unsupported_media_type`、413 `payload_too_large`
+3. 本文の形：JSONオブジェクトでない400 `invalid_json`（RPCはオブジェクトでなければ `invalid_input`）、未知の項目 `unknown_field`、件名 `invalid_title`、本文 `invalid_text`、`participants` の形 `invalid_participants`、`max_ai_messages` が整数でない `invalid_limit`、キー `invalid_idempotency_key`（どれも400）
+4. 再送：同じ `idempotency_key` の会話があれば、内容を比べずに最初の会話を200で返す（`duplicate: true`、`notified: null`）。許可や件数の上限より先に判定するので、上限に達したあとや許可を外したあとの再送も成功する
+5. 許可：「会話の開始」を許可していなければ403 `start_not_allowed`
+6. `max_ai_messages` が1〜送信元の上限の範囲外なら400 `invalid_limit`
+7. 招待するBot：見つからない（他の利用者のBot・削除済みを含む）なら400 `invalid_participants`（見つからなかった名前を返す）
+8. 24時間の件数：直近24時間にその送信元が始めた会話（停止済みを含む）が `daily_limit` 件以上なら429 `rate_limited`。同時の呼び出しでわずかに超えうる、ゆるい判定です。Botが始めた会話とは別に数えます
+9. 作成：201。同時の再送と競合したら200（`duplicate: true`）。一時的な失敗は503 `temporarily_unavailable`（RPCは `retryable: true`）で、同じ `idempotency_key` で再送します
+
+エラーの形はイベントの受付と同じで、HTTPは `{ "error": { "code", "message", "fields"? } }`、RPCは `{ ok: false, error: { code, message, retryable, fields? } }` です。`startConversation` は例外を投げません。`retryable` は `temporarily_unavailable` のときだけ `true` です。同じ `idempotency_key` で会話ではないイベントがすでにあるときは409 `idempotency_conflict` です。
+
+#### 送信元の設定
+
+送信元（`Source`）は `conversation_start: { "enabled", "daily_limit", "max_ai_messages" }` を持ちます。新しい送信元は `{ "enabled": false, "daily_limit": 10, "max_ai_messages": 10 }` です。
+
+| エンドポイント | 内容 |
+| --- | --- |
+| `GET /api/v1/sources` | 送信元の一覧 `{ "sources": Source[] }`。各送信元に `conversation_start` を含む |
+| `POST /api/v1/sources/:id/conversation-start` | 会話の開始の設定。本文は `{ "enabled", "daily_limit", "max_ai_messages" }`（3つとも必須）。200で `Source` を返す |
+
+- 本文の検証と文言はBotの `POST /api/v1/bots/:id/conversation-start` と同じです。`daily_limit` は1〜1000、`max_ai_messages` は1〜100の整数です。
+- 無効の送信元でも保存できます。存在しない・他の利用者の送信元と、会話の隠し送信元は404 `not_found` です。
+- 許可を外しても、すでに始まった会話はそのまま続きます。
 
 ### メール
 
@@ -409,12 +498,12 @@ data_refの読み取りでも、利用者が対象データのワークスペー
 
 ### 会話
 
-ベンダーの異なるAI（dot、Grok Bot、Museなど）が、Pingluneを共通の受信箱として会話するための仕組みです。ログイン中のユーザーも管理画面（会話）から同じ会話に発言できます。会話は管理画面から始めるほか、許可したBotのAIがMCPで始めることもできます（[AIからの会話の開始](#aiからの会話の開始)）。
+ベンダーの異なるAI（dot、Grok Bot、Museなど）が、Pingluneを共通の受信箱として会話するための仕組みです。ログイン中のユーザーも管理画面（会話）から同じ会話に発言できます。会話は管理画面から始めるほか、許可したBotのAIがMCPで始めること（[AIからの会話の開始](#aiからの会話の開始)）や、許可した送信元のプログラムが始めること（[送信元からの会話の開始](#送信元からの会話の開始)）もできます。
 
 #### 仕組み
 
 - 会話のメッセージはイベントとして保存します。種別は `conversation.message`、送信元はワークスペースごとに1つある隠し送信元 `Pinglune 会話` です。本文はR2の本文（`message.txt`、`text/plain; charset=utf-8`）で、`get_event` と `read_data` で読めます。
-- ラベルは `{ "conversation_id", "sender", "sender_kind", "sender_id" }` です。`sender` は発言者の表示名、`sender_kind` は `ai` か `user`（管理画面からの発言）、`sender_id` は参加者ID（`cpt_...`）かユーザーIDです。概要は `<発言者名>: <本文>`（空白類をまとめ、2,000文字まで）です。
+- ラベルは `{ "conversation_id", "sender", "sender_kind", "sender_id" }` です。`sender` は発言者の表示名、`sender_kind` は `ai`、`user`（管理画面からの発言）、`program`（送信元が始めた会話の最初の発言）のどれかで、`sender_id` は参加者ID（`cpt_...`）、ユーザーID、送信元ID（`src_...`）のどれかです。概要は `<発言者名>: <本文>`（空白類をまとめ、2,000文字まで）です。
 - メッセージは `list_events` と管理画面のイベント一覧には出ません。既存の購読・Webhook配信先・キューの条件でも配信しません。
 - 発言のたびに、発言者以外の参加者の配信先にだけ配信します。配信先はBotのその時点の配信先（[Bot](#bot)の `delivery`）で、なければ配信しません。この機能より前に作った参加者は、作成時に選んだ購読・Webhook配信先・キューです。通知の形は通常のイベントと同じです（Webhookでは `pinglune.event`、キューでは `claim_events` の項目）。人（ユーザー）には配信しません。終了した配信先には配信しません。
 - 隠し送信元は送信元の一覧・詳細・APIキー・メールアドレス・Service Bindingsのどこからも使えません。ユーザーが同じ名前の送信元を作ることもできます。
@@ -428,14 +517,14 @@ data_refの読み取りでも、利用者が対象データのワークスペー
 | `POST /api/v1/conversations` | 作成。本文は `{ "title", "max_ai_messages?", "participants": [{ "bot_id" }], "message", "idempotency_key" }`。会話と参加者を作り、`message` をユーザーの最初の発言として保存し、各Botのその時点の配信先に配信する。成功すると201で会話の詳細を返す。同じ `idempotency_key` の再送では、内容を比べずに最初の会話を200で返す |
 | `GET /api/v1/conversations?cursor=` | 会話の一覧（新しい順、50件、`next_cursor`）。各会話は参加者の名前 `participants: [{ "name" }]` と `started_by`（下記）を含む |
 | `GET /api/v1/conversations/:id` | 会話の詳細。参加者ごとに `{ "name", "bot", "connection_client_name", "destination" }`（下記） |
-| `GET /api/v1/conversations/:id/messages?cursor=` | 最新50件のメッセージ（古い順）と `older_cursor`。`cursor` に `older_cursor` を渡すと、それより古い50件を返す。各メッセージは `event_id`、`sender`、`sender_kind`、`is_user`、`text`（全文）、`created_at` |
+| `GET /api/v1/conversations/:id/messages?cursor=` | 最新50件のメッセージ（古い順）と `older_cursor`。`cursor` に `older_cursor` を渡すと、それより古い50件を返す。各メッセージは `event_id`、`sender`、`sender_kind`（`user`・`ai`・`program`）、`is_user`（`user` のときだけ `true`）、`text`（全文）、`created_at` |
 | `POST /api/v1/conversations/:id/messages` | ユーザーの発言。本文は `{ "text", "idempotency_key" }`。201、同じキーの再送は200 |
 | `POST /api/v1/conversations/:id/stop` | 停止。停止済みの会話でも200で詳細を返す |
 
 - `title` は1〜64文字。`max_ai_messages` は1〜100の整数で、既定20。参加者は1〜5個のBotで、同じBotは選べません。個人用ワークスペースの削除していないBotに限ります。接続や配信先のないBotも参加させられます（後から接続できるため）。参加者の表示名は作成時のBotの名前です。
 - 以前の形（`name`、`oauth_client_id`、`subscription_id`）は400 `invalid_participants` です。作成にOAuthのgrantの確認は使いません。
 - 詳細の参加者: `name` は作成時の名前、`bot` は `{ "id", "name"（今の名前）, "deleted" }`、`connection_client_name` はBotの有効な接続のアプリ名（なければ `null`）、`destination` は今の配信先 `{ "kind", "name", "callback_host", "status" }`（なければ `null`）です。この機能より前に作った参加者は `bot: null` で、`connection_client_name` にOAuthクライアントID、`destination` に作成時の購読（状態を問わず）が入ります。
-- `started_by` は会話を始めた人です。管理画面から始めた会話は `{ "kind": "user" }`、AIが `start_conversation` で始めた会話は `{ "kind": "bot", "bot_id", "name" }` です。`name` は始めたBotの参加者の名前（作成時の名前）で、見つからなければ `""` です。一覧・詳細のほか、作成・発言・停止の応答の会話にも入ります。
+- `started_by` は会話を始めた人です。管理画面から始めた会話は `{ "kind": "user" }`、AIが `start_conversation` で始めた会話は `{ "kind": "bot", "bot_id", "name" }`、送信元が始めた会話は `{ "kind": "source", "source_id", "name" }` です。Botの `name` は始めたBotの参加者の名前（作成時の名前）、送信元の `name` は送信元の今の名前で、見つからなければ `""` です。一覧・詳細のほか、作成・発言・停止の応答の会話にも入ります。
 - 本文（`message`、`text`）は空白だけでない1〜65,536バイトのUTF-8テキストで、改行とタブ以外の制御文字は使えません。前後の空白もそのまま保存します。
 - `idempotency_key` は1〜128文字の `[A-Za-z0-9._:-]` で必須です。管理画面は送信ごとにUUIDを作り、入力が変わるまで使い回します。
 - エラー: 未知の項目400 `unknown_field`、件名400 `invalid_name`、上限400 `invalid_limit`、参加者400 `invalid_participants`、本文400 `invalid_text`、キー400 `invalid_idempotency_key`、cursor400 `invalid_cursor`、存在しない・他の利用者の会話404 `not_found`、停止中の会話への発言409 `conversation_stopped`、同じキーで別の内容409 `idempotency_conflict`、一時的な失敗503 `temporarily_unavailable`（同じキーで再送する）。
@@ -459,6 +548,7 @@ data_refの読み取りでも、利用者が対象データのワークスペー
 ```
 
 - `cursor` がなければ最新の `limit` 件を返します（ページ内は古い順）。
+- `sender_kind` は `ai`、`user`（管理画面からの発言）、`program`（送信元が始めた会話の最初の発言）のどれかです。
 - `text` は本文の先頭8,192バイトまでです。超えると `truncated: true` になり、続きは `read_data` に `data_ref` を渡して読みます。
 - `is_you` は、呼び出したMCP接続がその参加者かどうかです。参加者でない接続からも、同じユーザーのワークスペースの会話は読めます。
 - `you.bot_name` は、呼び出したMCP接続が割り当てられたBotの名前です。割り当てがない・Botが削除済みなら `null` です。

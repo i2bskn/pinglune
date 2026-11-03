@@ -36,6 +36,7 @@ import {
   updateBot,
   updateConversationStart,
   updateSource,
+  updateSourceConversationStart,
 } from "./actions";
 import { createApiClient, createApiFetch } from "./api";
 
@@ -203,6 +204,7 @@ describe("createSource", () => {
     created_at: 1,
     updated_at: 1,
     active_key_count: 0,
+    conversation_start: { enabled: false, daily_limit: 10, max_ai_messages: 10 },
   };
 
   it("sends the name and is ok with the source on 201", async () => {
@@ -348,6 +350,14 @@ describe.each([
     method: "PATCH",
     body: { enabled: false },
     call: (client: Parameters<typeof revokeApiKey>[0], id: string) => updateSource(client, id, { enabled: false }),
+  },
+  {
+    name: "updateSourceConversationStart",
+    url: `/api/v1/sources/${SOURCE_ID}/conversation-start`,
+    method: "POST",
+    body: { enabled: true, daily_limit: 5, max_ai_messages: 8 },
+    call: (client: Parameters<typeof revokeApiKey>[0], id: string) =>
+      updateSourceConversationStart(client, id, { enabled: true, dailyLimit: 5, maxAiMessages: 8 }),
   },
 ])("$name", ({ url, method, body, call }) => {
   it("sends the request and is ok", async () => {

@@ -3,9 +3,12 @@
 
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { describeError } from "../auth/middleware";
+import type { IngestConversationResponse } from "../api/types";
 import { clock } from "../clock";
+import { createDb } from "../db/client";
 import type { Bindings } from "../env";
 import { SOURCE_ID_PATTERN } from "../ids";
+import { parseConversationInput, startSourceConversation } from "./conversation";
 import { acceptEvent } from "./service";
 import { intakeError, isPlainObject, type IntakeError, type IntakeErrorCode, type IntakeInput } from "./validation";
 
@@ -22,13 +25,17 @@ export type IntakeRpcError = {
 
 export type IntakeRpcResult = { ok: true; event_id: string; duplicate: boolean } | { ok: false; error: IntakeRpcError };
 
+export type IntakeRpcConversationResult =
+  | ({ ok: true } & IngestConversationResponse)
+  | { ok: false; error: IntakeRpcError };
+
 const INPUT_FIELDS = new Set(["idempotency_key", "type", "summary", "occurred_at", "labels", "body", "attachments"]);
 const BODY_FIELDS = new Set(["content_type", "bytes"]);
 const ATTACHMENT_FIELDS = new Set(["name", "content_type", "bytes"]);
 
 type Structured = { ok: true; input: IntakeInput } | { ok: false; error: IntakeError };
 
-function toRpcError(error: IntakeError): IntakeRpcResult {
+function toRpcError(error: IntakeError): { ok: false; error: IntakeRpcError } {
   const result: IntakeRpcError = {
     code: error.code,
     message: error.message,
@@ -111,23 +118,34 @@ function structure(input: unknown): Structured {
 
 type SourceRow = { id: string; workspace_id: string; name: string; enabled: number };
 
+// The source of props.source_id, or the error: unauthorized for a missing, malformed or unknown ID (the conversation
+// source is never matched: it is unknown here), source_disabled for a disabled source. A function, not a method: every
+// method of the entry point can be called over RPC.
+async function propsSource(
+  d1: D1Database,
+  props: IntakeProps | undefined,
+): Promise<{ ok: true; source: SourceRow } | { ok: false; error: IntakeError }> {
+  const sourceId = props?.source_id;
+  if (typeof sourceId !== "string" || !SOURCE_ID_PATTERN.test(sourceId)) {
+    return { ok: false, error: intakeError("unauthorized") };
+  }
+  const source = await d1
+    .prepare("SELECT id, workspace_id, name, enabled FROM sources WHERE id = ? AND kind = 'program'")
+    .bind(sourceId)
+    .first<SourceRow>();
+  if (!source) return { ok: false, error: intakeError("unauthorized") };
+  if (!source.enabled) return { ok: false, error: intakeError("source_disabled") };
+  return { ok: true, source };
+}
+
 export class Intake extends WorkerEntrypoint<Bindings, IntakeProps> {
   // Never throws: every failure is returned as { ok: false, error }.
   async submit(input: unknown): Promise<IntakeRpcResult> {
     try {
       // 1. The source, from props.
-      const sourceId = this.ctx.props?.source_id;
-      if (typeof sourceId !== "string" || !SOURCE_ID_PATTERN.test(sourceId)) {
-        return toRpcError(intakeError("unauthorized"));
-      }
-      // The conversation source is never matched: it is unknown here.
-      const source = await this.env.DB.prepare(
-        "SELECT id, workspace_id, name, enabled FROM sources WHERE id = ? AND kind = 'program'",
-      )
-        .bind(sourceId)
-        .first<SourceRow>();
-      if (!source) return toRpcError(intakeError("unauthorized"));
-      if (!source.enabled) return toRpcError(intakeError("source_disabled"));
+      const found = await propsSource(this.env.DB, this.ctx.props);
+      if (!found.ok) return toRpcError(found.error);
+      const source = found.source;
 
       // 2. Structure and validation, 3. the shared intake.
       const structured = structure(input);
@@ -141,6 +159,35 @@ export class Intake extends WorkerEntrypoint<Bindings, IntakeProps> {
       return { ok: true, event_id: result.event_id, duplicate: result.duplicate };
     } catch (error) {
       console.error("intake: unexpected error in the RPC entry point", describeError(error));
+      return toRpcError(intakeError("temporarily_unavailable"));
+    }
+  }
+
+  // Starts a conversation as the source of props, with the input of POST /ingest/v1/conversations. Never throws:
+  // every failure is returned as { ok: false, error }.
+  async startConversation(input: unknown): Promise<IntakeRpcConversationResult> {
+    try {
+      // 1. The source, from props.
+      const found = await propsSource(this.env.DB, this.ctx.props);
+      if (!found.ok) return toRpcError(found.error);
+      const source = found.source;
+
+      // 2. The input.
+      if (!isPlainObject(input)) return toRpcError(intakeError("invalid_input"));
+      const parsed = parseConversationInput(input);
+      if (!parsed.ok) return toRpcError(parsed.error);
+
+      // 3. A retry, the source read again, the limits and the creation.
+      const d1 = this.env.DB;
+      const result = await startSourceConversation(
+        { d1, db: createDb(d1), bucket: this.env.EVENT_DATA, queue: this.env.DELIVERY_QUEUE, now: clock.now() },
+        { id: source.id, workspaceId: source.workspace_id },
+        parsed.value,
+      );
+      if (!result.ok) return toRpcError(result.error);
+      return { ok: true, ...result.body };
+    } catch (error) {
+      console.error("intake: unexpected error in the RPC conversation entry point", describeError(error));
       return toRpcError(intakeError("temporarily_unavailable"));
     }
   }

@@ -32,7 +32,7 @@ function parseLabels(value: string): Record<string, string> {
 }
 
 // The names of the sources, read in a separate query.
-async function sourceNames(db: Db, ids: string[]): Promise<Map<string, string>> {
+export async function sourceNames(db: Db, ids: string[]): Promise<Map<string, string>> {
   if (ids.length === 0) return new Map();
   const rows = await db
     .select({ id: sources.id, name: sources.name })

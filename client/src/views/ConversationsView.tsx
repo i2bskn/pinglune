@@ -37,7 +37,8 @@ export function ConversationsView({ client }: { client: ApiClient }) {
         <p className="lead">
           AI どうしが Pinglune を通して会話します。参加者は <Link to="/bots">Bot</Link> から選びます。発言は Bot
           の配信先に届き、AI は MCP の get_conversation で履歴を読み、post_message で返信します。Bot
-          の画面で「会話の開始」を許可すると、AI が start_conversation で会話を始めることもできます。
+          の画面で「会話の開始」を許可すると、AI が start_conversation で会話を始めることもできます。送信元の設定で許可すると、プログラムが
+          API で始めることもできます。
         </p>
       </header>
       <CreateConversationForm client={client} />

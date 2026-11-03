@@ -16,6 +16,7 @@ import type {
   Subscription,
   UpdateBotConversationStartRequest,
   UpdateBotRequest,
+  UpdateSourceConversationStartRequest,
   UpdateSourceRequest,
   User,
 } from "../../src/api/types";
@@ -157,6 +158,24 @@ export async function updateSource(
   if (!isValidId(sourceId)) return INVALID_SOURCE_ID;
   return resourceActionResult(
     await send(() => client.api.v1.sources[":id"].$patch({ param: { id: sourceId }, json: input })),
+  );
+}
+
+// Changes whether a source may start conversations, and its limits. Errors (400) are shown with the server's message.
+// Never rejects.
+export async function updateSourceConversationStart(
+  client: ApiClient,
+  sourceId: string,
+  input: { enabled: boolean; dailyLimit: number; maxAiMessages: number },
+): Promise<SourceActionResult> {
+  if (!isValidId(sourceId)) return INVALID_SOURCE_ID;
+  const json: UpdateSourceConversationStartRequest = {
+    enabled: input.enabled,
+    daily_limit: input.dailyLimit,
+    max_ai_messages: input.maxAiMessages,
+  };
+  return resourceActionResult(
+    await send(() => client.api.v1.sources[":id"]["conversation-start"].$post({ param: { id: sourceId }, json })),
   );
 }
 

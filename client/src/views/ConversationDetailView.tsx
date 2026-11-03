@@ -263,6 +263,7 @@ function ChatMessage({ message }: { message: ConversationMessage }) {
         <span className="chat-sender">
           {message.sender}
           {message.is_user && <span className="chat-sender-kind">（あなた）</span>}
+          {message.sender_kind === "program" && <span className="chat-sender-kind">（プログラム）</span>}
         </span>
         <time dateTime={new Date(message.created_at).toISOString()}>{formatDateTime(message.created_at)}</time>
       </span>

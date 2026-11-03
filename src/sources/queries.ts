@@ -14,6 +14,9 @@ const sourceColumns = {
   name: sources.name,
   enabled: sources.enabled,
   kind: sources.kind,
+  canStartConversations: sources.canStartConversations,
+  startDailyLimit: sources.startDailyLimit,
+  startMaxAiMessages: sources.startMaxAiMessages,
   createdAt: sources.createdAt,
   updatedAt: sources.updatedAt,
   activeKeyCount,
@@ -27,6 +30,11 @@ export function toApiSource(source: SourceWithKeyCount): Source {
     created_at: source.createdAt,
     updated_at: source.updatedAt,
     active_key_count: source.activeKeyCount,
+    conversation_start: {
+      enabled: source.canStartConversations === 1,
+      daily_limit: source.startDailyLimit,
+      max_ai_messages: source.startMaxAiMessages,
+    },
   };
 }
 

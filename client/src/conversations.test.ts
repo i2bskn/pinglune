@@ -4,6 +4,7 @@ import {
   aiMessagesLabel,
   botOptionLabel,
   botWarning,
+  conversationCurlExample,
   conversationRequest,
   conversationStatusLabel,
   participantDestinationLabel,
@@ -20,8 +21,39 @@ describe("startedByLabel", () => {
     expect(startedByLabel({ started_by: { kind: "bot", bot_id: "bot_1", name: "" } })).toBe("開始: （名前なし）（AI）");
   });
 
+  it("names the source that started the conversation", () => {
+    expect(startedByLabel({ started_by: { kind: "source", source_id: "src_1", name: "nightly" } })).toBe(
+      "開始: nightly（プログラム）",
+    );
+    expect(startedByLabel({ started_by: { kind: "source", source_id: "src_1", name: "" } })).toBe(
+      "開始: （名前なし）（プログラム）",
+    );
+  });
+
   it("is null for a conversation started by the user", () => {
     expect(startedByLabel({ started_by: { kind: "user" } })).toBeNull();
+  });
+});
+
+describe("conversationCurlExample", () => {
+  it("posts to the origin of the screen with a placeholder key", () => {
+    const example = conversationCurlExample("https://pinglune.example.com");
+    expect(example.split("\n")).toEqual([
+      "curl -X POST https://pinglune.example.com/ingest/v1/conversations \\",
+      '  -H "Authorization: Bearer pl_<キーID>_<秘密>" \\',
+      '  -H "Content-Type: application/json" \\',
+      expect.stringMatching(/^  -d '\{.*\}'$/),
+    ]);
+  });
+
+  it("sends the required fields as JSON", () => {
+    const line = conversationCurlExample("https://pinglune.example.com").split("\n")[3] ?? "";
+    expect(JSON.parse(line.slice("  -d '".length, -1))).toEqual({
+      title: expect.any(String),
+      participants: ["<Bot の名前>"],
+      message: expect.any(String),
+      idempotency_key: "nightly-2026-11-04",
+    });
   });
 });
 

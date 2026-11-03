@@ -1,4 +1,5 @@
-// POST /ingest/v1/events (spec 5.1). Authenticated with an API key; sameOrigin does not apply.
+// POST /ingest/v1/events (spec 5.1) and POST /ingest/v1/conversations. Authenticated with an API key; sameOrigin does
+// not apply.
 
 import { Hono, type Context } from "hono";
 import type { ApiError, IngestResponse } from "../api/types";
@@ -6,6 +7,7 @@ import { describeError } from "../auth/middleware";
 import { clock } from "../clock";
 import type { AppEnv } from "../env";
 import { authenticateApiKey } from "../sources/auth";
+import { parseConversationInput, startSourceConversation } from "./conversation";
 import { acceptEvent } from "./service";
 import {
   intakeError,
@@ -19,6 +21,11 @@ import {
 const JSON_FIELDS = new Set(["idempotency_key", "type", "summary", "occurred_at", "labels", "body", "body_content_type"]);
 const METADATA_FIELDS = new Set(["idempotency_key", "type", "summary", "occurred_at", "labels"]);
 const DEFAULT_JSON_BODY_CONTENT_TYPE = "text/plain; charset=utf-8";
+// The limit of the JSON body of POST /ingest/v1/conversations: a message of 64 KiB may take about 3 times as much
+// once escaped in JSON (\uXXXX\uXXXX for an emoji), with room for the title and the participants.
+const CONVERSATION_MAX_REQUEST_BYTES = 256 * 1024;
+const conversationMediaTypeMessage = "Content-Type は application/json にしてください";
+const conversationTooLargeMessage = "本文が大きすぎます（JSON 全体で 256 KiB まで）";
 
 type Structured = { ok: true; input: IntakeInput } | { ok: false; error: IntakeError };
 
@@ -218,14 +225,59 @@ async function ingest(c: Context<AppEnv>): Promise<Response> {
   return c.json(body, result.duplicate ? 200 : 201);
 }
 
-const intake = new Hono<AppEnv>().post("/v1/events", async (c) => {
-  try {
-    return await ingest(c);
-  } catch (error) {
-    // Never logs the request headers: they carry the API key.
-    console.error("intake: unexpected error in the HTTP handler", describeError(error));
-    return errorResponse(c, intakeError("temporarily_unavailable"));
+// A conversation started by the source of the API key, with the first message of the program.
+async function startConversation(c: Context<AppEnv>): Promise<Response> {
+  const now = clock.now();
+  const db = c.get("db");
+
+  // 1. Authentication, from the header only. The body is not read yet.
+  const auth = await authenticateApiKey(db, c.req.header("Authorization"), now);
+  if (!auth.ok) return errorResponse(c, intakeError(auth.error));
+
+  // 2. Content-Type, then the size: Content-Length before reading, then the bytes counted while reading.
+  if (parseContentType(c.req.header("Content-Type"))?.mediaType !== "application/json") {
+    return errorResponse(c, { ...intakeError("unsupported_media_type"), message: conversationMediaTypeMessage });
   }
-});
+  const tooLarge = { ...intakeError("payload_too_large"), message: conversationTooLargeMessage };
+  const declared = c.req.header("Content-Length");
+  if (declared !== undefined && Number(declared) > CONVERSATION_MAX_REQUEST_BYTES) return errorResponse(c, tooLarge);
+  const bytes = await readLimited(c.req.raw.body, CONVERSATION_MAX_REQUEST_BYTES);
+  if (bytes === null) return errorResponse(c, tooLarge);
+
+  // 3. JSON and the input.
+  const json = parseJsonObject(bytes);
+  if (json === null) return errorResponse(c, intakeError("invalid_json"));
+  const parsed = parseConversationInput(json);
+  if (!parsed.ok) return errorResponse(c, parsed.error);
+
+  // 4. to 9.: a retry, the source, the limits and the creation.
+  const result = await startSourceConversation(
+    { d1: c.env.DB, db, bucket: c.env.EVENT_DATA, queue: c.env.DELIVERY_QUEUE, now },
+    { id: auth.source.id, workspaceId: auth.source.workspaceId },
+    parsed.value,
+  );
+  if (!result.ok) return errorResponse(c, result.error);
+  return c.json(result.body, result.status);
+}
+
+const intake = new Hono<AppEnv>()
+  .post("/v1/events", async (c) => {
+    try {
+      return await ingest(c);
+    } catch (error) {
+      // Never logs the request headers: they carry the API key.
+      console.error("intake: unexpected error in the HTTP handler", describeError(error));
+      return errorResponse(c, intakeError("temporarily_unavailable"));
+    }
+  })
+  .post("/v1/conversations", async (c) => {
+    try {
+      return await startConversation(c);
+    } catch (error) {
+      // Never logs the request headers: they carry the API key.
+      console.error("intake: unexpected error in the HTTP conversation handler", describeError(error));
+      return errorResponse(c, intakeError("temporarily_unavailable"));
+    }
+  });
 
 export default intake;

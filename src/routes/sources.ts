@@ -42,6 +42,7 @@ import {
   toApiSource,
 } from "../sources/queries";
 import { jsonBody } from "./api";
+import { conversationStartBody } from "./conversation-start";
 import { requirePersonalWorkspace } from "./workspace";
 
 export const MAX_SOURCES_PER_WORKSPACE = 100;
@@ -154,6 +155,26 @@ const sourcesApi = new Hono<AppEnv>()
       if (isUniqueViolation(error)) return apiError(c, 409, "source_name_taken", "この名前の送信元はすでにあります");
       throw error;
     }
+    const updated = await findWorkspaceSource(db, workspaceId, id);
+    if (!updated) return apiError(c, 404, "not_found", sourceNotFound);
+    return c.json(toApiSource(updated), 200);
+  })
+  // The conversation start settings, as for a bot. Saved for a disabled source too. Turning them off does not stop
+  // the conversations the source has started.
+  .post("/:id/conversation-start", conversationStartBody, async (c) => {
+    const input = c.req.valid("json");
+    const db = c.get("db");
+    const workspaceId = c.get("workspace").id;
+    const id = c.req.param("id");
+    if (!SOURCE_ID_PATTERN.test(id)) return apiError(c, 404, "not_found", sourceNotFound);
+    // kind 'program': the conversation source is never matched.
+    const result = await c.env.DB.prepare(
+      `UPDATE sources SET can_start_conversations = ?, start_daily_limit = ?, start_max_ai_messages = ?, updated_at = ?
+      WHERE id = ? AND workspace_id = ? AND kind = 'program'`,
+    )
+      .bind(input.enabled ? 1 : 0, input.dailyLimit, input.maxAiMessages, clock.now(), id, workspaceId)
+      .run();
+    if ((result.meta.changes ?? 0) === 0) return apiError(c, 404, "not_found", sourceNotFound);
     const updated = await findWorkspaceSource(db, workspaceId, id);
     if (!updated) return apiError(c, 404, "not_found", sourceNotFound);
     return c.json(toApiSource(updated), 200);

@@ -7,12 +7,21 @@ import {
   revokeApiKey,
   revokeEmailAddress,
   updateSource,
+  updateSourceConversationStart,
 } from "../actions";
 import { formatDateTime } from "../format";
 import { PlusIcon } from "../icons";
 import { Link } from "../Link";
 import { eventsPath } from "../events";
-import { SOURCE_TABS, botPath, sourceTabOf, sourceTabPath } from "../bots";
+import {
+  SOURCE_TABS,
+  botPath,
+  conversationStartForm,
+  conversationStartRequest,
+  sourceTabOf,
+  sourceTabPath,
+} from "../bots";
+import { conversationCurlExample } from "../conversations";
 import { type ApiClient, type ViewState, loadEvents, loadSourceBots, loadSourceDetail, useView } from "../load";
 import { searchParams } from "../router";
 import { ViewStatus, useDocumentTitle, viewTitle } from "./common";
@@ -27,8 +36,9 @@ const ADDRESS_GONE_MESSAGE = "このメールアドレスは見つかりませ�
 const RECENT_EVENTS = 5;
 
 // One source, in three tabs (?tab=): the overview (the bots that receive its events and its newest events), how to
-// send (its ID for Service Bindings, its API keys and its email addresses), and the settings (rename, enable or
-// disable). A move to another tab loads the screen again.
+// send (its ID for Service Bindings, its API keys, the example of starting a conversation and its email addresses),
+// and the settings (rename, enable or disable, the conversation start settings). A move to another tab loads the
+// screen again.
 export function SourceDetailView({ client, id, path }: { client: ApiClient; id: string; path: string }) {
   const tab = sourceTabOf(searchParams(path));
   const [state, reload] = useView(() => loadSourceDetail(client, id), `source:${id}`);
@@ -84,7 +94,12 @@ export function SourceDetailView({ client, id, path }: { client: ApiClient; id: 
         </>
       )}
 
-      {tab === "settings" && <SourceSettings client={client} source={source} onDone={onDone} />}
+      {tab === "settings" && (
+        <>
+          <SourceSettings client={client} source={source} onDone={onDone} />
+          <ConversationStartSection client={client} source={source} onDone={onDone} />
+        </>
+      )}
 
       {tab === "intake" && (
         <>
@@ -130,6 +145,22 @@ export function SourceDetailView({ client, id, path }: { client: ApiClient; id: 
                 <ApiKeyRow key={apiKey.key_id} client={client} sourceId={source.id} apiKey={apiKey} onDone={onDone} />
               ))}
             </ul>
+          )}
+
+          <h2>会話を始める</h2>
+          {source.conversation_start.enabled ? (
+            <>
+              <p>
+                HTTP（<code>POST /ingest/v1/conversations</code>）で、Bot を指定して会話を始められます。API
+                キーはイベントと同じものを使います。
+              </p>
+              {/* data-preview: a long command scrolls inside its box instead of widening the page. */}
+              <div className="data-preview">
+                <pre>{conversationCurlExample(window.location.origin)}</pre>
+              </div>
+            </>
+          ) : (
+            <p className="muted">設定で会話の開始を許可すると、会話を始める API の例が出ます</p>
           )}
 
           <h2>メールアドレス</h2>
@@ -366,6 +397,109 @@ function SourceSettings({
       )}
       {failure !== null && <p role="alert">{failure}</p>}
     </>
+  );
+}
+
+// Whether the source may start conversations with bots, and its limits.
+function ConversationStartSection({
+  client,
+  source,
+  onDone,
+}: {
+  client: ApiClient;
+  source: Source;
+  onDone: (message: string | null) => void;
+}) {
+  const [form, setForm] = useState(() => conversationStartForm(source));
+  const [sending, setSending] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+
+  async function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const request = conversationStartRequest(source, form);
+    if (!request.ok) {
+      setFailure(request.message);
+      return;
+    }
+    setSending(true);
+    setFailure(null);
+    const result = await updateSourceConversationStart(client, source.id, request.value);
+    if (result.kind === "redirecting") return;
+    setSending(false);
+    if (result.kind === "ok") {
+      onDone("会話の開始の設定を保存しました");
+      return;
+    }
+    if (result.kind === "notFound") {
+      onDone(GONE_MESSAGE);
+      return;
+    }
+    setFailure(resultMessage(result, GONE_MESSAGE));
+  }
+
+  return (
+    <section className="source-section" aria-labelledby="source-conversation-start">
+      <div className="section-head">
+        <h2 id="source-conversation-start">会話の開始</h2>
+      </div>
+      <form className="folder-form" aria-label="会話の開始" onSubmit={(event) => void onSubmit(event)}>
+        <label className="choice">
+          <input
+            type="checkbox"
+            name="can_start_conversations"
+            checked={form.enabled}
+            onChange={(event) => setForm({ ...form, enabled: event.target.checked })}
+            disabled={sending}
+          />
+          <span>
+            <span className="choice-title">この送信元から会話を始めることを許可する</span>
+            <span className="choice-description">
+              許可すると、この送信元の API キーか Service Bindings で、Bot を指定して会話を始められます。会話に参加する
+              AI の利用料が増えることがあります
+            </span>
+          </span>
+        </label>
+        {form.enabled && (
+          <>
+            <label>
+              1日に始められる会話（1〜1000&nbsp;件）
+              <input
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={1000}
+                step={1}
+                value={form.dailyLimit}
+                onChange={(event) => setForm({ ...form, dailyLimit: event.target.value })}
+                required
+                disabled={sending}
+              />
+            </label>
+            <label>
+              AI の発言の上限（1〜100&nbsp;回）
+              <input
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={100}
+                step={1}
+                value={form.maxAiMessages}
+                onChange={(event) => setForm({ ...form, maxAiMessages: event.target.value })}
+                required
+                disabled={sending}
+              />
+            </label>
+          </>
+        )}
+        <p className="muted">許可を外しても、すでに始まった会話はそのまま続きます。</p>
+        <div className="folder-form-actions">
+          <button type="submit" disabled={sending}>
+            保存
+          </button>
+        </div>
+        {failure !== null && <p role="alert">{failure}</p>}
+      </form>
+    </section>
   );
 }
 

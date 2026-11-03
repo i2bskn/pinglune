@@ -10,6 +10,7 @@ const source = (id: string, name: string, enabled = true): Source => ({
   created_at: 0,
   updated_at: 0,
   active_key_count: 0,
+  conversation_start: { enabled: false, daily_limit: 10, max_ai_messages: 10 },
 });
 
 function bot(id: string, overrides: Partial<Bot> = {}): Bot {

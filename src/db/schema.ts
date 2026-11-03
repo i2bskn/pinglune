@@ -100,6 +100,13 @@ export const sources = sqliteTable(
     enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
     // Checked by the application only: a CHECK constraint would rebuild the table. Existing rows are programs.
     kind: text("kind", { enum: ["program", "conversation"] }).notNull().default("program"),
+    // Whether the source may start conversations with bots (POST /ingest/v1/conversations, Intake.startConversation).
+    // 0 or 1. Off by default. The same columns and ranges as those of bots, checked by the application.
+    canStartConversations: integer("can_start_conversations").notNull().default(0),
+    // 1 to 1000: the conversations the source may start in the last 24 hours.
+    startDailyLimit: integer("start_daily_limit").notNull().default(10),
+    // 1 to 100: the default and the maximum of max_ai_messages of the conversations the source starts.
+    startMaxAiMessages: integer("start_max_ai_messages").notNull().default(10),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },
@@ -334,13 +341,17 @@ export const conversations = sqliteTable(
     maxAiMessages: integer("max_ai_messages").notNull(),
     // The messages of the AIs accepted so far. The messages of the user are not counted.
     aiMessageCount: integer("ai_message_count").notNull().default(0),
-    // The user of the management screen, or for a conversation started by an AI, the user of its MCP token.
+    // The user of the management screen, for a conversation started by an AI the user of its MCP token, and for one
+    // started by a source the owner of the workspace of the source.
     createdByUserId: text("created_by_user_id")
       .notNull()
       .references(() => users.id),
     // The bot whose AI started the conversation with start_conversation (MCP). NULL for one started on the management
     // screen.
     startedByBotId: text("started_by_bot_id").references(() => bots.id),
+    // The source of programs that started the conversation (POST /ingest/v1/conversations, Intake.startConversation).
+    // Never set together with started_by_bot_id (checked by the application).
+    startedBySourceId: text("started_by_source_id").references(() => sources.id),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
     stoppedAt: integer("stopped_at"),
@@ -350,6 +361,8 @@ export const conversations = sqliteTable(
     index("conversations_workspace_id_id_idx").on(t.workspaceId, t.id),
     // The conversations a bot started in the last 24 hours.
     index("conversations_started_by_bot_created_at_idx").on(t.startedByBotId, t.createdAt),
+    // The conversations a source started in the last 24 hours.
+    index("conversations_started_by_source_created_at_idx").on(t.startedBySourceId, t.createdAt),
     check("conversations_status_check", sql`${t.status} IN ('open', 'stopped')`),
     check("conversations_stop_reason_check", sql`${t.stopReason} IS NULL OR ${t.stopReason} IN ('user', 'limit')`),
   ],

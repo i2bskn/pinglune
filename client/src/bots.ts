@@ -3,6 +3,7 @@ import type {
   BotDeliveryKind,
   BotDetail,
   BotStatus,
+  ConversationStartSettings,
   CreateBotRequest,
   DestinationConditions,
   McpConnection,
@@ -325,14 +326,18 @@ export function sourceTabPath(sourceId: string, tab: SourceTab): string {
   return tab === "overview" ? `/sources/${sourceId}` : `/sources/${sourceId}?tab=${tab}`;
 }
 
-// The conversation start settings of a bot, as the form edits them. The numbers are the text of the inputs.
+// The conversation start settings of a bot or a source, as the form edits them. The numbers are the text of the
+// inputs.
 export type ConversationStartForm = { enabled: boolean; dailyLimit: string; maxAiMessages: string };
 
-export function conversationStartForm(bot: Pick<Bot, "conversation_start">): ConversationStartForm {
+// A bot or a source, with its conversation start settings.
+type ConversationStarter = { conversation_start: ConversationStartSettings };
+
+export function conversationStartForm(starter: ConversationStarter): ConversationStartForm {
   return {
-    enabled: bot.conversation_start.enabled,
-    dailyLimit: String(bot.conversation_start.daily_limit),
-    maxAiMessages: String(bot.conversation_start.max_ai_messages),
+    enabled: starter.conversation_start.enabled,
+    dailyLimit: String(starter.conversation_start.daily_limit),
+    maxAiMessages: String(starter.conversation_start.max_ai_messages),
   };
 }
 
@@ -349,7 +354,7 @@ function wholeNumberIn(value: string, min: number, max: number): number | null {
 // The request of the conversation start form. When it is off, the numbers are not checked and the saved ones are
 // sent as they are (the inputs are hidden).
 export function conversationStartRequest(
-  bot: Pick<Bot, "conversation_start">,
+  starter: ConversationStarter,
   form: ConversationStartForm,
 ): FormResult<ConversationStartInput> {
   if (!form.enabled) {
@@ -357,8 +362,8 @@ export function conversationStartRequest(
       ok: true,
       value: {
         enabled: false,
-        dailyLimit: bot.conversation_start.daily_limit,
-        maxAiMessages: bot.conversation_start.max_ai_messages,
+        dailyLimit: starter.conversation_start.daily_limit,
+        maxAiMessages: starter.conversation_start.max_ai_messages,
       },
     };
   }

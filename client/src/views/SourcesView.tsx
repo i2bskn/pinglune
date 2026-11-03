@@ -41,6 +41,7 @@ export function SourcesView({ client }: { client: ApiClient }) {
                 </span>
                 <span className="source-meta">
                   <span>有効なAPI キー {source.active_key_count} 個</span>
+                  {source.conversation_start.enabled && <span className="kind-chip">会話を開始できる</span>}
                   <time dateTime={new Date(source.created_at).toISOString()}>作成: {formatDateTime(source.created_at)}</time>
                 </span>
               </Link>

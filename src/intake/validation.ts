@@ -16,7 +16,8 @@ export function maxRequestBytes(): number {
 
 export const DEFAULT_CONTENT_TYPE = "application/octet-stream";
 
-const IDEMPOTENCY_KEY_PATTERN = /^[\x21-\x7E]{1,255}$/;
+// Also the pattern of the idempotency_key of a conversation started by a source (src/intake/conversation.ts).
+export const IDEMPOTENCY_KEY_PATTERN = /^[\x21-\x7E]{1,255}$/;
 export const TYPE_PATTERN = /^[a-z0-9_-]+(\.[a-z0-9_-]+)*$/;
 export const TYPE_MAX_LENGTH = 100;
 const RESERVED_TYPE_PREFIX = "pinglune.";
@@ -78,10 +79,17 @@ export type IntakeErrorCode =
   | "source_disabled"
   | "idempotency_conflict"
   | "unsupported_media_type"
-  | "temporarily_unavailable";
+  | "temporarily_unavailable"
+  // A conversation started by a source (src/intake/conversation.ts).
+  | "invalid_title"
+  | "invalid_text"
+  | "invalid_participants"
+  | "invalid_limit"
+  | "start_not_allowed"
+  | "rate_limited";
 
 export type IntakeError = {
-  status: 400 | 401 | 403 | 409 | 413 | 415 | 503;
+  status: 400 | 401 | 403 | 409 | 413 | 415 | 429 | 503;
   code: IntakeErrorCode;
   message: string;
   fields?: Record<string, string>;
@@ -105,6 +113,16 @@ export const INTAKE_MESSAGES: Record<IntakeErrorCode, string> = {
   idempotency_conflict: "同じ idempotency_key で内容の違うイベントがすでにあります",
   unsupported_media_type: "Content-Type は application/json か multipart/form-data にしてください",
   temporarily_unavailable: "一時的に受け付けられません。同じ idempotency_key で再送してください",
+  invalid_title: "件名は制御文字を含まない 1〜64 文字にしてください",
+  invalid_text:
+    "本文は空白だけでない 1〜65,536 バイトのテキストにしてください（改行とタブ以外の制御文字は使えません）",
+  invalid_participants:
+    "participants には招待する Bot の名前を 1〜5 個指定してください。空の名前・64 文字を超える名前・同じ名前の重複は使えません",
+  invalid_limit: "max_ai_messages は整数にしてください",
+  // The messages with the name of the source and the limit replace these (src/intake/conversation.ts).
+  start_not_allowed:
+    "この送信元は会話を始めることを許可されていません。Pinglune の送信元の画面（設定）で「会話の開始」を許可してください",
+  rate_limited: "24 時間に始められる会話の数の上限に達しています",
 };
 
 export const INTAKE_STATUS: Record<IntakeErrorCode, IntakeError["status"]> = {
@@ -125,6 +143,12 @@ export const INTAKE_STATUS: Record<IntakeErrorCode, IntakeError["status"]> = {
   idempotency_conflict: 409,
   unsupported_media_type: 415,
   temporarily_unavailable: 503,
+  invalid_title: 400,
+  invalid_text: 400,
+  invalid_participants: 400,
+  invalid_limit: 400,
+  start_not_allowed: 403,
+  rate_limited: 429,
 };
 
 export function intakeError(code: IntakeErrorCode, fields?: Record<string, string>): IntakeError {

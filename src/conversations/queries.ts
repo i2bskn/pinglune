@@ -133,6 +133,27 @@ export async function countConversationsStartedBy(
   return row?.count ?? 0;
 }
 
+// The conversations the source started after since (created_at > since), stopped ones included, for its daily limit.
+export async function countConversationsStartedBySource(
+  db: Db,
+  workspaceId: string,
+  sourceId: string,
+  since: number,
+): Promise<number> {
+  const row = await db
+    .select({ count: sql<number>`COUNT(*)` })
+    .from(conversations)
+    .where(
+      and(
+        eq(conversations.startedBySourceId, sourceId),
+        gt(conversations.createdAt, since),
+        eq(conversations.workspaceId, workspaceId),
+      ),
+    )
+    .get();
+  return row?.count ?? 0;
+}
+
 // The subscriptions with these IDs in the workspace, by ID.
 export async function workspaceSubscriptionsByIds(
   db: Db,

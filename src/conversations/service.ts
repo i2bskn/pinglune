@@ -49,9 +49,16 @@ const CONTROL = /[\u0000-\u001F\u007F-\u009F]/g;
 // A surrogate that is not part of a pair.
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
-export type SenderKind = "user" | "ai";
+// program: the first message of a conversation started by a source (its sender ID is the source ID).
+export type SenderKind = "user" | "ai" | "program";
 
 export type Sender = { kind: SenderKind; id: string; name: string };
+
+// The sender_kind of the labels of a message, as the APIs return it: "user" and "program" as they are, anything else
+// ("ai" and unknown values) as "ai".
+export function senderKind(value: string | undefined): SenderKind {
+  return value === "user" || value === "program" ? value : "ai";
+}
 
 export type ValidText = { text: string; bytes: Uint8Array };
 
@@ -460,7 +467,10 @@ export type NewParticipant = { botId: string; name: string };
 // - Started by the AI of a bot (startedByBotId, one of participants): the first message is that bot's participant's
 //   (an AI message, counted in the limit). With maxAiMessages 1 the conversation is stopped by its limit as it is
 //   created; the first message is still delivered.
-// user is created_by_user_id: the user of the screen, or the user of the MCP token. idempotencyKey is stored as is
+// - Started by a source (startedBySource): the first message is the program's, sent as the source (its ID and its
+//   name now), and not counted in the limit.
+// startedByBotId and startedBySource are never given together. user is created_by_user_id: the user of the screen,
+// the user of the MCP token, or the owner of the workspace of the source. idempotencyKey is stored as is
 // (createIdempotencyKey for the screen).
 export async function createConversation(
   deps: MessageDeps,
@@ -468,6 +478,7 @@ export async function createConversation(
     workspaceId: string;
     user: UserRow;
     startedByBotId?: string;
+    startedBySource?: { id: string; name: string };
     title: string;
     maxAiMessages: number;
     participants: NewParticipant[];
@@ -483,8 +494,14 @@ export async function createConversation(
   // The IDs come first: the sender of a message of an AI is its participant ID.
   const participants = params.participants.map((p) => ({ ...p, id: newParticipantId(now) }));
   const startedByBotId = params.startedByBotId ?? null;
+  const startedBySource = params.startedBySource ?? null;
+  if (startedByBotId !== null && startedBySource !== null) {
+    throw new Error("a conversation is started by a bot or by a source, not both");
+  }
   let sender: Sender;
-  if (startedByBotId === null) {
+  if (startedBySource !== null) {
+    sender = { kind: "program", id: startedBySource.id, name: startedBySource.name };
+  } else if (startedByBotId === null) {
     sender = { kind: "user", id: user.id, name: userSenderName(user) };
   } else {
     const starter = participants.find((p) => p.botId === startedByBotId);
@@ -504,8 +521,8 @@ export async function createConversation(
       d1
         .prepare(
           `INSERT INTO conversations (id, workspace_id, title, status, stop_reason, max_ai_messages, ai_message_count,
-            created_by_user_id, started_by_bot_id, created_at, updated_at, stopped_at)
-          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?11)`,
+            created_by_user_id, started_by_bot_id, started_by_source_id, created_at, updated_at, stopped_at)
+          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11, ?12)`,
         )
         .bind(
           conversationId,
@@ -517,6 +534,7 @@ export async function createConversation(
           aiMessageCount,
           user.id,
           startedByBotId,
+          startedBySource?.id ?? null,
           now,
           stopped ? now : null,
         ),
