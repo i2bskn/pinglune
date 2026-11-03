@@ -235,7 +235,7 @@ Botは会話に参加するAIの管理の単位で、名前・MCP接続（1つ�
 | `GET /api/v1/bots/:id` | 1つのBot。`Bot` に `destination`（下記）を加えた `BotDetail` を返す |
 | `POST /api/v1/bots` | 作成。本文は `{ "name", "delivery_kind", "delivery_subscription_id?", "webhook?", "conditions?", "source_ids?" }`。201で `Bot` を返す |
 | `POST /api/v1/bots/:id/update` | 変更。本文は `{ "name?", "delivery_kind?", "delivery_subscription_id?", "webhook?", "conditions?", "source_ids?" }`。200で `Bot` を返す |
-| `POST /api/v1/bots/:id/delete` | 削除。204。削除済みのBotの削除も204 |
+| `POST /api/v1/bots/:id/delete` | 削除。204。削除済みのBotの削除も204。`?keep_destination=true` で配信先を残す |
 
 ```json
 {
@@ -275,6 +275,7 @@ Botは会話に参加するAIの管理の単位で、名前・MCP接続（1つ�
 - `source_ids` はBotが受け取る送信元（同じワークスペースのプログラムの送信元。無効にした送信元も選べる）のIDの配列です。重複は1つにまとめ、100個までです。作成で省略すると送信元なし、変更では指定すると全体を置き換え、省略すると変えません。
 - `sources` はBotが受け取る送信元 `{ "id", "name", "enabled" }` の配列（名前順）です。空のBotにはイベントが届きません（会話には参加できます）。
 - 削除すると、Botの配信先（`delivery_subscription_id` のWebhook配信先・キュー。作成時にその場で作ったものに限らない）を同じbatchで終了します。Webhook配信先は `unsubscribed_at` を入れるだけで、残った `pending` の配信は送信時に `subscription_inactive` で失敗します。キューは `pending` の配信（取得済みで未確認のものを含む）を `subscription_inactive` で失敗にし、そのあとの `ack_events` では見つからない扱いになります。MCP Eventsの購読は接続に属するので終了しません。Botの有効な接続は切断せず「割り当てない」接続として残ります。受け取る送信元の紐づけも消えます。会話の参加者には削除済みとして残ります。
+- 削除のクエリ `keep_destination=true` を付けると、Botの配信先（Webhook配信先・キュー）を終了せずに残します（`false` か省略で上記のとおり終了します）。値は `true` か `false` のどちらか1つで、それ以外（空文字、別の値、複数指定）は400 `invalid_request`（「keep_destination は true か false で指定してください」）です。この検証はBotを探す前に行うので、存在しない・削除済みのBotでも値が誤っていれば400です。ほかのクエリは無視します。MCP EventのBotは配信先がないので、付けても何も変わりません。残した配信先はどのBotにも割り当てられていない配信先になり（購読一覧の `bot` は `null`）、別のBotの作成・変更で `delivery_subscription_id` に指定できます。すでに作られた配信はそのまま扱われます（Webhook配信先の `pending`・再試行中の配信は送信され、キューの `pending` は取得できます）が、新しいイベントは別のBotに割り当てるまで届きません。残した配信先は削除したBotの名前のまま残り、配信先の上限にも数えられます。
 - 終了する配信先を、Bot導入前の会話の参加者（`conversation_participants.subscription_id`）が直接参照していても終了します。その参加者には届かなくなります。
 - 名前は1〜64文字で、削除していないBotの中で重複できません。
 - エラー: 未知の項目400 `unknown_field`、名前・配信方式・形の誤り（`source_ids` が文字列の配列でない、100個を超える、上記の組み合わせの誤りを含む）400 `invalid_request`、配信先の誤り400 `invalid_delivery`、URL・鍵・条件の誤り400 `invalid_url`・`invalid_token`・`invalid_filter`、受け取る送信元が見つからない（形式の誤り、他のワークスペース、会話の隠し送信元）400 `invalid_source`、存在しない・削除済み・他の利用者のBot404 `not_found`、名前の重複409 `name_conflict`、配信先が別のBotで使用中409 `delivery_in_use`、Botが20個・配信先が上限を超える409 `limit_exceeded`、ほかの操作でBotが変わった409 `conflict`。

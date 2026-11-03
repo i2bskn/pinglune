@@ -376,11 +376,17 @@ export type DeleteBotResult =
   // The bot was changed by another operation since the screen read it (409); the screen offers to reload.
   | { kind: "conflict"; message: string };
 
-// Deletes a bot and ends its webhook destination or polling queue. Its MCP connection stays, not assigned to a bot.
-// Deleting a deleted bot is ok. Never rejects.
-export async function deleteBot(client: ApiClient, botId: string): Promise<DeleteBotResult> {
+// Deletes a bot and ends its webhook destination or polling queue, or keeps it, not assigned to a bot, with
+// keepDestination (sent as keep_destination=true; without it the request has no query). Its MCP connection stays, not
+// assigned to a bot. Deleting a deleted bot is ok. Never rejects.
+export async function deleteBot(
+  client: ApiClient,
+  botId: string,
+  options: { keepDestination?: boolean } = {},
+): Promise<DeleteBotResult> {
   if (!isValidId(botId)) return INVALID_BOT_ID;
-  const sent = await send(() => client.api.v1.bots[":id"].delete.$post({ param: { id: botId } }));
+  const query = options.keepDestination === true ? { keep_destination: "true" as const } : {};
+  const sent = await send(() => client.api.v1.bots[":id"].delete.$post({ param: { id: botId }, query }));
   if (sent.kind === "response" && sent.res.status === 409) {
     return { kind: "conflict", message: await responseErrorMessage(sent.res) };
   }

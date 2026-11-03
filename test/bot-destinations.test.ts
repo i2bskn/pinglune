@@ -97,8 +97,8 @@ function update(id: string, body: unknown, options: { cookies?: SessionCookies; 
   });
 }
 
-function remove(id: string, options: { db?: D1Database } = {}) {
-  return send(`/api/v1/bots/${id}/delete`, {
+function remove(id: string, options: { db?: D1Database; query?: string } = {}) {
+  return send(`/api/v1/bots/${id}/delete${options.query ?? ""}`, {
     method: "POST",
     cookies: aliceCookies,
     ...(options.db === undefined ? {} : { env: { DB: options.db } }),
@@ -505,6 +505,88 @@ describe("POST /api/v1/bots/:id/delete with its destination", () => {
     expect((await remove(bot.id, { db })).status).toBe(204);
     // The other request did not end the queue, and this one changed nothing.
     expect((await subscriptionRow(bot.delivery?.subscription_id ?? "")).unsubscribed_at).toBeNull();
+  });
+});
+
+describe("POST /api/v1/bots/:id/delete?keep_destination=", () => {
+  it("ends the destination with keep_destination=false, as without it", async () => {
+    const bot = await created({ name: "Muse", delivery_kind: "queue", source_ids: [source.id] });
+    const queue = bot.delivery?.subscription_id ?? "";
+    await ingest();
+    expect((await remove(bot.id, { query: "?keep_destination=false" })).status).toBe(204);
+    expect((await subscriptionRow(queue)).unsubscribed_at).toBe(now);
+    expect((await listDeliveries("subscription_id = ?", queue)).map((d) => d.status)).toEqual(["failed"]);
+  });
+
+  it("keeps a webhook destination, not assigned to a bot, with what is pending on it, for another bot", async () => {
+    const bot = await created({ name: "Grok", delivery_kind: "webhook", webhook: { url: HOOK_URL, token: TOKEN }, source_ids: [source.id] });
+    const hook = bot.delivery?.subscription_id ?? "";
+    await ingest();
+    now += 1000;
+    expect((await remove(bot.id, { query: "?keep_destination=true" })).status).toBe(204);
+    expect((await botRecord(bot.id)).deleted_at).toBe(now);
+    expect(await linkedSourceIds(bot.id)).toEqual([]);
+    const row = await subscriptionRow(hook);
+    expect(row).toMatchObject({ kind: "webhook", name: "Grok", callback_url: HOOK_URL, unsubscribed_at: null });
+    expect(await tokenOf(row)).toBe(TOKEN);
+    expect((await listDeliveries("subscription_id = ?", hook)).map((d) => d.status)).toEqual(["pending"]);
+
+    const list = (await (await send("/api/v1/subscriptions", { cookies: aliceCookies })).json()) as SubscriptionList;
+    expect(list.subscriptions.find((s) => s.id === hook)).toMatchObject({ bot: null });
+
+    const next = await created({ name: "Next", delivery_kind: "webhook", delivery_subscription_id: hook });
+    expect(next.delivery?.subscription_id).toBe(hook);
+    expect((await botRecord(next.id)).delivery_subscription_id).toBe(hook);
+  });
+
+  it("keeps a polling queue without failing its pending deliveries", async () => {
+    const bot = await created({ name: "Muse", delivery_kind: "queue", source_ids: [source.id] });
+    const queue = bot.delivery?.subscription_id ?? "";
+    await ingest();
+    expect((await remove(bot.id, { query: "?keep_destination=true" })).status).toBe(204);
+    expect((await subscriptionRow(queue)).unsubscribed_at).toBeNull();
+    expect((await listDeliveries("subscription_id = ?", queue)).map((d) => d.status)).toEqual(["pending"]);
+    const next = await created({ name: "Next", delivery_kind: "queue", delivery_subscription_id: queue });
+    expect(next.delivery?.subscription_id).toBe(queue);
+  });
+
+  it("takes keep_destination=true for an mcp bot, which has no destination", async () => {
+    const bot = await created({ name: "Dot", delivery_kind: "mcp" });
+    expect((await remove(bot.id, { query: "?keep_destination=true" })).status).toBe(204);
+    expect((await botRecord(bot.id)).deleted_at).toBe(now);
+  });
+
+  it("rejects a value other than true or false, before 404 and 204, and changes nothing", async () => {
+    const bot = await created({ name: "Muse", delivery_kind: "queue" });
+    const before = await snapshot();
+    for (const query of ["?keep_destination=", "?keep_destination=1", "?keep_destination=TRUE", "?keep_destination=true&keep_destination=true"]) {
+      const message = await expectApiError(await remove(bot.id, { query }), 400, "invalid_request");
+      expect(message).toBe("keep_destination は true か false で指定してください");
+    }
+    expect(await snapshot()).toEqual(before);
+    await expectApiError(await remove("bot_missing", { query: "?keep_destination=yes" }), 400, "invalid_request");
+    expect((await remove(bot.id)).status).toBe(204);
+    await expectApiError(await remove(bot.id, { query: "?keep_destination=yes" }), 400, "invalid_request");
+  });
+
+  it("ignores other query parameters", async () => {
+    const bot = await created({ name: "Muse", delivery_kind: "queue" });
+    expect((await remove(bot.id, { query: "?other=1&keep_destination=true" })).status).toBe(204);
+    expect((await subscriptionRow(bot.delivery?.subscription_id ?? "")).unsubscribed_at).toBeNull();
+  });
+
+  it("changes nothing and answers 409 when the bot changed since it was read, keeping or not", async () => {
+    const bot = await created({ name: "Muse", delivery_kind: "queue", source_ids: [source.id] });
+    const other = await createQueue({ user: alice, name: "other" });
+    const db = changingBeforeBatch(() =>
+      env.DB.prepare("UPDATE bots SET delivery_subscription_id = ? WHERE id = ?").bind(other.id, bot.id).run(),
+    );
+    const res = await remove(bot.id, { db, query: "?keep_destination=true" });
+    const after = await snapshot();
+    await expectApiError(res, 409, "conflict");
+    expect((await botRecord(bot.id)).deleted_at).toBeNull();
+    expect(await linkedSourceIds(bot.id)).toEqual([source.id]);
+    expect(await snapshot()).toEqual(after);
   });
 });
 

@@ -1,5 +1,6 @@
 import type { Context } from "hono";
 import { Hono } from "hono";
+import { validator } from "hono/validator";
 import type { Bot, BotDeliveryKind, BotDetail, BotList, CreateBotRequest, UpdateBotRequest } from "../api/types";
 import { apiError, requireUser } from "../auth/middleware";
 import { isUniqueViolation } from "../auth/users";
@@ -402,6 +403,23 @@ async function deliveryChange(c: AppContext, bot: BotRow, input: UpdateInput): P
   );
 }
 
+// keep_destination: "true" keeps the bot's webhook destination or polling queue (it stays, not assigned to a bot),
+// "false" or omitted ends it. Any other value, including "" and a repeated parameter, is 400. Other parameters are
+// ignored.
+type DeleteQuery = { keep_destination?: "true" | "false" };
+
+const deleteQuery = validator("query", (value: Record<string, string | string[]>, c) => {
+  const query: DeleteQuery = {};
+  const { keep_destination: keep } = value;
+  if (keep !== undefined) {
+    if (keep !== "true" && keep !== "false") {
+      return apiError(c, 400, "invalid_request", "keep_destination は true か false で指定してください");
+    }
+    query.keep_destination = keep;
+  }
+  return query;
+});
+
 const botsApi = new Hono<AppEnv>()
   .use("*", requireUser, requirePersonalWorkspace)
   .get("/", async (c) => {
@@ -614,7 +632,8 @@ const botsApi = new Hono<AppEnv>()
     const [body] = await botsToApi(db, workspaceId, [updated], now);
     return c.json(body as Bot, 200);
   })
-  .post("/:id/delete", async (c) => {
+  .post("/:id/delete", deleteQuery, async (c) => {
+    const keepDestination = c.req.valid("query").keep_destination === "true";
     const bot = await findBot(c, true);
     if (!bot) return apiError(c, 404, "not_found", botNotFound);
     // Deleting a deleted bot changes nothing.
@@ -625,14 +644,15 @@ const botsApi = new Hono<AppEnv>()
     const previous: BotDelivery = { kind: bot.deliveryKind, subscriptionId: bot.deliverySubscriptionId };
     const before = liveBotGuard(bot.id, workspaceId, previous);
     // The bot's own destination (a webhook destination or a polling queue) ends with it, first, while the bot is as it
-    // was read. The connection stays, not assigned to a bot (an MCP Events subscription belongs to the connection and
-    // is not ended). The linked sources go with the bot. Those two run only once the bot is deleted.
+    // was read, unless keep_destination keeps it (it stays, not assigned to a bot; what is already pending on it is
+    // still delivered or polled). The connection stays, not assigned to a bot (an MCP Events subscription belongs to
+    // the connection and is not ended). The linked sources go with the bot. Those two run only once the bot is deleted.
     const deleted = {
       sql: "EXISTS (SELECT 1 FROM bots WHERE id = ? AND workspace_id = ? AND deleted_at IS NOT NULL)",
       values: [bot.id, workspaceId],
     };
     const statements: D1PreparedStatement[] = [];
-    if (previous.kind !== "mcp" && previous.subscriptionId !== null) {
+    if (!keepDestination && previous.kind !== "mcp" && previous.subscriptionId !== null) {
       statements.push(...endDestinationStatements(d1, previous.kind, workspaceId, previous.subscriptionId, now, before));
     }
     const botIndex = statements.length;

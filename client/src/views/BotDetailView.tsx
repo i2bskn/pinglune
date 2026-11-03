@@ -39,6 +39,11 @@ const CONDITIONS_NOTE = "条件を指定しないと、受け取る送信元の�
 const DELETE_CONFIRMATION =
   "Bot を削除します。Webhook / キューの配信先も終了し、これからのイベントは届かなくなります。MCP 接続は割り当てなしの接続として残ります。元に戻せません。";
 
+// The confirmation when the destination is kept.
+function keepDestinationConfirmation(name: string): string {
+  return `Bot を削除します。配信先『${name}』は残ります。すでに送信待ちの配信はそのまま送られますが、新しいイベントは、別の Bot に割り当てるまで届きません。MCP 接続は割り当てなしの接続として残ります。元に戻せません。`;
+}
+
 type Done = (message: string | null) => void;
 
 // One bot: the sources it receives, its delivery kind and destination, the MCP connection it uses and its newest
@@ -234,15 +239,26 @@ function DeleteForm({
   const [failure, setFailure] = useState<string | null>(null);
   // The bot was changed by another operation: the screen must be read again before deleting.
   const [conflict, setConflict] = useState<string | null>(null);
+  // Whether the webhook destination or polling queue is kept, not assigned to a bot. Offered only while it is active.
+  const [keep, setKeep] = useState(false);
+  const destination = bot.delivery_kind !== "mcp" && bot.destination?.status === "active" ? bot.destination : null;
+  const destinationName = destination?.name ?? "（名前なし）";
+  const keepDestination = destination !== null && keep;
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSending(true);
     setFailure(null);
-    const result = await deleteBot(client, bot.id);
+    const result = await deleteBot(client, bot.id, { keepDestination });
     switch (result.kind) {
       case "ok":
-        setFlash(`Bot「${bot.name}」を削除しました`);
+        // A 204 does not tell whether the destination was kept (the bot may have been deleted meanwhile), so the
+        // notice says what was asked.
+        setFlash(
+          keepDestination
+            ? `Bot「${bot.name}」を削除しました。配信先を残すよう指定しました（Bot 一覧の『Bot に割り当てられていない配信先』で確かめられます）`
+            : `Bot「${bot.name}」を削除しました`,
+        );
         navigate("/bots");
         return;
       case "notFound":
@@ -268,11 +284,28 @@ function DeleteForm({
 
   return (
     <form className="folder-form" aria-label={`Bot「${bot.name}」を削除`} onSubmit={(event) => void onSubmit(event)}>
-      <p>{DELETE_CONFIRMATION}</p>
-      {bot.destination?.kind === "queue" && bot.destination.status === "active" && (
+      <p>{keepDestination ? keepDestinationConfirmation(destinationName) : DELETE_CONFIRMATION}</p>
+      {destination?.kind === "queue" && !keepDestination && (
         <p className="muted">
           キューのまだ処理されていないイベント（取得済みで処理済みの連絡がないものを含む）は失敗になり、あとから ack_events で処理済みにはできません。
         </p>
+      )}
+      {destination !== null && (
+        <label className="choice">
+          <input
+            type="checkbox"
+            name="keep_destination"
+            checked={keep}
+            onChange={(event) => setKeep(event.target.checked)}
+            disabled={sending}
+          />
+          <span>
+            <span className="choice-title">配信先『{destinationName}』を残す</span>
+            <span className="choice-description">
+              残した配信先は、Bot 一覧の『Bot に割り当てられていない配信先』から別の Bot で使えます
+            </span>
+          </span>
+        </label>
       )}
       {conflict !== null ? (
         <div className="callout" role="alert">

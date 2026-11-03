@@ -675,6 +675,16 @@ describe("updateBot and deleteBot", () => {
     expect(fetch.mock.calls[0]?.[1]?.method).toBe("POST");
   });
 
+  it("sends keep_destination=true only when the destination is kept", async () => {
+    const url = `/api/v1/bots/${BOT.id}/delete`;
+    const kept = setup(() => new Response(null, { status: 204 }), 401, `${url}?keep_destination=true`);
+    expect(await deleteBot(kept.client, BOT.id, { keepDestination: true })).toEqual({ kind: "ok" });
+    expect(kept.fetch.mock.calls[0]?.[1]?.method).toBe("POST");
+    const ended = setup(() => new Response(null, { status: 204 }), 401, url);
+    expect(await deleteBot(ended.client, BOT.id, { keepDestination: false })).toEqual({ kind: "ok" });
+    expect(ended.fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("tells a bot changed by another operation from other errors", async () => {
     const message = "Bot がほかの操作で変わりました。読み込み直してください";
     const { client } = setup(apiError(409, message), 401, `/api/v1/bots/${BOT.id}/delete`);
