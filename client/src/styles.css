@@ -335,33 +335,77 @@ p[role="alert"] {
   color: var(--ink-3);
 }
 
-/* ---------- Header ---------- */
+/* ---------- Navigation ---------- */
 
-.header {
+/* Wide screens: the sidebar on the left of the screens. Narrow ones: a top bar with a button that opens the same
+   content in a drawer. Keep the breakpoint in sync with WIDE_QUERY in views/Sidebar.tsx. */
+.app-main {
+  min-width: 0;
+}
+
+.sidebar {
+  display: none;
+}
+
+@media (width >= 900px) {
+  .app-shell {
+    display: grid;
+    grid-template-columns: 15rem minmax(0, 1fr);
+  }
+
+  .sidebar {
+    position: sticky;
+    top: 0;
+    display: block;
+    height: 100vh;
+    height: 100dvh;
+    overflow-y: auto;
+    background: var(--surface);
+    border-right: 1px solid var(--line);
+  }
+
+}
+
+.topbar {
   position: sticky;
   top: 0;
   z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem 0.5rem 0.5rem;
   background: color-mix(in srgb, var(--bg) 88%, transparent);
   border-bottom: 1px solid var(--line);
   -webkit-backdrop-filter: saturate(1.4) blur(12px);
   backdrop-filter: saturate(1.4) blur(12px);
 }
 
-.header-inner {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  grid-template-areas: "brand nav account";
-  align-items: center;
-  gap: 0.75rem 1.5rem;
-  /* The same column as the screens below it. */
-  max-width: calc(var(--measure) + 2.5rem);
-  margin: 0 auto;
-  padding: 0.625rem 1.25rem;
+/* After .topbar, so that it wins over its display. */
+@media (width >= 900px) {
+  .topbar {
+    display: none;
+  }
+}
+
+/* Icon-only buttons: the menu button and the drawer's close button. */
+.topbar-button,
+.drawer-close {
+  flex: none;
+  width: 2.75rem;
+  min-height: 2.75rem;
+  padding: 0;
+  color: var(--ink-2);
+  background: transparent;
+  border-color: transparent;
+}
+
+.topbar-button .icon,
+.drawer-close .icon {
+  width: 1.375rem;
+  height: 1.375rem;
 }
 
 .brand {
-  grid-area: brand;
-  justify-self: start;
   display: inline-flex;
   align-items: center;
   min-height: 2.5rem;
@@ -385,22 +429,137 @@ p[role="alert"] {
   height: 2.25rem;
 }
 
-.account-menu {
-  grid-area: account;
-  justify-self: end;
+/* The drawer: the browser's dialog styles undone, pinned to the left edge. */
+.drawer {
+  inset: 0 auto 0 0;
+  width: min(18rem, 85vw);
+  max-width: none;
+  height: 100%;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  color: var(--ink);
+  background: var(--surface);
+  border: 0;
+  border-right: 1px solid var(--line);
 }
 
-.account-menu > summary {
-  padding: 0.25rem;
+.drawer::backdrop {
+  background: rgb(0 0 0 / 0.45);
 }
 
-.account-menu > summary:hover,
-.account-menu[open] > summary {
+/* Covers the whole dialog, so that a click on the dialog itself is a click on the backdrop. */
+.drawer-content {
+  position: relative;
+  height: 100%;
+  overflow-y: auto;
+}
+
+.drawer-close {
+  position: absolute;
+  top: 0.875rem;
+  right: 0.5rem;
+  z-index: 1;
+}
+
+.sidebar-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  min-height: 100%;
+  padding: 1.25rem 0.75rem;
+}
+
+.sidebar-content > .brand {
+  align-self: flex-start;
+  margin-left: 0.5rem;
+}
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.nav-group-label {
+  margin: 0 0 0.25rem;
+  padding: 0 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--ink-3);
+}
+
+.nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.nav-link {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--ink-2);
+  text-decoration: none;
+  border-radius: var(--radius);
+}
+
+.nav-link:hover {
+  text-decoration: none;
   background: var(--surface-2);
+}
+
+.nav-link .icon {
+  color: var(--ink-3);
+}
+
+.nav-link[aria-current],
+.nav-link[aria-current] .icon {
+  color: var(--link);
+}
+
+.nav-link[aria-current] {
+  background: var(--accent-soft);
+}
+
+@media (pointer: coarse) {
+  .nav-link {
+    min-height: 2.75rem;
+  }
+}
+
+/* The signed-in user and the sign-out button, at the bottom. */
+.account {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-top: auto;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+}
+
+.account form {
+  margin: 0;
+}
+
+.account-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.625rem;
+  padding: 0.25rem 0.75rem 0.5rem;
 }
 
 .avatar {
   display: grid;
+  flex: none;
   place-items: center;
   width: 2rem;
   height: 2rem;
@@ -411,22 +570,12 @@ p[role="alert"] {
   border-radius: 999px;
 }
 
-.account-name {
-  max-width: 12rem;
-  padding-right: 0.5rem;
-  overflow: hidden;
-  font-size: 0.9375rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.account-card {
+.account-card-text {
   display: flex;
   flex-direction: column;
   gap: 0.125rem;
-  margin-bottom: 0.375rem;
-  padding: 0.5rem 0.75rem 0.75rem;
-  border-bottom: 1px solid var(--line);
+  min-width: 0;
+  line-height: 1.45;
 }
 
 .account-card-name {
@@ -440,71 +589,13 @@ p[role="alert"] {
 
 .account-card-role {
   align-self: flex-start;
-  margin-top: 0.375rem;
+  margin-top: 0.25rem;
   padding: 0 0.5rem;
   font-size: 0.75rem;
   font-weight: 600;
   color: var(--link);
   background: var(--accent-soft);
   border-radius: 999px;
-}
-
-@media (max-width: 767px) {
-  .account-name {
-    display: none;
-  }
-}
-
-/* The sections of the screens. */
-.nav {
-  grid-area: nav;
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
-  min-width: 0;
-}
-
-.nav-link {
-  display: inline-flex;
-  align-items: center;
-  min-height: 2.5rem;
-  padding: 0 0.75rem;
-  font-size: 0.9375rem;
-  font-weight: 500;
-  color: var(--ink-2);
-  text-decoration: none;
-  white-space: nowrap;
-  border-radius: var(--radius);
-}
-
-.nav-link:hover {
-  text-decoration: none;
-  background: var(--surface-2);
-}
-
-.nav-link[aria-current] {
-  color: var(--link);
-  background: var(--accent-soft);
-}
-
-/* Phones: brand and account on the first row, the sections below them. */
-@media (max-width: 639px) {
-  .header-inner {
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-areas:
-      "brand account"
-      "nav nav";
-    gap: 0.25rem 0.625rem;
-    padding: 0.5rem 1rem;
-  }
-
-  /* Five sections fit a 320px wide screen. */
-  .nav-link {
-    flex: 1;
-    justify-content: center;
-    min-width: 0;
-    padding: 0 0.375rem;
-  }
 }
 
 /* ---------- Screens ---------- */
@@ -515,6 +606,11 @@ p[role="alert"] {
   margin: 0 auto;
   padding: 2rem 1.25rem 5rem;
   animation: rise 0.32s ease-out both;
+}
+
+/* The top screen: wider, so that the flow map has room. */
+.main-wide {
+  max-width: calc(64rem + 2.5rem);
 }
 
 @keyframes rise {

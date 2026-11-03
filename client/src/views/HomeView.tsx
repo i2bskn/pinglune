@@ -57,7 +57,7 @@ function EventList({
   }
 
   return (
-    <main className="main">
+    <main className="main main-wide">
       <h1>イベント</h1>
       <FlowMap client={client} />
       <h2 className="sr-only">イベント一覧</h2>

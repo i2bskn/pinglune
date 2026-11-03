@@ -46,3 +46,70 @@ export function LogoutIcon() {
     </Icon>
   );
 }
+
+// Events: an inbox tray.
+export function EventsIcon() {
+  return (
+    <Icon>
+      <path d="M4 13.5 6.2 5.6a1 1 0 0 1 1-.6h9.6a1 1 0 0 1 1 .6l2.2 7.9" />
+      <path d="M4 13.5V18a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4.5h-4.5a3.5 3.5 0 0 1-7 0z" />
+    </Icon>
+  );
+}
+
+// Sources: a plug.
+export function SourcesIcon() {
+  return (
+    <Icon>
+      <path d="M9 3.5v4M15 3.5v4" />
+      <path d="M6.5 7.5h11V11a5.5 5.5 0 0 1-11 0z" />
+      <path d="M12 16.5v4" />
+    </Icon>
+  );
+}
+
+// Deliveries: a paper plane.
+export function DeliveriesIcon() {
+  return (
+    <Icon>
+      <path d="M20.5 3.5 3.5 10.5l7 3 3 7z" />
+      <path d="m20.5 3.5-10 10" />
+    </Icon>
+  );
+}
+
+// Bots: a robot head.
+export function BotsIcon() {
+  return (
+    <Icon>
+      <rect x="4.5" y="8" width="15" height="11" rx="2.5" />
+      <path d="M12 4.5V8M9.5 13h.01M14.5 13h.01M2.5 12.5v2M21.5 12.5v2" />
+    </Icon>
+  );
+}
+
+// Conversations: two speech bubbles.
+export function ConversationsIcon() {
+  return (
+    <Icon>
+      <path d="M14.5 9.5V6a1.5 1.5 0 0 0-1.5-1.5H5A1.5 1.5 0 0 0 3.5 6v5A1.5 1.5 0 0 0 5 12.5h1v3l3-3h1" />
+      <path d="M10 11a1.5 1.5 0 0 1 1.5-1.5h7.5a1.5 1.5 0 0 1 1.5 1.5v4.5a1.5 1.5 0 0 1-1.5 1.5H18v2.5L15.5 17h-4a1.5 1.5 0 0 1-1.5-1.5z" />
+    </Icon>
+  );
+}
+
+export function MenuIcon() {
+  return (
+    <Icon>
+      <path d="M4 6.5h16M4 12h16M4 17.5h16" />
+    </Icon>
+  );
+}
+
+export function CloseIcon() {
+  return (
+    <Icon>
+      <path d="M6 6l12 12M18 6 6 18" />
+    </Icon>
+  );
+}
