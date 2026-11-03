@@ -10,11 +10,11 @@ import type {
 } from "../api/types";
 import { apiError, requireUser } from "../auth/middleware";
 import { isUniqueViolation } from "../auth/users";
-import { workspaceBotsByIds } from "../bots/queries";
+import { listWorkspaceBots, MAX_BOTS_PER_WORKSPACE } from "../bots/queries";
 import { canonicalJson } from "../canonical-json";
 import { clock } from "../clock";
 import type { Db } from "../db/client";
-import { mcpConnections, subscriptions, type SubscriptionRow } from "../db/schema";
+import { mcpConnections, subscriptions, type McpConnectionRow, type SubscriptionRow } from "../db/schema";
 import type { AppEnv } from "../env";
 import { callbackHost } from "../deliveries/queries";
 import { eventFilterShape, type EventFilter } from "../events/filter";
@@ -50,7 +50,9 @@ const TOKEN_PATTERN = /^[\x21-\x7E]{1,1024}$/;
 const destinationNotFound = "配信先が見つかりません";
 const invalidUrlMessage = "URL が正しくありません（https のみ）";
 
-const webhookFilter = z.strictObject(eventFilterShape);
+// The conditions of webhook destinations and polling queues: types and labels. sources is rejected (invalid_filter):
+// the sources of the events are those linked to the bot that uses the destination.
+const webhookFilter = z.strictObject({ types: eventFilterShape.types, labels: eventFilterShape.labels });
 
 export function statusOf(row: SubscriptionRow, now: number): SubscriptionStatus {
   if (row.unsubscribedAt !== null) return "unsubscribed";
@@ -59,45 +61,72 @@ export function statusOf(row: SubscriptionRow, now: number): SubscriptionStatus 
   return row.expiresAt <= now ? "expired" : "active";
 }
 
+// The stored arguments without sources, which delivery ignores (an MCP Events subscription may still carry it).
+// null if they are broken. The stored value is not changed.
 function parseArguments(value: string): Record<string, unknown> | null {
   try {
     const parsed: unknown = JSON.parse(value);
-    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : null;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+    const { sources: _, ...rest } = parsed as Record<string, unknown>;
+    return rest;
   } catch {
     return null;
   }
 }
 
 type SubscriptionConnection = NonNullable<Subscription["connection"]>;
+type SubscriptionBot = NonNullable<Subscription["bot"]>;
 
-// The MCP connections of these MCP Events subscriptions, by connection ID, with the name of the bot while the
-// connection is active and its bot is not deleted. Only the user's connections are read.
-async function subscriptionConnections(
+// The subscriptions as the API returns them, with their MCP connections and their bots. Every API that returns
+// subscriptions uses this, so that they agree. Only the user's connections are read, and the bots of the workspace
+// that are not deleted (a few, so they are all read: the subscriptions could be more than an IN list may hold).
+// - connection (mcp): the connection with the name of its bot while the connection is active and its bot is not
+//   deleted.
+// - bot: for webhook and queue the bot whose destination it is; for mcp the bot of its active connection when the
+//   bot's delivery kind is mcp.
+async function subscriptionsToApi(
   db: Db,
   userId: string,
   workspaceId: string,
   rows: SubscriptionRow[],
-): Promise<Map<string, SubscriptionConnection>> {
-  const ids = [
+  now: number,
+): Promise<Subscription[]> {
+  if (rows.length === 0) return [];
+  const connectionIds = [
     ...new Set(rows.flatMap((row) => (row.kind === "mcp" && row.connectionId !== null ? [row.connectionId] : []))),
   ];
-  if (ids.length === 0) return new Map();
-  const connections = await db
-    .select()
-    .from(mcpConnections)
-    .where(and(eq(mcpConnections.userId, userId), inArray(mcpConnections.id, ids)))
-    .all();
-  const botIds = connections.flatMap((c) => (c.revokedAt === null && c.botId !== null ? [c.botId] : []));
-  const botRows = await workspaceBotsByIds(db, workspaceId, botIds);
-  return new Map(
-    connections.map((c) => {
-      const bot = c.revokedAt === null && c.botId !== null ? botRows.get(c.botId) : undefined;
-      const botName = bot !== undefined && bot.deletedAt === null ? bot.name : null;
-      return [c.id, { client_name: c.clientName, bot_name: botName }] as const;
-    }),
+  const [connectionRows, liveBots] = await Promise.all([
+    connectionIds.length === 0
+      ? Promise.resolve([] as McpConnectionRow[])
+      : db
+          .select()
+          .from(mcpConnections)
+          .where(and(eq(mcpConnections.userId, userId), inArray(mcpConnections.id, connectionIds)))
+          .all(),
+    listWorkspaceBots(db, workspaceId, MAX_BOTS_PER_WORKSPACE),
+  ]);
+  const botById = new Map(liveBots.map((bot) => [bot.id, bot]));
+  const botByDestination = new Map(
+    liveBots.flatMap((bot) =>
+      bot.deliveryKind !== "mcp" && bot.deliverySubscriptionId !== null ? [[bot.deliverySubscriptionId, bot] as const] : [],
+    ),
   );
+  const connections = new Map<string, { connection: SubscriptionConnection; bot: SubscriptionBot | null }>();
+  for (const row of connectionRows) {
+    const bot = row.revokedAt === null && row.botId !== null ? botById.get(row.botId) : undefined;
+    connections.set(row.id, {
+      connection: { client_name: row.clientName, bot_name: bot === undefined ? null : bot.name },
+      bot: bot !== undefined && bot.deliveryKind === "mcp" ? { id: bot.id, name: bot.name } : null,
+    });
+  }
+  return rows.map((row) => {
+    if (row.kind === "mcp") {
+      const found = row.connectionId === null ? undefined : connections.get(row.connectionId);
+      return toApiSubscription(row, now, found?.connection ?? null, found?.bot ?? null);
+    }
+    const bot = botByDestination.get(row.id);
+    return toApiSubscription(row, now, null, bot === undefined ? null : { id: bot.id, name: bot.name });
+  });
 }
 
 // Neither the secrets (or keys), the whole callback URL nor the user is returned. Polling queues have no callback
@@ -105,7 +134,8 @@ async function subscriptionConnections(
 function toApiSubscription(
   row: SubscriptionRow,
   now: number,
-  connections: Map<string, SubscriptionConnection> = new Map(),
+  connection: SubscriptionConnection | null,
+  bot: SubscriptionBot | null,
 ): Subscription {
   const isMcp = row.kind === "mcp";
   return {
@@ -119,12 +149,14 @@ function toApiSubscription(
     expires_at: isMcp ? row.expiresAt : null,
     created_at: row.createdAt,
     updated_at: row.updatedAt,
-    connection: isMcp && row.connectionId !== null ? (connections.get(row.connectionId) ?? null) : null,
+    connection: isMcp ? connection : null,
+    bot,
   };
 }
 
 type WebhookDestinationInput = { name: string; url: URL; token: string; filter: EventFilter };
 
+// sources is a known field, so that it is answered with invalid_filter rather than unknown_field.
 const FILTER_FIELDS = ["types", "sources", "labels"] as const;
 
 const createWebhookDestinationBody = jsonBody<CreateWebhookDestinationRequest, WebhookDestinationInput>((body, c) => {
@@ -179,9 +211,8 @@ const subscriptionsApi = new Hono<AppEnv>()
       listWorkspaceQueues(db, workspaceId, SUBSCRIPTION_LIST_LIMIT),
     ]);
     const now = clock.now();
-    const connections = await subscriptionConnections(db, c.get("user").id, workspaceId, mcp);
     const body: SubscriptionList = {
-      subscriptions: [...mcp, ...webhooks, ...queues].map((row) => toApiSubscription(row, now, connections)),
+      subscriptions: await subscriptionsToApi(db, c.get("user").id, workspaceId, [...mcp, ...webhooks, ...queues], now),
     };
     return c.json(body, 200);
   })
@@ -229,7 +260,8 @@ const subscriptionsApi = new Hono<AppEnv>()
       }
       const created = await findWorkspaceWebhookDestination(db, workspaceId, id);
       if (!created) throw new Error("created webhook destination not found");
-      return c.json(toApiSubscription(created, now), 201);
+      const [body] = await subscriptionsToApi(db, user.id, workspaceId, [created], now);
+      return c.json(body as Subscription, 201);
     }
     return apiError(
       c,
@@ -279,7 +311,8 @@ const subscriptionsApi = new Hono<AppEnv>()
       }
       const created = await findWorkspaceDestination(db, workspaceId, id);
       if (!created) throw new Error("created queue not found");
-      return c.json(toApiSubscription(created, now), 201);
+      const [body] = await subscriptionsToApi(db, user.id, workspaceId, [created], now);
+      return c.json(body as Subscription, 201);
     }
     return apiError(
       c,
@@ -301,8 +334,8 @@ const subscriptionsApi = new Hono<AppEnv>()
       await endWorkspaceMcpSubscription(db, workspaceId, id, now);
       const ended = await findWorkspaceMcpSubscription(db, workspaceId, id);
       if (!ended) return apiError(c, 404, "not_found", destinationNotFound);
-      const connections = await subscriptionConnections(db, c.get("user").id, workspaceId, [ended]);
-      return c.json(toApiSubscription(ended, now, connections), 200);
+      const [body] = await subscriptionsToApi(db, c.get("user").id, workspaceId, [ended], now);
+      return c.json(body as Subscription, 200);
     }
     const destination = await findWorkspaceDestination(db, workspaceId, id);
     if (!destination) return apiError(c, 404, "not_found", destinationNotFound);
@@ -314,7 +347,8 @@ const subscriptionsApi = new Hono<AppEnv>()
     }
     const ended = await findWorkspaceDestination(db, workspaceId, id);
     if (!ended) return apiError(c, 404, "not_found", destinationNotFound);
-    return c.json(toApiSubscription(ended, now), 200);
+    const [body] = await subscriptionsToApi(db, c.get("user").id, workspaceId, [ended], now);
+    return c.json(body as Subscription, 200);
   });
 
 export default subscriptionsApi;

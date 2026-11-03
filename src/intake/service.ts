@@ -2,18 +2,17 @@
 
 import { describeError } from "../auth/middleware";
 import { canonicalJson } from "../canonical-json";
-import { createDb } from "../db/client";
+import { activeBotsOfSource, resolveBotEventDestinations } from "../bots/queries";
+import { createDb, type Db } from "../db/client";
 import type { SubscriptionRow } from "../db/schema";
 import { enqueuePendingDeliveries, type DeliveryMessage } from "../deliveries/enqueue";
 import { insertDeliveryStatement } from "../deliveries/queries";
-import { matchesFilter, type EventFilter } from "../events/filter";
+import { matchesDeliveryFilter, parseStoredFilter } from "../events/filter";
 import { newDataRef, newDeliveryId, newEventId, sha256Hex } from "../ids";
 import { EVENT_NAME } from "../mcp/events";
-import { findActiveWorkspaceSubscriptions } from "../subscriptions/queries";
 import { eventDataKey } from "./storage";
 import {
   intakeError,
-  isPlainObject,
   validateIntakeInput,
   type IntakeError,
   type IntakeInput,
@@ -29,7 +28,8 @@ export type IntakeDeps = {
   now: number;
 };
 
-// An authenticated source. name is used to match subscriptions by source.
+// An authenticated source. The destinations of its events are those of the bots linked to id (bot_sources); name is
+// not used to select them.
 export type IntakeSource = { id: string; workspaceId: string; name: string; enabled: boolean };
 
 export type AcceptResult = { ok: true; event_id: string; duplicate: boolean } | { ok: false; error: IntakeError };
@@ -83,35 +83,25 @@ async function duplicateResult(deps: IntakeDeps, existing: ExistingEvent, hash: 
   return { ok: true, event_id: existing.id, duplicate: true };
 }
 
-// The filter of a pinglune.event subscription, or null if the stored arguments are broken.
-function parseFilter(value: string): EventFilter | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(value);
-  } catch {
-    return null;
-  }
-  if (!isPlainObject(parsed)) return null;
-  const { types, sources, labels } = parsed;
-  if (types !== undefined && !Array.isArray(types)) return null;
-  if (sources !== undefined && !Array.isArray(sources)) return null;
-  if (labels !== undefined && !isPlainObject(labels)) return null;
-  return parsed as EventFilter;
-}
-
-// The subscriptions that the event is delivered to.
-function matchingSubscriptions(
-  subscriptions: SubscriptionRow[],
-  event: { type: string; sourceName: string; labels: Record<string, string> },
-): SubscriptionRow[] {
-  return subscriptions.filter((subscription) => {
+// The destinations that the event is delivered to: those of the bots linked to the source (not deleted), whose
+// conditions (types and labels) match. A destination that belongs to no bot, and a bot linked to no source, get
+// nothing.
+async function matchingDestinations(
+  db: Db,
+  source: IntakeSource,
+  event: { type: string; labels: Record<string, string> },
+  now: number,
+): Promise<SubscriptionRow[]> {
+  const botRows = await activeBotsOfSource(db, source.workspaceId, source.id);
+  const destinations = await resolveBotEventDestinations(db, source.workspaceId, botRows, now);
+  return destinations.filter((subscription) => {
     if (subscription.eventName !== EVENT_NAME) return false;
-    const filter = parseFilter(subscription.arguments);
+    const filter = parseStoredFilter(subscription.arguments);
     if (filter === null) {
       console.error("intake: the arguments of a subscription are broken", { subscriptionId: subscription.id });
       return false;
     }
-    return matchesFilter(event, filter);
+    return matchesDeliveryFilter(event, filter);
   });
 }
 
@@ -155,11 +145,8 @@ async function accept(deps: IntakeDeps, source: IntakeSource, input: IntakeInput
   const existing = await findEvent(db, source.id, event.idempotencyKey);
   if (existing) return duplicateResult(deps, existing, hash);
 
-  // The active subscriptions that the event matches, read before anything is stored.
-  const subscriptions = matchingSubscriptions(
-    await findActiveWorkspaceSubscriptions(createDb(db), source.workspaceId, now),
-    { type: event.type, sourceName: source.name, labels: event.labels },
-  );
+  // The destinations that the event matches, read before anything is stored.
+  const subscriptions = await matchingDestinations(createDb(db), source, { type: event.type, labels: event.labels }, now);
 
   // 4. IDs.
   const eventId = newEventId(now);

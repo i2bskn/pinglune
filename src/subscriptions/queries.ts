@@ -1,20 +1,9 @@
-import { and, asc, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "../db/client";
 import { subscriptions, type SubscriptionRow } from "../db/schema";
 
 export function findSubscriptionById(db: Db, id: string): Promise<SubscriptionRow | undefined> {
   return db.select().from(subscriptions).where(eq(subscriptions.id, id)).get();
-}
-
-// The active subscriptions of a workspace: not ended and not expired.
-export function findActiveWorkspaceSubscriptions(db: Db, workspaceId: string, now: number): Promise<SubscriptionRow[]> {
-  return db
-    .select()
-    .from(subscriptions)
-    .where(
-      and(eq(subscriptions.workspaceId, workspaceId), isNull(subscriptions.unsubscribedAt), gt(subscriptions.expiresAt, now)),
-    )
-    .all();
 }
 
 // expires_at of webhook destinations, which do not expire: 9999-12-31T23:59:59.999Z. Being a time, it keeps the

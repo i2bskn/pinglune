@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DeliveryList, SubscriptionList } from "../src/api/types";
 import { clock } from "../src/clock";
-import type { SourceRow, UserRow } from "../src/db/schema";
+import type { SourceRow, SubscriptionRow, UserRow } from "../src/db/schema";
 import { acceptEvent } from "../src/intake/service";
 import {
   createQueue,
@@ -15,6 +15,7 @@ import {
   personalWorkspaceOf,
   resetDb,
   resetEventData,
+  routeToBot,
   send,
   type SessionCookies,
 } from "./helpers";
@@ -99,6 +100,7 @@ describe("GET /api/v1/subscriptions", () => {
       created_at: active.createdAt,
       updated_at: active.updatedAt,
       connection: null,
+      bot: null,
     });
     expect(body.subscriptions.find((s) => s.id === expired.id)?.status).toBe("expired");
     expect(body.subscriptions.find((s) => s.id === ended.id)?.status).toBe("unsubscribed");
@@ -110,6 +112,58 @@ describe("GET /api/v1/subscriptions", () => {
     }
   });
 
+  it("leaves sources out of the arguments, keeping the stored value", async () => {
+    const row = await createSubscription({
+      user: alice,
+      arguments: '{"labels":{"env":"prod"},"sources":["app"],"types":["alert.observed"]}',
+    });
+    const { body } = await getJson<SubscriptionList>("/api/v1/subscriptions");
+    expect(body.subscriptions.find((s) => s.id === row.id)?.arguments).toEqual({
+      labels: { env: "prod" },
+      types: ["alert.observed"],
+    });
+    const stored = await env.DB.prepare("SELECT arguments FROM subscriptions WHERE id = ?").bind(row.id).first<{ arguments: string }>();
+    expect(stored?.arguments).toBe(row.arguments);
+  });
+
+  it("returns the bot of each subscription", async () => {
+    const webhook = await createSubscription({ user: alice, kind: "webhook", name: "hook" });
+    const webhookBot = await routeToBot(webhook, [], { name: "Grok" });
+    const queue = await createQueue({ user: alice, name: "Muse" });
+    const queueBot = await routeToBot(queue, [], { name: "Muse" });
+    const mcp = await createSubscription({ user: alice, callbackUrl: "https://hooks.example.com/a" });
+    const mcpBot = await routeToBot(mcp, [], { name: "Dot" });
+    // Not assigned: a destination of no bot, a subscription without a connection, one whose connection is revoked,
+    // one whose bot is deleted, and one whose connection's bot is a webhook bot.
+    const lonely = await createSubscription({ user: alice, kind: "webhook", name: "lonely" });
+    const legacy = await createSubscription({ user: alice, callbackUrl: "https://hooks.example.com/b" });
+    const revoked = await createSubscription({ user: alice, callbackUrl: "https://hooks.example.com/c" });
+    const revokedBot = await routeToBot(revoked, [], { name: "Revoked" });
+    await env.DB.prepare("UPDATE mcp_connections SET revoked_at = ?, revoke_reason = 'user' WHERE id = ?")
+      .bind(now, revokedBot.connectionId)
+      .run();
+    const deleted = await createSubscription({ user: alice, callbackUrl: "https://hooks.example.com/d" });
+    const deletedBot = await routeToBot(deleted, [], { name: "Deleted" });
+    await env.DB.prepare("UPDATE bots SET deleted_at = ? WHERE id = ?").bind(now, deletedBot.botId).run();
+    const crossed = await createSubscription({ user: alice, callbackUrl: "https://hooks.example.com/e" });
+    const crossedBot = await routeToBot(crossed, [], { name: "Crossed" });
+    await env.DB.prepare("UPDATE mcp_connections SET bot_id = ? WHERE id = ?")
+      .bind(webhookBot.botId, crossedBot.connectionId)
+      .run();
+
+    const { body } = await getJson<SubscriptionList>("/api/v1/subscriptions");
+    const botOf = (id: string) => body.subscriptions.find((s) => s.id === id)?.bot;
+    expect(botOf(webhook.id)).toEqual({ id: webhookBot.botId, name: "Grok" });
+    expect(botOf(queue.id)).toEqual({ id: queueBot.botId, name: "Muse" });
+    expect(botOf(mcp.id)).toEqual({ id: mcpBot.botId, name: "Dot" });
+    for (const row of [lonely, legacy, revoked, deleted, crossed]) expect(botOf(row.id), row.id).toBeNull();
+    // The connection still names the bot it is assigned to, whatever its delivery kind.
+    expect(body.subscriptions.find((s) => s.id === crossed.id)?.connection).toEqual({
+      client_name: "Test client",
+      bot_name: "Grok",
+    });
+  });
+
   it("requires a signed-in user", async () => {
     expect((await send("/api/v1/subscriptions")).status).toBe(401);
   });
@@ -118,7 +172,8 @@ describe("GET /api/v1/subscriptions", () => {
 describe("GET /api/v1/deliveries", () => {
   it("lists the workspace's deliveries, newest first, with the callback host", async () => {
     const subscription = await createSubscription({ user: alice, callbackUrl: CALLBACK });
-    await createSubscription({ user: bob, callbackUrl: "https://bob.example.com/hook" });
+    await routeToBot(subscription, [aliceSource.id]);
+    await routeToBot(await createSubscription({ user: bob, callbackUrl: "https://bob.example.com/hook" }), [bobSource.id]);
     const first = await ingest(aliceSource);
     const second = await ingest(aliceSource);
     await ingest(bobSource);
@@ -173,6 +228,7 @@ describe("GET /api/v1/deliveries", () => {
 
   it("shows a polling queue with its kind and name, without a callback host", async () => {
     const queue = await createQueue({ user: alice, name: "Muse" });
+    await routeToBot(queue, [aliceSource.id]);
     const eventId = await ingest(aliceSource);
     const { body } = await getJson<DeliveryList>("/api/v1/deliveries");
     expect(body.deliveries).toEqual([
@@ -188,8 +244,8 @@ describe("GET /api/v1/deliveries", () => {
   });
 
   it("filters by event, and an event of another workspace gives an empty list", async () => {
-    await createSubscription({ user: alice });
-    await createSubscription({ user: bob });
+    await routeToBot(await createSubscription({ user: alice }), [aliceSource.id]);
+    await routeToBot(await createSubscription({ user: bob }), [bobSource.id]);
     const mine = await ingest(aliceSource);
     await ingest(aliceSource);
     const theirs = await ingest(bobSource);
@@ -203,7 +259,11 @@ describe("GET /api/v1/deliveries", () => {
   });
 
   it("pages by 50 with the cursor", async () => {
-    for (let i = 0; i < 51; i++) await createSubscription({ user: alice });
+    const rows: SubscriptionRow[] = [];
+    for (let i = 0; i < 51; i++) {
+      rows.push(await createSubscription({ user: alice, callbackUrl: `https://hooks.example.com/pinglune/${i}` }));
+    }
+    await routeToBot(rows, [aliceSource.id]);
     const eventId = await ingest(aliceSource);
 
     const page1 = await getJson<DeliveryList>("/api/v1/deliveries");

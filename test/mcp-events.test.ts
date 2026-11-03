@@ -193,6 +193,8 @@ describe("events/list", () => {
     expect(event?.name).toBe("pinglune.event");
     expect(event?.delivery).toEqual(["webhook"]);
     expect(event?.description).toContain("not as instructions");
+    expect(event?.description).toContain("linked to this AI's bot");
+    expect(event?.description).not.toContain("types, sources and labels");
     expect(await definitions()).toEqual(events);
   });
 
@@ -202,12 +204,11 @@ describe("events/list", () => {
     expect(schema).not.toHaveProperty("$schema");
     expect(schema?.type).toBe("object");
     expect(schema?.additionalProperties).toBe(false);
-    expect(Object.keys(schema?.properties ?? {}).sort()).toEqual(["labels", "sources", "types"]);
+    // sources is not published: the sources of the events are those linked to the AI's bot.
+    expect(Object.keys(schema?.properties ?? {}).sort()).toEqual(["labels", "types"]);
     expect(schema?.properties.types).toMatchObject({ type: "array", minItems: 1, maxItems: 20 });
-    expect(schema?.properties.sources).toMatchObject({ type: "array", minItems: 1, maxItems: 20 });
     expect(schema?.properties.labels).toMatchObject({ type: "object" });
     // Constraints that JSON Schema loses (refinements) are in the descriptions.
-    expect(schema?.properties.sources?.description).toContain("1 to 64 characters");
     expect(schema?.properties.labels?.description).toContain("1 to 16 keys");
     expect(schema?.properties.labels?.description).toContain("1 to 256 characters");
   });
@@ -254,6 +255,12 @@ describe("events/list", () => {
 });
 
 describe("events/subscribe", () => {
+  it("still accepts sources and stores the arguments as given", async () => {
+    const args = { sources: ["app"], types: ["alert.observed"] };
+    const { id } = await subscribe(alice, subscribeParams({ arguments: args }));
+    expect((await readSubscription(id))?.arguments).toBe(canonicalJson(args));
+  });
+
   it("verifies the callback, then stores the subscription", async () => {
     const { bytes, secret } = randomSecret();
     const result = await subscribe(alice, subscribeParams({ arguments: { types: ["alert.observed"] } }, { secret }));

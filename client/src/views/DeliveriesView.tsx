@@ -18,6 +18,7 @@ import {
   describeArguments,
   lastResult,
   queueRequest,
+  subscriptionBotLabel,
   webhookDestinationRequest,
 } from "../deliveries";
 import { formatDateTime } from "../format";
@@ -78,7 +79,8 @@ function DeliveriesContent({
     <main className="main">
       <h1>配信</h1>
       <p className="lead">
-        MCPクライアント（ChatGPTなど）の購読と、登録したWebhook配信先・ポーリング用キューに、条件に一致したイベントを送った記録です。
+        MCPクライアント（ChatGPTなど）の購読と、登録したWebhook配信先・ポーリング用キューに、条件に一致したイベントを送った記録です。イベントは、送信元を紐づけた
+        <Link to="/bots">Bot</Link>の配信先にだけ届きます。
       </p>
       {notice !== null && (
         <p className="notice" role="status">
@@ -212,6 +214,7 @@ function SubscriptionItem({
             ? connection.client_name
             : `${connection.client_name}（Bot: ${connection.bot_name}）`}
       </span>
+      <BotLine subscription={subscription} />
       <span className="delivery-conditions">{describeArguments(subscription.arguments)}</span>
       <span className="delivery-meta">
         {active && subscription.refresh_before !== null && (
@@ -241,7 +244,7 @@ function SubscriptionItem({
   );
 }
 
-const EMPTY_FORM: WebhookDestinationForm = { name: "", url: "", token: "", types: "", sources: "", labels: "" };
+const EMPTY_FORM: WebhookDestinationForm = { name: "", url: "", token: "", types: "", labels: "" };
 
 function CreateWebhookDestinationForm({ client, onCreated }: { client: ApiClient; onCreated: () => void }) {
   const [open, setOpen] = useState(false);
@@ -360,16 +363,6 @@ function CreateWebhookDestinationForm({ client, onCreated }: { client: ApiClient
         />
       </label>
       <label>
-        送信元の名前（カンマ区切り、任意）
-        <input
-          type="text"
-          value={form.sources}
-          onChange={(event) => update("sources", event.target.value)}
-          autoComplete="off"
-          disabled={sending}
-        />
-      </label>
-      <label>
         ラベル（1行に キー=値、任意）
         <textarea
           value={form.labels}
@@ -380,7 +373,9 @@ function CreateWebhookDestinationForm({ client, onCreated }: { client: ApiClient
           disabled={sending}
         />
       </label>
-      <p className="muted">条件を指定しないと、すべてのイベントを送ります。</p>
+      <p className="muted">
+        条件を指定しないと、すべてのイベントを送ります。届くのは、この配信先を使う Bot に紐づけた送信元のイベントだけです。
+      </p>
       <div className="folder-form-actions">
         <button type="submit" disabled={sending}>
           登録
@@ -458,6 +453,7 @@ function WebhookDestinationItem({
         )}
       </span>
       <span className="delivery-conditions">宛先: {destination.callback_host ?? "不明な宛先"}</span>
+      <BotLine subscription={destination} />
       <span className="delivery-conditions">{describeArguments(destination.arguments)}</span>
       <span className="delivery-meta">
         <time dateTime={new Date(destination.created_at).toISOString()}>
@@ -489,7 +485,7 @@ function WebhookDestinationItem({
   );
 }
 
-const EMPTY_QUEUE_FORM: QueueForm = { name: "", types: "", sources: "", labels: "" };
+const EMPTY_QUEUE_FORM: QueueForm = { name: "", types: "", labels: "" };
 
 function CreateQueueForm({ client, onCreated }: { client: ApiClient; onCreated: () => void }) {
   const [open, setOpen] = useState(false);
@@ -581,16 +577,6 @@ function CreateQueueForm({ client, onCreated }: { client: ApiClient; onCreated: 
         />
       </label>
       <label>
-        送信元の名前（カンマ区切り、任意）
-        <input
-          type="text"
-          value={form.sources}
-          onChange={(event) => update("sources", event.target.value)}
-          autoComplete="off"
-          disabled={sending}
-        />
-      </label>
-      <label>
         ラベル（1行に キー=値、任意）
         <textarea
           value={form.labels}
@@ -601,7 +587,9 @@ function CreateQueueForm({ client, onCreated }: { client: ApiClient; onCreated: 
           disabled={sending}
         />
       </label>
-      <p className="muted">条件を指定しないと、すべてのイベントをためます。</p>
+      <p className="muted">
+        条件を指定しないと、すべてのイベントをためます。届くのは、このキューを使う Bot に紐づけた送信元のイベントだけです。
+      </p>
       <div className="folder-form-actions">
         <button type="submit" disabled={sending}>
           登録
@@ -709,6 +697,7 @@ function QueueItem({
         )}
       </span>
       {active && <CopyableId id={queue.id} />}
+      <BotLine subscription={queue} />
       <span className="delivery-conditions">{describeArguments(queue.arguments)}</span>
       <span className="delivery-meta">
         <time dateTime={new Date(queue.created_at).toISOString()}>作成: {formatDateTime(queue.created_at)}</time>
@@ -733,6 +722,15 @@ function QueueItem({
         </form>
       )}
     </li>
+  );
+}
+
+// The bot of a subscription, or why it receives nothing.
+function BotLine({ subscription }: { subscription: Subscription }) {
+  const label = subscriptionBotLabel(subscription);
+  if (label === null) return null;
+  return (
+    <span className={subscription.bot === null ? "delivery-conditions muted" : "delivery-conditions"}>{label}</span>
   );
 }
 

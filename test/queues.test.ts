@@ -24,6 +24,7 @@ import {
   personalWorkspaceOf,
   resetDb,
   resetEventData,
+  routeToBot,
   send,
   type DeliveryRecord,
   type FakeQueue,
@@ -84,6 +85,20 @@ async function ingest(
   );
   if (!result.ok) throw new Error(`ingest failed: ${result.error.code}`);
   return result.event_id;
+}
+
+// A polling queue that receives the events of its user's source: delivered to by a bot linked to the source.
+async function routedQueue(params: Parameters<typeof createQueue>[0]): Promise<SubscriptionRow> {
+  const row = await createQueue(params);
+  await routeToBot(row, [params.user.id === bob.id ? bobSource.id : aliceSource.id]);
+  return row;
+}
+
+// A webhook destination of alice that receives the events of her source.
+async function routedWebhook(): Promise<SubscriptionRow> {
+  const row = await createSubscription({ user: alice, kind: "webhook", name: "w", expiresAt: NO_EXPIRY });
+  await routeToBot(row, [aliceSource.id]);
+  return row;
 }
 
 async function deliveriesOf(queue: SubscriptionRow): Promise<DeliveryRecord[]> {
@@ -162,6 +177,7 @@ describe("POST /api/v1/subscriptions/queues", () => {
       created_at: now,
       updated_at: now,
       connection: null,
+      bot: null,
     });
     expect(await findSubscriptionById(db, body.id)).toMatchObject({
       userId: alice.id,
@@ -190,6 +206,7 @@ describe("POST /api/v1/subscriptions/queues", () => {
     ["empty types", { types: [] }],
     ["an invalid type", { types: ["Not A Type!"] }],
     ["a label value that is not a string", { labels: { project: 1 } }],
+    ["sources, which the bot's linked sources decide", { sources: ["app"] }],
   ])("rejects %s", async (_label, filter) => {
     expect(await errorOf(await create({ name: "x", ...filter }))).toEqual({
       status: 400,
@@ -251,8 +268,8 @@ describe("deleting a polling queue", () => {
   }
 
   it("ends the queue and fails its pending deliveries only", async () => {
-    const queue = await createQueue({ user: alice });
-    const other = await createQueue({ user: alice });
+    const queue = await routedQueue({ user: alice });
+    const other = await routedQueue({ user: alice });
     const first = await ingest();
     const second = await ingest();
     const [acked] = (await deliveriesOf(queue)).filter((row) => row.event_id === first);
@@ -277,7 +294,7 @@ describe("deleting a polling queue", () => {
   });
 
   it("returns 404 for another workspace's queue", async () => {
-    const theirs = await createQueue({ user: bob });
+    const theirs = await routedQueue({ user: bob });
     expect(await errorOf(await remove(theirs.id))).toEqual({
       status: 404,
       code: "not_found",
@@ -289,11 +306,11 @@ describe("deleting a polling queue", () => {
 
 describe("intake", () => {
   it("creates deliveries for matching queues without sending them to the delivery queue", async () => {
-    const all = await createQueue({ user: alice });
-    const byType = await createQueue({ user: alice, arguments: '{"types":["alert.observed"]}' });
-    const otherType = await createQueue({ user: alice, arguments: '{"types":["job.finished"]}' });
-    const ended = await createQueue({ user: alice, unsubscribedAt: now });
-    const webhook = await createSubscription({ user: alice, kind: "webhook", name: "w", expiresAt: NO_EXPIRY });
+    const all = await routedQueue({ user: alice });
+    const byType = await routedQueue({ user: alice, arguments: '{"types":["alert.observed"]}' });
+    const otherType = await routedQueue({ user: alice, arguments: '{"types":["job.finished"]}' });
+    const ended = await routedQueue({ user: alice, unsubscribedAt: now });
+    const webhook = await routedWebhook();
     const queue = fakeQueue();
 
     const eventId = await ingest(aliceSource, {}, queue);
@@ -306,8 +323,8 @@ describe("intake", () => {
   });
 
   it("does not send them on a duplicate either", async () => {
-    await createQueue({ user: alice });
-    const webhook = await createSubscription({ user: alice, kind: "webhook", name: "w", expiresAt: NO_EXPIRY });
+    await routedQueue({ user: alice });
+    const webhook = await routedWebhook();
     const first = fakeQueue();
     first.fail = true;
     const input = { idempotency_key: "dup", type: "alert.observed", summary: "s" };
@@ -325,7 +342,7 @@ describe("intake", () => {
 
 describe("the delivery consumer", () => {
   it("acknowledges a message of a queue delivery without changing it", async () => {
-    const queue = await createQueue({ user: alice });
+    const queue = await routedQueue({ user: alice });
     await ingest();
     const [before] = await deliveriesOf(queue);
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -348,7 +365,7 @@ describe("the delivery consumer", () => {
 
 describe("claim_events", () => {
   it("claims the oldest deliveries up to limit, and tells whether more are waiting", async () => {
-    const queue = await createQueue({ user: alice });
+    const queue = await routedQueue({ user: alice });
     const events: string[] = [];
     for (let i = 0; i < 3; i++) {
       events.push(await ingest(aliceSource, { type: "alert.observed", labels: { n: String(i) } }));
@@ -383,7 +400,7 @@ describe("claim_events", () => {
   });
 
   it("returns a claimed delivery again after the lease, until it is acknowledged", async () => {
-    const queue = await createQueue({ user: alice });
+    const queue = await routedQueue({ user: alice });
     const eventId = await ingest();
     const [item] = (await claim(queue)).items;
     expect(item?.claim_count).toBe(1);
@@ -401,7 +418,7 @@ describe("claim_events", () => {
   });
 
   it("fails a delivery claimed 5 times without an ack as not_acknowledged", async () => {
-    const queue = await createQueue({ user: alice });
+    const queue = await routedQueue({ user: alice });
     await ingest();
     for (let i = 1; i <= 5; i++) {
       expect((await claim(queue)).items.map((item) => item.claim_count)).toEqual([i]);
@@ -417,7 +434,7 @@ describe("claim_events", () => {
   });
 
   it("does not claim deliveries older than 7 days, which the daily cron expires instead", async () => {
-    const queue = await createQueue({ user: alice });
+    const queue = await routedQueue({ user: alice });
     await ingest();
     for (let i = 0; i < 5; i++) {
       await claim(queue);
@@ -435,10 +452,10 @@ describe("claim_events", () => {
   });
 
   it("answers other workspaces', deleted, missing and malformed queues as not found", async () => {
-    const theirs = await createQueue({ user: bob });
+    const theirs = await routedQueue({ user: bob });
     await ingest(bobSource);
-    const ended = await createQueue({ user: alice, unsubscribedAt: now });
-    const webhook = await createSubscription({ user: alice, kind: "webhook", name: "w", expiresAt: NO_EXPIRY });
+    const ended = await routedQueue({ user: alice, unsubscribedAt: now });
+    const webhook = await routedWebhook();
     for (const queue of [theirs.id, ended.id, webhook.id, MISSING_QUEUE, "sub_123", "x"]) {
       expectQueueNotFound(await callTool(alice, "claim_events", { queue }));
       expectQueueNotFound(await callTool(alice, "ack_events", { queue, delivery_ids: [MISSING_DELIVERY] }));
@@ -451,12 +468,12 @@ describe("claim_events", () => {
     ["limit 51", { limit: 51 }],
     ["an unknown argument", { cursor: "x" }],
   ])("rejects %s", async (_label, args) => {
-    const queue = await createQueue({ user: alice });
+    const queue = await routedQueue({ user: alice });
     expectInvalidArguments(await callTool(alice, "claim_events", { queue: queue.id, ...args }));
   });
 
   it("never returns the same delivery to two claims at the same time", async () => {
-    const queue = await createQueue({ user: alice });
+    const queue = await routedQueue({ user: alice });
     for (let i = 0; i < 6; i++) await ingest();
     const results = await Promise.all([claim(queue, { limit: 6 }), claim(queue, { limit: 6 })]);
     const ids = results.flatMap((result) => result.items.map((item) => item.delivery_id));
@@ -468,7 +485,7 @@ describe("claim_events", () => {
   });
 
   it("fails a delivery whose event is gone as event_not_found", async () => {
-    const queue = await createQueue({ user: alice });
+    const queue = await routedQueue({ user: alice });
     const eventId = await ingest();
     await env.DB.prepare("UPDATE events SET workspace_id = ? WHERE id = ?")
       .bind((await personalWorkspaceOf(bob)).id, eventId)
@@ -478,7 +495,7 @@ describe("claim_events", () => {
   });
 
   it("reads the candidates with deliveries_status_created_at_idx", async () => {
-    const queue = await createQueue({ user: alice });
+    const queue = await routedQueue({ user: alice });
     const statement = claimableDeliveriesStatement(env.DB, {
       workspaceId: queue.workspaceId,
       queueId: queue.id,
@@ -498,9 +515,9 @@ describe("claim_events", () => {
 
 describe("ack_events", () => {
   it("counts acknowledged, already acknowledged and not found deliveries", async () => {
-    const queue = await createQueue({ user: alice });
-    const other = await createQueue({ user: alice });
-    const theirs = await createQueue({ user: bob });
+    const queue = await routedQueue({ user: alice });
+    const other = await routedQueue({ user: alice });
+    const theirs = await routedQueue({ user: bob });
     await ingest();
     await ingest();
     await ingest(bobSource);
@@ -534,7 +551,7 @@ describe("ack_events", () => {
   });
 
   it("counts only malformed IDs as not found without querying them", async () => {
-    const queue = await createQueue({ user: alice });
+    const queue = await routedQueue({ user: alice });
     expect(await ack(queue, ["x", "x", "dlv_1"])).toEqual({ acknowledged: 0, already_acknowledged: 0, not_found: 2 });
   });
 
@@ -543,16 +560,16 @@ describe("ack_events", () => {
     ["51 delivery_ids", { delivery_ids: Array.from({ length: 51 }, () => MISSING_DELIVERY) }],
     ["an unknown argument", { delivery_ids: [MISSING_DELIVERY], limit: 1 }],
   ])("rejects %s", async (_label, args) => {
-    const queue = await createQueue({ user: alice });
+    const queue = await routedQueue({ user: alice });
     expectInvalidArguments(await callTool(alice, "ack_events", { queue: queue.id, ...args }));
   });
 });
 
 describe("daily maintenance of queues", () => {
   it("expires pending queue deliveries older than 7 days, including those of ended queues", async () => {
-    const queue = await createQueue({ user: alice });
-    const ended = await createQueue({ user: alice });
-    const webhook = await createSubscription({ user: alice, kind: "webhook", name: "w", expiresAt: NO_EXPIRY });
+    const queue = await routedQueue({ user: alice });
+    const ended = await routedQueue({ user: alice });
+    const webhook = await routedWebhook();
     await ingest();
     const createdAt = now;
     await env.DB.prepare("UPDATE subscriptions SET unsubscribed_at = ? WHERE id = ?").bind(now, ended.id).run();
@@ -577,14 +594,14 @@ describe("daily maintenance of queues", () => {
   });
 
   it("leaves queue deliveries out of the stale pending check", async () => {
-    await createQueue({ user: alice });
+    await routedQueue({ user: alice });
     await ingest();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "info").mockImplementation(() => {});
     await runDailyMaintenance({ db: env.DB, bucket: env.EVENT_DATA, now: now + 2 * 60 * MINUTE });
     expect(warn).not.toHaveBeenCalledWith("stale pending deliveries", expect.anything());
 
-    await createSubscription({ user: alice });
+    await routeToBot(await createSubscription({ user: alice }), [aliceSource.id]);
     await ingest();
     await runDailyMaintenance({ db: env.DB, bucket: env.EVENT_DATA, now: now + 2 * 60 * MINUTE });
     expect(warn).toHaveBeenCalledWith("stale pending deliveries", expect.objectContaining({ count: 1 }));

@@ -8,20 +8,23 @@ import {
   countActiveBots,
   findActiveWorkspaceBot,
   findWorkspaceBot,
+  linkedSourcesByBot,
   listWorkspaceBots,
   MAX_BOTS_PER_WORKSPACE,
   resolveBotDeliveries,
+  type BotSourceSummary,
 } from "../bots/queries";
 import { clock } from "../clock";
 import type { Db } from "../db/client";
 import type { BotRow, McpConnectionRow, SubscriptionRow } from "../db/schema";
 import { callbackHost } from "../deliveries/queries";
 import type { AppEnv } from "../env";
-import { BOT_ID_PATTERN, newBotId, SUBSCRIPTION_ID_PATTERN } from "../ids";
+import { BOT_ID_PATTERN, newBotId, SOURCE_ID_PATTERN, SUBSCRIPTION_ID_PATTERN } from "../ids";
 import { redirectHost } from "../mcp/connections";
+import { listWorkspaceSources } from "../sources/queries";
 import { findWorkspaceDestination, isActiveSubscription } from "../subscriptions/queries";
 import { jsonBody } from "./api";
-import { invalidNameMessage, normalizeDisplayName, unknownField } from "./sources";
+import { invalidNameMessage, MAX_SOURCES_PER_WORKSPACE, normalizeDisplayName, unknownField } from "./sources";
 import { statusOf } from "./subscriptions";
 import { requirePersonalWorkspace } from "./workspace";
 
@@ -31,6 +34,9 @@ const DELIVERY_KINDS: readonly BotDeliveryKind[] = ["mcp", "webhook", "queue"];
 
 const botNotFound = "Bot が見つかりません";
 const invalidDeliveryKindMessage = "配信方式は mcp・webhook・queue のどれかにしてください";
+const invalidSourceIdsMessage = "受け取る送信元の指定が正しくありません";
+const sourceNotFound = "送信元が見つかりません";
+const BOT_FIELDS = ["name", "delivery_kind", "delivery_subscription_id", "source_ids"];
 const invalidDeliveryMessage =
   "通知先が見つからないか、終了しているか、配信方式と合いません。MCP Event では通知先を指定せず、Webhook とキューでは配信画面で作った通知先を選んでください";
 
@@ -42,6 +48,7 @@ export function toApiBot(
   bot: BotRow,
   connection: McpConnectionRow | undefined,
   delivery: SubscriptionRow | null | undefined,
+  sources: BotSourceSummary[],
   now: number,
 ): Bot {
   const resolved = delivery ?? null;
@@ -68,33 +75,51 @@ export function toApiBot(
             created_at: connection.createdAt,
           },
     status: connection === undefined ? "no_connection" : resolved === null ? "no_delivery" : "ready",
+    sources: sources.map((source) => ({ id: source.id, name: source.name, enabled: source.enabled })),
     created_at: bot.createdAt,
     updated_at: bot.updatedAt,
   };
 }
 
-// The bots with their active connections and their destinations now.
+// The bots with their active connections, their destinations now and their linked sources.
 async function botsToApi(db: Db, workspaceId: string, rows: BotRow[], now: number): Promise<Bot[]> {
-  const connections = await activeConnectionsByBot(
-    db,
-    workspaceId,
-    rows.map((row) => row.id),
-  );
+  const ids = rows.map((row) => row.id);
+  const [connections, linked] = await Promise.all([
+    activeConnectionsByBot(db, workspaceId, ids),
+    linkedSourcesByBot(db, workspaceId, ids),
+  ]);
   const deliveries = await resolveBotDeliveries(db, workspaceId, rows, now, connections);
-  return rows.map((row) => toApiBot(row, connections.get(row.id), deliveries.get(row.id), now));
+  return rows.map((row) =>
+    toApiBot(row, connections.get(row.id), deliveries.get(row.id), linked.get(row.id) ?? [], now),
+  );
 }
 
-type CreateInput = { name: string; deliveryKind: BotDeliveryKind; deliverySubscriptionId: string | null };
+// The form of source_ids: an array of strings, without duplicates (the first of each kept), up to
+// MAX_SOURCES_PER_WORKSPACE. null if invalid. Whether they are sources of the workspace is checked later.
+function parseSourceIds(value: unknown): string[] | null {
+  if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) return null;
+  const ids = [...new Set(value as string[])];
+  return ids.length <= MAX_SOURCES_PER_WORKSPACE ? ids : null;
+}
+
+type CreateInput = {
+  name: string;
+  deliveryKind: BotDeliveryKind;
+  deliverySubscriptionId: string | null;
+  sourceIds: string[];
+};
 
 const createBotBody = jsonBody<CreateBotRequest, CreateInput>((body, c) => {
-  const unknown = unknownField(body, ["name", "delivery_kind", "delivery_subscription_id"]);
+  const unknown = unknownField(body, BOT_FIELDS);
   if (unknown !== null) return apiError(c, 400, "unknown_field", `未知の項目があります: ${unknown}`);
   const name = normalizeDisplayName(body.name);
   if (name === null) return apiError(c, 400, "invalid_request", invalidNameMessage);
   if (!isDeliveryKind(body.delivery_kind)) return apiError(c, 400, "invalid_request", invalidDeliveryKindMessage);
+  const sourceIds = "source_ids" in body ? parseSourceIds(body.source_ids) : [];
+  if (sourceIds === null) return apiError(c, 400, "invalid_request", invalidSourceIdsMessage);
   const deliverySubscriptionId = parseDeliverySubscriptionId(body.delivery_kind, body.delivery_subscription_id);
   if (deliverySubscriptionId === undefined) return apiError(c, 400, "invalid_delivery", invalidDeliveryMessage);
-  return { ok: true, value: { name, deliveryKind: body.delivery_kind, deliverySubscriptionId } };
+  return { ok: true, value: { name, deliveryKind: body.delivery_kind, deliverySubscriptionId, sourceIds } };
 });
 
 // The destination given for a delivery kind: null for mcp (absent or null), a subscription ID of the right form for
@@ -104,13 +129,23 @@ function parseDeliverySubscriptionId(kind: BotDeliveryKind, value: unknown): str
   return typeof value === "string" && SUBSCRIPTION_ID_PATTERN.test(value) ? value : undefined;
 }
 
-type UpdateInput = { name?: string; deliveryKind?: BotDeliveryKind; deliverySubscriptionId?: string | null };
+type UpdateInput = {
+  name?: string;
+  deliveryKind?: BotDeliveryKind;
+  deliverySubscriptionId?: string | null;
+  sourceIds?: string[];
+};
 
 const updateBotBody = jsonBody<UpdateBotRequest, UpdateInput>((body, c) => {
-  const unknown = unknownField(body, ["name", "delivery_kind", "delivery_subscription_id"]);
+  const unknown = unknownField(body, BOT_FIELDS);
   if (unknown !== null) return apiError(c, 400, "unknown_field", `未知の項目があります: ${unknown}`);
-  if (!("name" in body) && !("delivery_kind" in body) && !("delivery_subscription_id" in body)) {
-    return apiError(c, 400, "invalid_request", "name・delivery_kind・delivery_subscription_id のどれかを指定してください");
+  if (!BOT_FIELDS.some((field) => field in body)) {
+    return apiError(
+      c,
+      400,
+      "invalid_request",
+      "name・delivery_kind・delivery_subscription_id・source_ids のどれかを指定してください",
+    );
   }
   const value: UpdateInput = {};
   if ("name" in body) {
@@ -121,6 +156,11 @@ const updateBotBody = jsonBody<UpdateBotRequest, UpdateInput>((body, c) => {
   if ("delivery_kind" in body) {
     if (!isDeliveryKind(body.delivery_kind)) return apiError(c, 400, "invalid_request", invalidDeliveryKindMessage);
     value.deliveryKind = body.delivery_kind;
+  }
+  if ("source_ids" in body) {
+    const sourceIds = parseSourceIds(body.source_ids);
+    if (sourceIds === null) return apiError(c, 400, "invalid_request", invalidSourceIdsMessage);
+    value.sourceIds = sourceIds;
   }
   if ("delivery_subscription_id" in body) {
     const id = body.delivery_subscription_id;
@@ -138,6 +178,39 @@ async function validDestination(db: Db, workspaceId: string, kind: BotDeliveryKi
   if (id === null) return false;
   const row = await findWorkspaceDestination(db, workspaceId, id);
   return row !== undefined && row.kind === kind && isActiveSubscription(row, clock.now());
+}
+
+// Whether every ID is a source of programs of the workspace (disabled ones included). The workspace's sources are
+// read with one bound value and matched here, so that no IN list grows with the number of IDs.
+async function validSources(db: Db, workspaceId: string, ids: string[]): Promise<boolean> {
+  if (ids.length === 0) return true;
+  if (!ids.every((id) => SOURCE_ID_PATTERN.test(id))) return false;
+  const known = new Set((await listWorkspaceSources(db, workspaceId)).map((source) => source.id));
+  return ids.every((id) => known.has(id));
+}
+
+// The statements that link a bot to its sources, for the batch that creates or updates the bot. Each statement is
+// guarded by the bot not being deleted, so that a delete that runs first leaves no rows behind. Only sources of
+// programs of the workspace are inserted (sources are never deleted, so the validated ones are still there).
+function linkSourcesStatements(
+  d1: D1Database,
+  workspaceId: string,
+  botId: string,
+  sourceIds: string[],
+  now: number,
+): D1PreparedStatement[] {
+  const liveBot = "EXISTS (SELECT 1 FROM bots WHERE id = ?1 AND workspace_id = ?2 AND deleted_at IS NULL)";
+  return [
+    d1.prepare(`DELETE FROM bot_sources WHERE bot_id = ?1 AND workspace_id = ?2 AND ${liveBot}`).bind(botId, workspaceId),
+    ...sourceIds.map((sourceId) =>
+      d1
+        .prepare(
+          `INSERT INTO bot_sources (bot_id, source_id, workspace_id, created_at)
+          SELECT ?1, id, workspace_id, ?4 FROM sources WHERE id = ?3 AND workspace_id = ?2 AND kind = 'program' AND ${liveBot}`,
+        )
+        .bind(botId, workspaceId, sourceId, now),
+    ),
+  ];
 }
 
 // The 409 of a UNIQUE violation on bots: the name, or else the destination, is taken by another bot that is not
@@ -181,16 +254,23 @@ const botsApi = new Hono<AppEnv>()
     if (!(await validDestination(db, workspaceId, input.deliveryKind, input.deliverySubscriptionId))) {
       return apiError(c, 400, "invalid_delivery", invalidDeliveryMessage);
     }
+    if (!(await validSources(db, workspaceId, input.sourceIds))) {
+      return apiError(c, 400, "invalid_source", sourceNotFound);
+    }
     const now = clock.now();
     const id = newBotId(now);
+    const d1 = c.env.DB;
     try {
-      await c.env.DB.prepare(
-        `INSERT INTO bots (id, workspace_id, created_by_user_id, name, delivery_kind, delivery_subscription_id,
-          created_at, updated_at, deleted_at)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, NULL)`,
-      )
-        .bind(id, workspaceId, c.get("user").id, input.name, input.deliveryKind, input.deliverySubscriptionId, now)
-        .run();
+      await d1.batch([
+        d1
+          .prepare(
+            `INSERT INTO bots (id, workspace_id, created_by_user_id, name, delivery_kind, delivery_subscription_id,
+              created_at, updated_at, deleted_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, NULL)`,
+          )
+          .bind(id, workspaceId, c.get("user").id, input.name, input.deliveryKind, input.deliverySubscriptionId, now),
+        ...(input.sourceIds.length === 0 ? [] : linkSourcesStatements(d1, workspaceId, id, input.sourceIds, now)),
+      ]);
     } catch (error) {
       if (isUniqueViolation(error)) return conflict(c, workspaceId, input.name, null);
       throw error;
@@ -221,16 +301,25 @@ const botsApi = new Hono<AppEnv>()
     if (changed && !(await validDestination(db, workspaceId, kind, destination))) {
       return apiError(c, 400, "invalid_delivery", invalidDeliveryMessage);
     }
+    if (input.sourceIds !== undefined && !(await validSources(db, workspaceId, input.sourceIds))) {
+      return apiError(c, 400, "invalid_source", sourceNotFound);
+    }
     const name = input.name ?? bot.name;
     const now = clock.now();
+    const d1 = c.env.DB;
     try {
-      const result = await c.env.DB.prepare(
-        `UPDATE bots SET name = ?1, delivery_kind = ?2, delivery_subscription_id = ?3, updated_at = ?4
-        WHERE id = ?5 AND workspace_id = ?6 AND deleted_at IS NULL`,
-      )
-        .bind(name, kind, destination, now, bot.id, workspaceId)
-        .run();
-      if (result.meta.changes === 0) return apiError(c, 404, "not_found", botNotFound);
+      // The bot first: a bot deleted meanwhile changes nothing (404), and the guarded statements that follow change
+      // nothing either.
+      const [result] = await d1.batch([
+        d1
+          .prepare(
+            `UPDATE bots SET name = ?1, delivery_kind = ?2, delivery_subscription_id = ?3, updated_at = ?4
+            WHERE id = ?5 AND workspace_id = ?6 AND deleted_at IS NULL`,
+          )
+          .bind(name, kind, destination, now, bot.id, workspaceId),
+        ...(input.sourceIds === undefined ? [] : linkSourcesStatements(d1, workspaceId, bot.id, input.sourceIds, now)),
+      ]);
+      if ((result?.meta.changes ?? 0) === 0) return apiError(c, 404, "not_found", botNotFound);
     } catch (error) {
       if (isUniqueViolation(error)) return conflict(c, workspaceId, name, bot.id);
       throw error;
@@ -249,7 +338,7 @@ const botsApi = new Hono<AppEnv>()
     const now = clock.now();
     const d1 = c.env.DB;
     // The connection stays, not assigned to a bot. The destination (a webhook destination or a polling queue) is not
-    // ended: it still delivers the events that its filters match.
+    // ended, but belonging to no bot it receives no events. The linked sources go with the bot.
     await d1.batch([
       d1
         .prepare("UPDATE bots SET deleted_at = ?1, updated_at = ?1 WHERE id = ?2 AND workspace_id = ?3 AND deleted_at IS NULL")
@@ -259,6 +348,7 @@ const botsApi = new Hono<AppEnv>()
           "UPDATE mcp_connections SET bot_id = NULL, updated_at = ?1 WHERE bot_id = ?2 AND workspace_id = ?3 AND revoked_at IS NULL",
         )
         .bind(now, bot.id, workspaceId),
+      d1.prepare("DELETE FROM bot_sources WHERE bot_id = ?1 AND workspace_id = ?2").bind(bot.id, workspaceId),
     ]);
     return c.body(null, 204);
   });

@@ -87,20 +87,28 @@ function stringList(value: unknown): string[] | null {
   return Array.isArray(value) && value.every((item) => typeof item === "string") ? value : null;
 }
 
-// The conditions of a subscription, e.g. "種別: a, b / 送信元: x / ラベル: k=v".
+// The conditions of a subscription, e.g. "種別: a, b / ラベル: k=v". Sources are not conditions: the sources of the
+// events are those linked to the bot (the API leaves them out of the arguments).
 export function describeArguments(args: Subscription["arguments"]): string {
   if (args === null) return "不明";
   const parts: string[] = [];
   const types = stringList(args.types);
   if (types !== null) parts.push(`種別: ${types.join(", ")}`);
-  const sources = stringList(args.sources);
-  if (sources !== null) parts.push(`送信元: ${sources.join(", ")}`);
   const labels = args.labels;
   if (typeof labels === "object" && labels !== null && !Array.isArray(labels)) {
     const entries = Object.entries(labels as Record<string, unknown>).map(([key, value]) => `${key}=${String(value)}`);
     if (entries.length > 0) parts.push(`ラベル: ${entries.join(", ")}`);
   }
   return parts.length === 0 ? "すべてのイベント" : parts.join(" / ");
+}
+
+export const NO_BOT_MESSAGE = "Bot に割り当てていないため、イベントは届きません";
+
+// The bot of a subscription, e.g. "Bot: Dot"; for an active one without a bot, why it receives nothing. null for an
+// ended or expired one without a bot.
+export function subscriptionBotLabel(subscription: Subscription): string | null {
+  if (subscription.bot !== null) return `Bot: ${subscription.bot.name}`;
+  return subscription.status === "active" ? NO_BOT_MESSAGE : null;
 }
 
 // Webhook destinations and polling queues are deleted rather than unsubscribed; they never expire.
@@ -144,7 +152,6 @@ export type WebhookDestinationForm = {
   url: string;
   token: string;
   types: string;
-  sources: string;
   labels: string;
 };
 
@@ -157,13 +164,11 @@ export function webhookDestinationRequest(
   const value: CreateWebhookDestinationRequest = { name: form.name, url: form.url, token: form.token };
   const types = splitList(form.types);
   if (types.length > 0) value.types = types;
-  const sources = splitList(form.sources);
-  if (sources.length > 0) value.sources = sources;
   if (Object.keys(labels).length > 0) value.labels = labels;
   return { ok: true, value };
 }
 
-export type QueueForm = { name: string; types: string; sources: string; labels: string };
+export type QueueForm = { name: string; types: string; labels: string };
 
 // The request of the polling queue form. Empty condition fields are left out; the server checks the rest.
 export function queueRequest(form: QueueForm): { ok: true; value: CreateQueueRequest } | { ok: false; message: string } {
@@ -172,8 +177,6 @@ export function queueRequest(form: QueueForm): { ok: true; value: CreateQueueReq
   const value: CreateQueueRequest = { name: form.name };
   const types = splitList(form.types);
   if (types.length > 0) value.types = types;
-  const sources = splitList(form.sources);
-  if (sources.length > 0) value.sources = sources;
   if (Object.keys(labels).length > 0) value.labels = labels;
   return { ok: true, value };
 }

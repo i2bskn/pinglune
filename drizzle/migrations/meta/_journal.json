@@ -57,6 +57,13 @@
       "when": 1793640474861,
       "tag": "0007_bots",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1793702196238,
+      "tag": "0008_bot_sources",
+      "breakpoints": true
     }
   ]
 }

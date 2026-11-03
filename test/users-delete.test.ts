@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deleteUser } from "../src/auth/users";
-import { users, workspaces, type UserRow, type WorkspaceRow } from "../src/db/schema";
+import { users, workspaces, type SubscriptionRow, type UserRow, type WorkspaceRow } from "../src/db/schema";
 import { NO_EXPIRY } from "../src/subscriptions/queries";
 import {
   createApiKey,
@@ -17,6 +17,7 @@ import {
   login,
   resetDb,
   resetEventData,
+  routeToBot,
   send,
   type SessionCookies,
 } from "./helpers";
@@ -85,9 +86,14 @@ async function countWhere(table: string, column: string, value: string): Promise
 
 // A source with a key, an email address, and an event with a body and an attachment, received through the HTTP
 // intake.
-async function fillWorkspace(user: UserRow): Promise<{ workspace: WorkspaceRow; sourceId: string; keyId: string }> {
+// destinations receive the event of the source, through bots linked to it.
+async function fillWorkspace(
+  user: UserRow,
+  destinations: SubscriptionRow[] = [],
+): Promise<{ workspace: WorkspaceRow; sourceId: string; keyId: string }> {
   const workspace = await personalWorkspaceOf(user);
   const source = await createSource({ workspaceId: workspace.id, name: "app" });
+  for (const destination of destinations) await routeToBot(destination, [source.id]);
   const { key, keyId } = await createApiKey(source.id);
   await createEmailAddress(source.id);
   const form = new FormData();
@@ -144,8 +150,8 @@ describe("DELETE /api/v1/users/:id", () => {
     // A subscription of the member delivering from another workspace: its deliveries must go before it.
     const crossing = await createSubscription({ user: member, workspaceId: adminWorkspace.id });
     const adminSubscription = await createSubscription({ user: admin });
-    await fillWorkspace(member);
-    await fillWorkspace(admin);
+    await fillWorkspace(member, [own]);
+    await fillWorkspace(admin, [crossing, adminSubscription]);
     expect((await listDeliveries()).map((row) => row.subscription_id).sort()).toEqual(
       [own.id, crossing.id, adminSubscription.id].sort(),
     );
@@ -155,6 +161,10 @@ describe("DELETE /api/v1/users/:id", () => {
     expect(await listDeliveries("workspace_id = ?", memberWorkspace.id)).toEqual([]);
     expect((await listDeliveries()).map((row) => row.subscription_id)).toEqual([adminSubscription.id]);
     expect(await countWhere("subscriptions", "user_id", member.id)).toBe(0);
+    // The linked sources of the member's bots go before the bots and the sources.
+    expect(await countWhere("bot_sources", "workspace_id", memberWorkspace.id)).toBe(0);
+    expect(await countWhere("bots", "workspace_id", memberWorkspace.id)).toBe(0);
+    expect(await countWhere("bot_sources", "workspace_id", adminWorkspace.id)).toBe(2);
   });
 
   it("deletes the webhook destinations of the user and their deliveries", async () => {
@@ -172,8 +182,8 @@ describe("DELETE /api/v1/users/:id", () => {
       secret: new TextEncoder().encode("crsr_key"),
       expiresAt: NO_EXPIRY,
     });
-    await fillWorkspace(member);
-    await fillWorkspace(admin);
+    await fillWorkspace(member, [webhook]);
+    await fillWorkspace(admin, [adminWebhook]);
     expect((await listDeliveries()).map((row) => row.subscription_id).sort()).toEqual(
       [webhook.id, adminWebhook.id].sort(),
     );

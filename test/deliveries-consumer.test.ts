@@ -20,6 +20,7 @@ import {
   personalWorkspaceOf,
   resetDb,
   resetEventData,
+  routeToBot,
   type DeliveryRecord,
 } from "./helpers";
 
@@ -58,6 +59,7 @@ beforeEach(async () => {
   source = await createSource({ workspaceId: workspace.id, name: "app" });
   secret = crypto.getRandomValues(new Uint8Array(32));
   subscription = await createSubscription({ user: owner, callbackUrl: CALLBACK, secret, createdAt: now });
+  await routeToBot(subscription, [source.id]);
   ({ eventId, deliveryId } = await ingest("k-1"));
 
   dns = {};

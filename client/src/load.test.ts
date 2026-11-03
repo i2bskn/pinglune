@@ -58,6 +58,7 @@ const BOT: Bot = {
   delivery: null,
   connection: null,
   status: "no_connection",
+  sources: [],
   created_at: 1,
   updated_at: 1,
 };
@@ -73,15 +74,32 @@ describe("loadBotsView", () => {
     created_at: 1,
   };
 
-  it("loads the bots, the MCP connections and the subscriptions", async () => {
+  const SOURCE: Source = {
+    id: "src_01JC9Z7H2K4M6N8P0Q2R4S6T8V",
+    name: "app",
+    enabled: true,
+    created_at: 1,
+    updated_at: 1,
+    active_key_count: 0,
+  };
+
+  it("loads the bots, the MCP connections, the subscriptions and the sources", async () => {
     const { client } = setup({
       "/api/v1/bots": [json(200, { bots: [BOT] })],
       "/api/v1/mcp-connections": [json(200, { connections: [CONNECTION] })],
       "/api/v1/subscriptions": [json(200, { subscriptions: [] })],
+      "/api/v1/sources": [json(200, { sources: [SOURCE] })],
     });
     expect(await loadBotsView(client)).toEqual({
       kind: "ready",
-      data: { bots: [BOT], connections: [CONNECTION], connectionsError: null, subscriptions: [] },
+      data: {
+        bots: [BOT],
+        connections: [CONNECTION],
+        connectionsError: null,
+        subscriptions: [],
+        sources: [SOURCE],
+        sourcesError: null,
+      },
     });
   });
 
@@ -90,10 +108,31 @@ describe("loadBotsView", () => {
       "/api/v1/bots": [json(200, { bots: [BOT] })],
       "/api/v1/mcp-connections": [apiError(503, "この接続先では MCP 接続を確認できません")],
       "/api/v1/subscriptions": [json(200, { subscriptions: [] })],
+      "/api/v1/sources": [json(200, { sources: [] })],
     });
     expect(await loadBotsView(client)).toEqual({
       kind: "ready",
-      data: { bots: [BOT], connections: [], connectionsError: "この接続先では MCP 接続を確認できません", subscriptions: [] },
+      data: {
+        bots: [BOT],
+        connections: [],
+        connectionsError: "この接続先では MCP 接続を確認できません",
+        subscriptions: [],
+        sources: [],
+        sourcesError: null,
+      },
+    });
+  });
+
+  it("shows the bots without sources when they cannot be read", async () => {
+    const { client } = setup({
+      "/api/v1/bots": [json(200, { bots: [BOT] })],
+      "/api/v1/mcp-connections": [json(200, { connections: [] })],
+      "/api/v1/subscriptions": [json(200, { subscriptions: [] })],
+      "/api/v1/sources": [apiError(500, "サーバーでエラーが発生しました")],
+    });
+    expect(await loadBotsView(client)).toMatchObject({
+      kind: "ready",
+      data: { bots: [BOT], sources: [], sourcesError: "サーバーでエラーが発生しました" },
     });
   });
 
@@ -102,6 +141,7 @@ describe("loadBotsView", () => {
       "/api/v1/bots": [apiError(500, "サーバーでエラーが発生しました")],
       "/api/v1/mcp-connections": [json(200, { connections: [] })],
       "/api/v1/subscriptions": [json(200, { subscriptions: [] })],
+      "/api/v1/sources": [json(200, { sources: [] })],
     });
     expect(await loadBotsView(client)).toEqual({ kind: "error", message: "サーバーでエラーが発生しました" });
   });
@@ -222,6 +262,7 @@ describe("loadDeliveriesView", () => {
     created_at: 1,
     updated_at: 1,
     connection: null,
+    bot: null,
   };
   const WEBHOOK: Subscription = {
     ...MCP,
@@ -317,6 +358,7 @@ describe("conversations", () => {
     created_at: 1,
     updated_at: 1,
     connection: null,
+    bot: null,
   };
 
   it("sends the cursor of the next page of the list", async () => {

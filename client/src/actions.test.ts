@@ -398,6 +398,7 @@ const DESTINATION: Subscription = {
   created_at: 1,
   updated_at: 1,
   connection: null,
+  bot: null,
 };
 
 describe("createWebhookDestination", () => {
@@ -622,6 +623,7 @@ const BOT: Bot = {
   delivery: null,
   connection: null,
   status: "no_connection",
+  sources: [],
   created_at: 1,
   updated_at: 1,
 };

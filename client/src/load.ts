@@ -234,16 +234,26 @@ export type BotsData = {
   connectionsError: string | null;
   // Every subscription, for the destinations of the bots and the subscriptions of the connections.
   subscriptions: Subscription[];
+  // The sources of programs, for the sources of the bots. Empty with sourcesError set when they cannot be read; the
+  // bots are shown anyway.
+  sources: Source[];
+  sourcesError: string | null;
 };
 
-// The bots, the MCP connections and the subscriptions of the Bot screen.
+// The bots, the MCP connections, the subscriptions and the sources of the Bot screen.
 export async function loadBotsView(client: ApiClient): Promise<Loaded<BotsData>> {
-  const [bots, connections, subscriptions] = await Promise.all([
+  const [bots, connections, subscriptions, sources] = await Promise.all([
     request(() => client.api.v1.bots.$get()),
     request(() => client.api.v1["mcp-connections"].$get()),
     request(() => client.api.v1.subscriptions.$get()),
+    request(() => client.api.v1.sources.$get()),
   ]);
-  if (bots.kind === "redirecting" || connections.kind === "redirecting" || subscriptions.kind === "redirecting") {
+  if (
+    bots.kind === "redirecting" ||
+    connections.kind === "redirecting" ||
+    subscriptions.kind === "redirecting" ||
+    sources.kind === "redirecting"
+  ) {
     return { kind: "redirecting" };
   }
   // The lists are never missing; a 404 here is an unexpected response.
@@ -256,6 +266,8 @@ export async function loadBotsView(client: ApiClient): Promise<Loaded<BotsData>>
       connections: connections.kind === "ok" ? connections.value.connections : [],
       connectionsError: connections.kind === "ok" ? null : connections.message,
       subscriptions: subscriptions.value.subscriptions,
+      sources: sources.kind === "ok" ? sources.value.sources : [],
+      sourcesError: sources.kind === "ok" ? null : sources.message,
     },
   };
 }

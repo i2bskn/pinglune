@@ -18,6 +18,7 @@ import {
   personalWorkspaceOf,
   resetDb,
   resetEventData,
+  routeToBot,
   send,
   TEST_JWT_SECRET,
   type SessionCookies,
@@ -114,6 +115,7 @@ describe("POST /api/v1/subscriptions/webhooks", () => {
       created_at: now,
       updated_at: now,
       connection: null,
+      bot: null,
     });
     const text = JSON.stringify(body);
     for (const hidden of [TOKEN, "abc-123", "automations", "x=1", alice.id]) expect(text).not.toContain(hidden);
@@ -228,6 +230,7 @@ describe("POST /api/v1/subscriptions/webhooks", () => {
     ["an invalid type", { types: ["Not A Type!"] }],
     ["types that are not an array", { types: "alert.observed" }],
     ["null sources", { sources: null }],
+    ["sources, which the bot's linked sources decide", { sources: ["app"] }],
     ["a label value that is not a string", { labels: { project: 1 } }],
   ])("rejects %s", async (_label, filter) => {
     expect(await errorOf(await create({ name: "x", url: URL_WITH_SECRET, token: TOKEN, ...filter }))).toEqual({
@@ -371,19 +374,27 @@ describe("GET /api/v1/subscriptions with webhook destinations", () => {
 });
 
 describe("deliveries to webhook destinations", () => {
+  // A webhook destination created through the API, delivered to by a bot linked to alice's source.
+  async function routed(body: Body = {}): Promise<Subscription> {
+    const destination = await created(body);
+    const row = await findSubscriptionById(db, destination.id);
+    if (!row) throw new Error("created webhook destination not found");
+    await routeToBot(row, [aliceSource.id]);
+    return destination;
+  }
+
   it("creates deliveries for matching events only", async () => {
-    const all = await created();
-    const byType = await created({ types: ["alert.observed"] });
-    const otherType = await created({ types: ["job.finished"] });
-    const byLabel = await created({ labels: { project: "a" } });
-    const otherLabel = await created({ labels: { project: "b" } });
-    const bySource = await created({ sources: ["app"] });
-    const ended = await created();
+    const all = await routed();
+    const byType = await routed({ types: ["alert.observed"] });
+    const otherType = await routed({ types: ["job.finished"] });
+    const byLabel = await routed({ labels: { project: "a" } });
+    const otherLabel = await routed({ labels: { project: "b" } });
+    const ended = await routed();
     expect((await remove(ended.id)).status).toBe(200);
 
     const eventId = await ingest();
     const ids = (await listDeliveries("event_id = ?", eventId)).map((row) => row.subscription_id).sort();
-    expect(ids).toEqual([all.id, byType.id, byLabel.id, bySource.id].sort());
+    expect(ids).toEqual([all.id, byType.id, byLabel.id].sort());
     expect(ids).not.toContain(otherType.id);
     expect(ids).not.toContain(otherLabel.id);
     expect(ids).not.toContain(ended.id);

@@ -18,7 +18,16 @@ import {
 import type { DeliveryMessage } from "../src/deliveries/enqueue";
 import type { Bindings } from "../src/env";
 import worker from "../src/index";
-import { formatApiKey, newEmailLocalPart, newKeyId, newKeySecret, newSourceId, sha256Hex } from "../src/ids";
+import {
+  formatApiKey,
+  newBotId,
+  newEmailLocalPart,
+  newKeyId,
+  newKeySecret,
+  newMcpConnectionId,
+  newSourceId,
+  sha256Hex,
+} from "../src/ids";
 import { NO_EXPIRY } from "../src/subscriptions/queries";
 import { encryptSecret, subscriptionSecretKey } from "../src/subscriptions/secret";
 import { insertPersonalWorkspaceStatement } from "../src/workspaces/queries";
@@ -38,6 +47,7 @@ export async function resetDb(): Promise<void> {
     env.DB.prepare("DELETE FROM conversation_participants"),
     env.DB.prepare("DELETE FROM conversations"),
     env.DB.prepare("DELETE FROM mcp_connections"),
+    env.DB.prepare("DELETE FROM bot_sources"),
     env.DB.prepare("DELETE FROM bots"),
     env.DB.prepare("DELETE FROM api_keys"),
     env.DB.prepare("DELETE FROM email_addresses"),
@@ -472,4 +482,66 @@ export async function listDeliveries(where = "1 = 1", ...values: unknown[]): Pro
     .bind(...values)
     .all<DeliveryRecord>();
   return results;
+}
+
+let botSequence = 0;
+
+// Makes destinations receive the events of sources, as the user sets it up on the screen: a bot that delivers to
+// them, linked to the sources. The bot is created in the workspace of the first subscription, by the workspace's owner.
+// - webhook / queue: one subscription, the bot's delivery_subscription_id.
+// - mcp: one or more subscriptions; an active MCP connection is created for the bot and recorded on them.
+// Returns the IDs of the bot and of the connection (null for webhook and queue).
+export async function routeToBot(
+  destinations: SubscriptionRow | SubscriptionRow[],
+  sourceIds: string[],
+  options: { name?: string } = {},
+): Promise<{ botId: string; connectionId: string | null }> {
+  const rows = Array.isArray(destinations) ? destinations : [destinations];
+  const [first] = rows;
+  if (first === undefined) throw new Error("no destination");
+  const kind = first.kind;
+  if (kind !== "mcp" && rows.length !== 1) throw new Error("a webhook or queue bot has one destination");
+  const now = Date.now();
+  botSequence++;
+  const botId = newBotId(now);
+  const statements: D1PreparedStatement[] = [
+    env.DB.prepare(
+      `INSERT INTO bots (id, workspace_id, created_by_user_id, name, delivery_kind, delivery_subscription_id, created_at, updated_at)
+      VALUES (?1, ?2, (SELECT owner_user_id FROM workspaces WHERE id = ?2), ?3, ?4, ?5, ?6, ?7)`,
+    ).bind(
+      botId,
+      first.workspaceId,
+      options.name ?? `test-bot-${botSequence}`,
+      kind,
+      kind === "mcp" ? null : first.id,
+      now,
+      now,
+    ),
+  ];
+  let connectionId: string | null = null;
+  if (kind === "mcp") {
+    connectionId = newMcpConnectionId(now);
+    statements.push(
+      env.DB.prepare(
+        `INSERT INTO mcp_connections (id, user_id, workspace_id, bot_id, grant_id, oauth_client_id, client_name, redirect_uri,
+          created_at, updated_at)
+        VALUES (?, ?, ?, ?, NULL, 'test-client', 'Test client', 'https://client.example.com/callback', ?, ?)`,
+      ).bind(connectionId, first.userId, first.workspaceId, botId, now, now),
+      ...rows.map((row) =>
+        env.DB.prepare("UPDATE subscriptions SET connection_id = ? WHERE id = ?").bind(connectionId, row.id),
+      ),
+    );
+  }
+  statements.push(
+    ...sourceIds.map((sourceId) =>
+      env.DB.prepare("INSERT INTO bot_sources (bot_id, source_id, workspace_id, created_at) VALUES (?, ?, ?, ?)").bind(
+        botId,
+        sourceId,
+        first.workspaceId,
+        now,
+      ),
+    ),
+  );
+  await env.DB.batch(statements);
+  return { botId, connectionId };
 }

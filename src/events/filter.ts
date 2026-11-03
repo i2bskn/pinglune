@@ -1,8 +1,10 @@
-// The conditions that select events: used by list_events and by MCP Events subscriptions.
+// The conditions that select events: used by list_events (types, sources, labels) and by the destinations of bots
+// (types and labels only: which sources reach a destination is decided by the bot's linked sources).
 
 import { z } from "zod";
 import {
   codePointLength,
+  isPlainObject,
   LABEL_KEY_PATTERN,
   LABEL_VALUE_MAX_LENGTH,
   MAX_LABELS,
@@ -64,4 +66,29 @@ export function matchesFilter(
     if (!Object.hasOwn(event.labels, key) || event.labels[key] !== value) return false;
   }
   return true;
+}
+
+// Whether an event matches the filter of a destination (an MCP Events subscription, a webhook destination or a
+// polling queue). sources is ignored even when it is stored: the sources are decided by the bot's linked sources.
+export function matchesDeliveryFilter(
+  event: { type: string; labels: Record<string, string> },
+  filter: EventFilter,
+): boolean {
+  return matchesFilter({ ...event, sourceName: "" }, { types: filter.types, labels: filter.labels });
+}
+
+// The filter stored in the arguments of a subscription, or null if they are broken.
+export function parseStoredFilter(value: string): EventFilter | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return null;
+  }
+  if (!isPlainObject(parsed)) return null;
+  const { types, sources, labels } = parsed;
+  if (types !== undefined && !Array.isArray(types)) return null;
+  if (sources !== undefined && !Array.isArray(sources)) return null;
+  if (labels !== undefined && !isPlainObject(labels)) return null;
+  return parsed as EventFilter;
 }

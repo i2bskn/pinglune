@@ -3,6 +3,7 @@ import {
   check,
   index,
   integer,
+  primaryKey,
   sqliteTable,
   text,
   uniqueIndex,
@@ -478,5 +479,30 @@ export const mcpConnections = sqliteTable(
   ],
 );
 
+// The sources whose events a bot receives: an event of a source is delivered only to the destinations of the bots
+// linked to it (src/intake/service.ts). Only sources of kind 'program' are linked; the conversation source never is.
+// The rows of a bot are deleted when the bot is deleted, and every row of the workspace when the user is deleted.
+export const botSources = sqliteTable(
+  "bot_sources",
+  {
+    botId: text("bot_id")
+      .notNull()
+      .references(() => bots.id),
+    sourceId: text("source_id")
+      .notNull()
+      .references(() => sources.id),
+    workspaceId: text("workspace_id")
+      .notNull()
+      .references(() => workspaces.id),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.botId, t.sourceId] }),
+    index("bot_sources_source_id_idx").on(t.sourceId),
+    index("bot_sources_workspace_id_idx").on(t.workspaceId),
+  ],
+);
+
 export type BotRow = typeof bots.$inferSelect;
 export type McpConnectionRow = typeof mcpConnections.$inferSelect;
+export type BotSourceRow = typeof botSources.$inferSelect;

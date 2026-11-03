@@ -144,7 +144,8 @@ export type Subscription = {
   name: string | null;
   // The host of the callback URL only. null for queue, which sends nothing.
   callback_host: string | null;
-  // The conditions (types, sources, labels); null if the stored value is broken.
+  // The conditions that delivery uses (types, labels); null if the stored value is broken. sources, which an MCP
+  // Events subscription may still carry, is left out: the sources of the events are those linked to the bot.
   arguments: Record<string, unknown> | null;
   // Webhook destinations and polling queues are "active" or "unsubscribed" (deleted); they never expire.
   status: SubscriptionStatus;
@@ -156,18 +157,22 @@ export type Subscription = {
   created_at: number;
   updated_at: number;
   // mcp only: the MCP connection that subscribed last, with the name of its bot while the connection is active and
-  // assigned to a bot that is not deleted. null for webhook and queue, and for the subscriptions of legacy connections.
+  // assigned to a bot that is not deleted (of any delivery kind). null for webhook and queue, and for the
+  // subscriptions of legacy connections.
   connection: { client_name: string; bot_name: string | null } | null;
+  // The bot whose destination this is; events are delivered only to the destinations of bots. webhook / queue: the
+  // bot (not deleted) whose delivery_subscription_id it is. mcp: the bot of its connection while the connection is
+  // active, the bot is not deleted and its delivery kind is mcp. null otherwise.
+  bot: { id: string; name: string } | null;
 };
 
-// The conditions (types, sources, labels) are optional, as in events/subscribe; an empty array or object is
-// rejected. The key is never returned.
+// The conditions (types, labels) are optional; an empty array or object is rejected. sources is not accepted: the
+// sources of the events are those linked to the bot that uses the destination. The key is never returned.
 export type CreateWebhookDestinationRequest = {
   name: string;
   url: string;
   token: string;
   types?: string[];
-  sources?: string[];
   labels?: Record<string, string>;
 };
 
@@ -175,7 +180,6 @@ export type CreateWebhookDestinationRequest = {
 export type CreateQueueRequest = {
   name: string;
   types?: string[];
-  sources?: string[];
   labels?: Record<string, string>;
 };
 
@@ -308,6 +312,9 @@ export type Bot = {
   // The active MCP connection assigned to the bot.
   connection: { id: string; client_name: string; redirect_host: string; created_at: number } | null;
   status: BotStatus;
+  // The sources whose events the bot receives, by name. Disabled sources are listed (enabled false). Empty: the bot
+  // receives no events (it still takes part in conversations).
+  sources: { id: string; name: string; enabled: boolean }[];
   created_at: number;
   updated_at: number;
 };
@@ -315,17 +322,21 @@ export type Bot = {
 export type BotList = { bots: Bot[] };
 
 // delivery_subscription_id: required for webhook and queue (a destination of that kind), absent for mcp.
+// source_ids: the sources (of programs, in the workspace) whose events the bot receives, up to 100. Default none.
 export type CreateBotRequest = {
   name: string;
   delivery_kind: BotDeliveryKind;
   delivery_subscription_id?: string;
+  source_ids?: string[];
 };
 
-// At least one field. Changing delivery_kind needs delivery_subscription_id too (null for mcp).
+// At least one field. Changing delivery_kind needs delivery_subscription_id too (null for mcp). source_ids replaces
+// the linked sources; left out, they stay.
 export type UpdateBotRequest = {
   name?: string;
   delivery_kind?: BotDeliveryKind;
   delivery_subscription_id?: string | null;
+  source_ids?: string[];
 };
 
 // active: a recorded connection with its grant. legacy: a grant made before connections were recorded, not assigned

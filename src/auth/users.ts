@@ -155,8 +155,9 @@ export async function deleteUser(db: Db, id: string): Promise<DeleteUserResult> 
   const d1 = db.$client;
   // Children first: the deliveries (of the workspace's events and of the user's subscriptions), the data of the
   // workspace (the events before the conversations they belong to, the participants before the bots and the
-  // subscriptions they refer to, the MCP connections before the bots), the subscriptions, the workspace, the sessions, then the user. ?2 is the workspace ID; NULL
-  // matches nothing.
+  // subscriptions they refer to, the MCP connections and the bot sources before the bots, the bot sources before the
+  // sources), the subscriptions, the workspace, the sessions, then the user. ?2 is the workspace ID; NULL matches
+  // nothing.
   const results = await d1.batch([
     d1
       .prepare(
@@ -167,8 +168,10 @@ export async function deleteUser(db: Db, id: string): Promise<DeleteUserResult> 
     d1.prepare(`DELETE FROM events WHERE workspace_id = ?2 AND ${guard}`).bind(id, workspaceId),
     d1.prepare(`DELETE FROM conversation_participants WHERE workspace_id = ?2 AND ${guard}`).bind(id, workspaceId),
     d1.prepare(`DELETE FROM conversations WHERE workspace_id = ?2 AND ${guard}`).bind(id, workspaceId),
-    // The MCP connections before the bots they refer to, the bots before the subscriptions they refer to.
+    // The MCP connections and the bot sources before the bots (and the sources) they refer to, the bots before the
+    // subscriptions they refer to.
     d1.prepare(`DELETE FROM mcp_connections WHERE user_id = ?1 AND ${guard}`).bind(id),
+    d1.prepare(`DELETE FROM bot_sources WHERE workspace_id = ?2 AND ${guard}`).bind(id, workspaceId),
     d1.prepare(`DELETE FROM bots WHERE workspace_id = ?2 AND ${guard}`).bind(id, workspaceId),
     d1
       .prepare(`DELETE FROM api_keys WHERE source_id IN (SELECT id FROM sources WHERE workspace_id = ?2) AND ${guard}`)

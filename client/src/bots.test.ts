@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
-import type { Bot, McpConnection, Subscription } from "../../src/api/types";
+import type { Bot, McpConnection, Source, Subscription } from "../../src/api/types";
 import {
   availableDestinations,
   botConnectionExpired,
   botDeliveryLabel,
   botForm,
+  botSourcesLabel,
   createBotRequest,
   replacementWarning,
+  sourceChoices,
   updateBotRequest,
 } from "./bots";
 
@@ -22,6 +24,7 @@ const HOOK: Subscription = {
   created_at: 1,
   updated_at: 1,
   connection: null,
+  bot: null,
 };
 const QUEUE: Subscription = { ...HOOK, id: "sub_00000000000000000000000000000002", kind: "queue", name: "muse", callback_host: null };
 const ENDED: Subscription = { ...HOOK, id: "sub_00000000000000000000000000000003", status: "unsubscribed" };
@@ -33,6 +36,7 @@ const DOT: Bot = {
   delivery: null,
   connection: { id: "mcn_01JC9Z7H2K4M6N8P0Q2R4S6T8V", client_name: "ChatGPT", redirect_host: "chatgpt.com", created_at: 1 },
   status: "no_delivery",
+  sources: [],
   created_at: 1,
   updated_at: 1,
 };
@@ -58,15 +62,15 @@ const CONNECTION: McpConnection = {
 
 describe("bot requests", () => {
   it("builds the creation request of each delivery kind", () => {
-    expect(createBotRequest({ name: "Dot", deliveryKind: "mcp", deliverySubscriptionId: "x" })).toEqual({
+    expect(createBotRequest({ name: "Dot", deliveryKind: "mcp", deliverySubscriptionId: "x", sourceIds: [] })).toEqual({
       ok: true,
       value: { name: "Dot", delivery_kind: "mcp" },
     });
-    expect(createBotRequest({ name: "Grok", deliveryKind: "webhook", deliverySubscriptionId: HOOK.id })).toEqual({
+    expect(createBotRequest({ name: "Grok", deliveryKind: "webhook", deliverySubscriptionId: HOOK.id, sourceIds: [] })).toEqual({
       ok: true,
       value: { name: "Grok", delivery_kind: "webhook", delivery_subscription_id: HOOK.id },
     });
-    expect(createBotRequest({ name: "Muse", deliveryKind: "queue", deliverySubscriptionId: "" })).toEqual({
+    expect(createBotRequest({ name: "Muse", deliveryKind: "queue", deliverySubscriptionId: "", sourceIds: [] })).toEqual({
       ok: false,
       message: "通知先を選んでください",
     });
@@ -87,6 +91,56 @@ describe("bot requests", () => {
       ok: true,
       value: { delivery_subscription_id: ENDED.id },
     });
+  });
+});
+
+describe("the sources of a bot", () => {
+  const APP = { id: "src_01JC9Z7H2K4M6N8P0Q2R4S6T8V", name: "app", enabled: true };
+  const BATCH = { id: "src_01JC9Z7H2K4M6N8P0Q2R4S6T8W", name: "batch", enabled: false };
+  const LINKED: Bot = { ...GROK, sources: [APP, BATCH] };
+
+  it("sends the chosen sources on create, and nothing when they could not be read", () => {
+    expect(createBotRequest({ name: "Dot", deliveryKind: "mcp", deliverySubscriptionId: "", sourceIds: [APP.id] })).toEqual({
+      ok: true,
+      value: { name: "Dot", delivery_kind: "mcp", source_ids: [APP.id] },
+    });
+    expect(createBotRequest({ name: "Dot", deliveryKind: "mcp", deliverySubscriptionId: "", sourceIds: [] }, false)).toEqual({
+      ok: false,
+      message: "送信元を読み込めませんでした",
+    });
+  });
+
+  it("sends the sources on update only when the chosen set changed and they were read", () => {
+    expect(botForm(LINKED).sourceIds).toEqual([APP.id, BATCH.id]);
+    expect(updateBotRequest(LINKED, { ...botForm(LINKED), sourceIds: [BATCH.id, APP.id] })).toBeNull();
+    expect(updateBotRequest(LINKED, { ...botForm(LINKED), sourceIds: [BATCH.id] })).toEqual({
+      ok: true,
+      value: { source_ids: [BATCH.id] },
+    });
+    expect(updateBotRequest(LINKED, { ...botForm(LINKED), sourceIds: [] })).toEqual({ ok: true, value: { source_ids: [] } });
+    // Not read: left out, so the server keeps them.
+    expect(updateBotRequest(LINKED, { ...botForm(LINKED), name: "Grok 2", sourceIds: [] }, false)).toEqual({
+      ok: true,
+      value: { name: "Grok 2" },
+    });
+  });
+
+  it("lists the sources of a bot, and tells that a bot without sources receives nothing", () => {
+    expect(botSourcesLabel(LINKED)).toBe("受け取る送信元: app, batch（無効）");
+    expect(botSourcesLabel(GROK)).toBe("受け取る送信元: なし（イベントは届きません）");
+  });
+
+  it("offers the sources by name", () => {
+    const source = (id: string, name: string): Source => ({
+      id,
+      name,
+      enabled: true,
+      created_at: 1,
+      updated_at: 1,
+      active_key_count: 0,
+    });
+    const choices = sourceChoices([source("src_1", "worker"), source("src_2", "app"), source("src_3", "batch")]);
+    expect(choices.map((s) => s.name)).toEqual(["app", "batch", "worker"]);
   });
 });
 

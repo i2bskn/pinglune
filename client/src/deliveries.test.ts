@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Delivery } from "../../src/api/types";
+import type { Delivery, Subscription } from "../../src/api/types";
 import {
   INVALID_LABELS_MESSAGE,
   attemptsLabel,
@@ -11,6 +11,7 @@ import {
   parseLabelLines,
   queueRequest,
   splitList,
+  subscriptionBotLabel,
   webhookDestinationRequest,
 } from "./deliveries";
 
@@ -48,10 +49,10 @@ describe("parseLabelLines", () => {
 });
 
 describe("webhookDestinationRequest", () => {
-  const empty = { name: "Grok Bot", url: "https://api2.example.com/hook", token: "crsr_x", types: "", sources: "", labels: "" };
+  const empty = { name: "Grok Bot", url: "https://api2.example.com/hook", token: "crsr_x", types: "", labels: "" };
 
   it("leaves out empty conditions", () => {
-    expect(webhookDestinationRequest({ ...empty, types: ", ,", sources: " ", labels: "\n" })).toEqual({
+    expect(webhookDestinationRequest({ ...empty, types: ", ,", labels: "\n" })).toEqual({
       ok: true,
       value: { name: "Grok Bot", url: "https://api2.example.com/hook", token: "crsr_x" },
     });
@@ -59,7 +60,7 @@ describe("webhookDestinationRequest", () => {
 
   it("converts the conditions", () => {
     expect(
-      webhookDestinationRequest({ ...empty, types: "alert.observed, job.finished", sources: "app", labels: "project=a" }),
+      webhookDestinationRequest({ ...empty, types: "alert.observed, job.finished", labels: "project=a" }),
     ).toEqual({
       ok: true,
       value: {
@@ -67,7 +68,6 @@ describe("webhookDestinationRequest", () => {
         url: "https://api2.example.com/hook",
         token: "crsr_x",
         types: ["alert.observed", "job.finished"],
-        sources: ["app"],
         labels: { project: "a" },
       },
     });
@@ -87,22 +87,51 @@ describe("error labels", () => {
 
 describe("describeArguments", () => {
   it("describes every condition", () => {
-    expect(describeArguments({ types: ["a"], sources: ["x"], labels: { k: "v" } })).toBe("種別: a / 送信元: x / ラベル: k=v");
+    expect(describeArguments({ types: ["a"], labels: { k: "v" } })).toBe("種別: a / ラベル: k=v");
+    // Sources are not conditions of delivery; a stored value is not shown.
+    expect(describeArguments({ sources: ["x"] })).toBe("すべてのイベント");
     expect(describeArguments({})).toBe("すべてのイベント");
   });
 });
 
+describe("subscriptionBotLabel", () => {
+  const SUBSCRIPTION: Subscription = {
+    id: "sub_00000000000000000000000000000001",
+    kind: "webhook",
+    name: "grok",
+    callback_host: "api.example.com",
+    arguments: {},
+    status: "active",
+    refresh_before: null,
+    expires_at: null,
+    created_at: 1,
+    updated_at: 1,
+    connection: null,
+    bot: null,
+  };
+
+  it("names the bot of a subscription", () => {
+    expect(subscriptionBotLabel({ ...SUBSCRIPTION, bot: { id: "bot_1", name: "Grok" } })).toBe("Bot: Grok");
+  });
+
+  it("tells that an active subscription without a bot receives nothing, but not for ended or expired ones", () => {
+    expect(subscriptionBotLabel(SUBSCRIPTION)).toBe("Bot に割り当てていないため、イベントは届きません");
+    expect(subscriptionBotLabel({ ...SUBSCRIPTION, status: "unsubscribed" })).toBeNull();
+    expect(subscriptionBotLabel({ ...SUBSCRIPTION, kind: "mcp", status: "expired" })).toBeNull();
+  });
+});
+
 describe("queueRequest", () => {
-  const empty = { name: "Muse", types: "", sources: "", labels: "" };
+  const empty = { name: "Muse", types: "", labels: "" };
 
   it("leaves out empty conditions", () => {
     expect(queueRequest({ ...empty, types: " , ", labels: "\n" })).toEqual({ ok: true, value: { name: "Muse" } });
   });
 
   it("converts the conditions", () => {
-    expect(queueRequest({ ...empty, types: "alert.observed", sources: "app, job", labels: "project=a" })).toEqual({
+    expect(queueRequest({ ...empty, types: "alert.observed", labels: "project=a" })).toEqual({
       ok: true,
-      value: { name: "Muse", types: ["alert.observed"], sources: ["app", "job"], labels: { project: "a" } },
+      value: { name: "Muse", types: ["alert.observed"], labels: { project: "a" } },
     });
   });
 

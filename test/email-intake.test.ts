@@ -20,6 +20,7 @@ import {
   personalWorkspaceOf,
   resetDb,
   resetEventData,
+  routeToBot,
   type FakeQueue,
 } from "./helpers";
 
@@ -494,7 +495,7 @@ describe("handleEmail", () => {
     });
 
     it("throws when the queue fails, and a resend with other trace headers is a duplicate", async () => {
-      await createSubscription({ user });
+      await routeToBot(await createSubscription({ user }), [source.id]);
       queue.fail = true;
       const message = fakeMessage(TEXT_MAIL);
       await expect(handleEmail(message, testEnv())).rejects.toThrow("email intake: temporarily unavailable");
@@ -566,7 +567,7 @@ describe("handleEmail", () => {
     await handleEmail(fakeMessage(TEXT_MAIL), testEnv());
     parse.mockRestore();
 
-    await createSubscription({ user });
+    await routeToBot(await createSubscription({ user }), [source.id]);
     queue.fail = true;
     await expect(handleEmail(fakeMessage(TEXT_MAIL), testEnv())).rejects.toThrow();
     queue.fail = false;

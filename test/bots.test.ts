@@ -3,11 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Bot, BotList } from "../src/api/types";
 import { resolveBotDeliveries } from "../src/bots/queries";
 import { clock } from "../src/clock";
-import type { BotRow, SubscriptionRow, UserRow } from "../src/db/schema";
+import type { BotRow, SourceRow, SubscriptionRow, UserRow } from "../src/db/schema";
 import { newMcpConnectionId } from "../src/ids";
 import {
   countTable,
   createQueue,
+  createSource,
   createSubscription,
   createUser,
   db,
@@ -121,6 +122,7 @@ describe("POST /api/v1/bots", () => {
       delivery: null,
       connection: null,
       status: "no_connection",
+      sources: [],
       created_at: now,
       updated_at: now,
     });
@@ -320,6 +322,115 @@ describe("the state and the destination of a bot", () => {
     const bots = await list();
     expect(bots.find((b) => b.id === dot2.id)?.status).toBe("ready");
     expect(bots.find((b) => b.id === dot.id)?.status).toBe("no_delivery");
+  });
+});
+
+describe("the sources of a bot", () => {
+  let app: SourceRow;
+  let worker: SourceRow;
+  let disabled: SourceRow;
+
+  beforeEach(async () => {
+    const workspaceId = (await personalWorkspaceOf(alice)).id;
+    worker = await createSource({ workspaceId, name: "worker" });
+    app = await createSource({ workspaceId, name: "app" });
+    disabled = await createSource({ workspaceId, name: "batch", enabled: false });
+  });
+
+  async function linkedSourceIds(botId: string): Promise<string[]> {
+    const { results } = await env.DB.prepare("SELECT source_id FROM bot_sources WHERE bot_id = ? ORDER BY source_id")
+      .bind(botId)
+      .all<{ source_id: string }>();
+    return results.map((row) => row.source_id);
+  }
+
+  it("links the given sources on create, by name in the response, disabled ones included", async () => {
+    const bot = await created({
+      name: "Dot",
+      delivery_kind: "mcp",
+      source_ids: [worker.id, app.id, disabled.id, worker.id],
+    });
+    expect(bot.sources).toEqual([
+      { id: app.id, name: "app", enabled: true },
+      { id: disabled.id, name: "batch", enabled: false },
+      { id: worker.id, name: "worker", enabled: true },
+    ]);
+    expect(await linkedSourceIds(bot.id)).toEqual([app.id, disabled.id, worker.id].sort());
+    expect((await list())[0]?.sources.map((source) => source.name)).toEqual(["app", "batch", "worker"]);
+  });
+
+  it("replaces the sources on update, and keeps them when source_ids is left out", async () => {
+    const bot = await created({ name: "Dot", delivery_kind: "mcp", source_ids: [app.id, worker.id] });
+    const renamed = await update(bot.id, { name: "Dot 2" });
+    expect(renamed.status).toBe(200);
+    expect(((await renamed.json()) as Bot).sources.map((source) => source.id)).toEqual([app.id, worker.id]);
+
+    const replaced = await update(bot.id, { source_ids: [disabled.id] });
+    expect(replaced.status).toBe(200);
+    expect(((await replaced.json()) as Bot).sources).toEqual([{ id: disabled.id, name: "batch", enabled: false }]);
+    expect(await linkedSourceIds(bot.id)).toEqual([disabled.id]);
+
+    const cleared = await update(bot.id, { source_ids: [] });
+    expect(((await cleared.json()) as Bot).sources).toEqual([]);
+    expect(await linkedSourceIds(bot.id)).toEqual([]);
+  });
+
+  it.each<[string, unknown]>([
+    ["not an array", "src_x"],
+    ["null", null],
+    ["an item that is not a string", [1]],
+  ])("rejects source_ids that is %s with invalid_request", async (_, sourceIds) => {
+    await expectApiError(await create({ name: "x", delivery_kind: "mcp", source_ids: sourceIds }), 400, "invalid_request");
+    const bot = await created({ name: "Dot", delivery_kind: "mcp", source_ids: [app.id] });
+    await expectApiError(await update(bot.id, { source_ids: sourceIds }), 400, "invalid_request");
+    expect(await linkedSourceIds(bot.id)).toEqual([app.id]);
+  });
+
+  it("allows up to 100 sources after removing duplicates", async () => {
+    const tooMany = Array.from({ length: 101 }, (_, i) => `src_${String(i).padStart(26, "0")}`);
+    await expectApiError(await create({ name: "x", delivery_kind: "mcp", source_ids: tooMany }), 400, "invalid_request");
+    const bot = await created({ name: "Dot", delivery_kind: "mcp", source_ids: Array.from({ length: 101 }, () => app.id) });
+    expect(bot.sources.map((source) => source.id)).toEqual([app.id]);
+  });
+
+  it("rejects sources that are malformed, of another workspace or the conversation source with invalid_source", async () => {
+    const bobs = await createSource({ workspaceId: (await personalWorkspaceOf(bob)).id, name: "app" });
+    const conversationId = "src_01JC9Z7H2K4M6N8P0Q2R4S6T8V";
+    await env.DB.prepare(
+      `INSERT INTO sources (id, workspace_id, name, enabled, kind, created_at, updated_at)
+      VALUES (?, ?, 'conversations', 1, 'conversation', ?, ?)`,
+    )
+      .bind(conversationId, (await personalWorkspaceOf(alice)).id, now, now)
+      .run();
+    const bot = await created({ name: "Dot", delivery_kind: "mcp", source_ids: [app.id] });
+    for (const id of ["src_x", bobs.id, conversationId, "src_" + "0".repeat(26)]) {
+      await expectApiError(await create({ name: "x", delivery_kind: "mcp", source_ids: [app.id, id] }), 400, "invalid_source");
+      await expectApiError(await update(bot.id, { name: "renamed", source_ids: [id] }), 400, "invalid_source");
+    }
+    expect(await countTable("bots")).toBe(1);
+    expect((await botRow(bot.id)).name).toBe("Dot");
+    expect(await linkedSourceIds(bot.id)).toEqual([app.id]);
+  });
+
+  it("answers an invalid destination before an invalid source", async () => {
+    await expectApiError(
+      await create({ name: "x", delivery_kind: "queue", delivery_subscription_id: "sub_" + "a".repeat(32), source_ids: ["src_x"] }),
+      400,
+      "invalid_delivery",
+    );
+    await expectApiError(
+      await create({ name: "x", delivery_kind: "mcp", source_ids: "src_x", delivery_subscription_id: "sub_x" }),
+      400,
+      "invalid_request",
+    );
+  });
+
+  it("deletes the links with the bot", async () => {
+    const bot = await created({ name: "Dot", delivery_kind: "mcp", source_ids: [app.id, worker.id] });
+    const other = await created({ name: "Grok", delivery_kind: "webhook", delivery_subscription_id: hook.id, source_ids: [app.id] });
+    expect((await remove(bot.id)).status).toBe(204);
+    expect(await linkedSourceIds(bot.id)).toEqual([]);
+    expect(await linkedSourceIds(other.id)).toEqual([app.id]);
   });
 });
 

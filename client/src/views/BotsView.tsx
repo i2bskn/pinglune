@@ -1,5 +1,5 @@
 import { type FormEvent, useState } from "react";
-import type { Bot, BotDeliveryKind, McpConnection, Subscription } from "../../../src/api/types";
+import type { Bot, BotDeliveryKind, McpConnection, Source, Subscription } from "../../../src/api/types";
 import { assignMcpConnection, createBot, deleteBot, revokeMcpConnection, updateBot } from "../actions";
 import {
   BOT_STATUS_LABELS,
@@ -10,13 +10,16 @@ import {
   DELIVERY_KIND_LABELS,
   EMPTY_BOT_FORM,
   MCP_DELIVERY_PENDING_MESSAGE,
+  SOURCES_UNAVAILABLE_MESSAGE,
   availableDestinations,
   botConnectionExpired,
   botDeliveryLabel,
   botForm,
+  botSourcesLabel,
   connectionLabel,
   createBotRequest,
   replacementWarning,
+  sourceChoices,
   updateBotRequest,
 } from "../bots";
 import { subscriptionLabel } from "../conversations";
@@ -73,8 +76,8 @@ function BotsContent({
     <main className="main">
       <h1>Bot</h1>
       <p className="lead">
-        Bot は会話に参加する AI です。名前・MCP 接続・通知先をまとめて管理します。AI から Pinglune に接続するとき、どの Bot
-        として接続するかを選びます。
+        Bot は会話に参加する AI です。名前・MCP 接続・通知先・受け取る送信元をまとめて管理します。AI から Pinglune
+        に接続するとき、どの Bot として接続するかを選びます。送信元のイベントは、その送信元を紐づけた Bot の通知先にだけ届きます。
       </p>
       {notice !== null && (
         <p className="notice" role="status">
@@ -121,16 +124,71 @@ function BotsContent({
   );
 }
 
-// The name, the delivery kind and the destination of a bot, for the creation and the edit forms.
+// The sources of programs, by name, or null when they could not be read.
+function sourcesOf(data: BotsData): Source[] | null {
+  return data.sourcesError === null ? sourceChoices(data.sources) : null;
+}
+
+// The sources whose events the bot receives, as checkboxes.
+function SourceFields({
+  form,
+  onChange,
+  sources,
+  disabled,
+}: {
+  form: BotForm;
+  onChange: (next: BotForm) => void;
+  sources: Source[] | null;
+  disabled: boolean;
+}) {
+  function toggle(id: string, checked: boolean) {
+    const rest = form.sourceIds.filter((sourceId) => sourceId !== id);
+    onChange({ ...form, sourceIds: checked ? [...rest, id] : rest });
+  }
+
+  return (
+    <fieldset className="participant-fields" disabled={disabled}>
+      <legend>受け取る送信元</legend>
+      {sources === null ? (
+        <p className="muted" role="alert">
+          {SOURCES_UNAVAILABLE_MESSAGE}
+        </p>
+      ) : sources.length === 0 ? (
+        <p className="muted">
+          送信元がありません。<Link to="/sources">送信元</Link>画面で作成してください
+        </p>
+      ) : (
+        sources.map((source) => (
+          <label key={source.id} className="choice">
+            <input
+              type="checkbox"
+              value={source.id}
+              checked={form.sourceIds.includes(source.id)}
+              onChange={(event) => toggle(source.id, event.target.checked)}
+            />
+            <span className="choice-title">
+              {source.name}
+              {source.enabled ? "" : "（無効）"}
+            </span>
+          </label>
+        ))
+      )}
+    </fieldset>
+  );
+}
+
+// The name, the delivery kind, the destination and the sources of a bot, for the creation and the edit forms.
 function BotFormFields({
   form,
   onChange,
   destinations,
+  sources,
   disabled,
 }: {
   form: BotForm;
   onChange: (next: BotForm) => void;
   destinations: (kind: BotDeliveryKind) => Subscription[];
+  sources: Source[] | null;
   disabled: boolean;
 }) {
   const choices = destinations(form.deliveryKind);
@@ -191,6 +249,7 @@ function BotFormFields({
           を登録してください（ほかの Bot が使っている通知先は選べません）。
         </p>
       )}
+      <SourceFields form={form} onChange={onChange} sources={sources} disabled={disabled} />
     </>
   );
 }
@@ -209,7 +268,7 @@ function CreateBotForm({ client, data, onDone }: { client: ApiClient; data: Bots
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const request = createBotRequest(form);
+    const request = createBotRequest(form, data.sourcesError === null);
     if (!request.ok) {
       setFailure(request.message);
       return;
@@ -256,6 +315,7 @@ function CreateBotForm({ client, data, onDone }: { client: ApiClient; data: Bots
         form={form}
         onChange={setForm}
         destinations={(kind) => availableDestinations(data.subscriptions, data.bots, kind, null)}
+        sources={sourcesOf(data)}
         disabled={sending}
       />
       <div className="folder-form-actions">
@@ -311,7 +371,7 @@ function BotItem({ client, bot, data, onDone }: { client: ApiClient; bot: Bot; d
 
   async function onSave(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const request = updateBotRequest(bot, form);
+    const request = updateBotRequest(bot, form, data.sourcesError === null);
     if (request === null) {
       setMode("view");
       return;
@@ -356,6 +416,7 @@ function BotItem({ client, bot, data, onDone }: { client: ApiClient; bot: Bot; d
         通知先: {botDeliveryLabel(bot)}
         {bot.delivery !== null && bot.delivery.status !== "active" ? "（無効）" : ""}
       </span>
+      <span className="delivery-conditions">{botSourcesLabel(bot)}</span>
       {bot.status === "no_connection" && (
         <span className="delivery-conditions">AI から Pinglune に接続するとき、この Bot を選んでください。</span>
       )}
@@ -375,6 +436,7 @@ function BotItem({ client, bot, data, onDone }: { client: ApiClient; bot: Bot; d
             form={form}
             onChange={setForm}
             destinations={(kind) => availableDestinations(data.subscriptions, data.bots, kind, bot.id)}
+            sources={sourcesOf(data)}
             disabled={sending}
           />
           <div className="folder-form-actions">
@@ -392,7 +454,7 @@ function BotItem({ client, bot, data, onDone }: { client: ApiClient; bot: Bot; d
         <form className="folder-form" aria-label={`Bot「${bot.name}」を削除`} onSubmit={(event) => void onDelete(event)}>
           <p>
             Bot「{bot.name}」を削除します。会話の参加者には残りますが、発言も通知もできなくなります。MCP
-            接続は切断せず、Bot に割り当てない接続として残ります。通知先（Webhook 配信先・キュー）は終了しません。
+            接続は切断せず、Bot に割り当てない接続として残ります。通知先（Webhook 配信先・キュー）は終了しませんが、イベントは届かなくなります。
           </p>
           <div className="folder-form-actions">
             <button type="submit" className="button-danger" disabled={sending}>

@@ -44,7 +44,7 @@ import {
 import { jsonBody } from "./api";
 import { requirePersonalWorkspace } from "./workspace";
 
-const MAX_SOURCES_PER_WORKSPACE = 100;
+export const MAX_SOURCES_PER_WORKSPACE = 100;
 const MAX_ACTIVE_KEYS_PER_SOURCE = 10;
 const MAX_ACTIVE_EMAIL_ADDRESSES_PER_SOURCE = 10;
 export const SOURCE_NAME_MAX_LENGTH = 64;
