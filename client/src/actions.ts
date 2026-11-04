@@ -197,6 +197,34 @@ export async function updateSourceScreening(
   );
 }
 
+// Turns the check of the sender of the email intake of a source on or off. Errors (400) are shown with the server's
+// message. Never rejects.
+export async function updateSourceEmailSenderVerification(
+  client: ApiClient,
+  sourceId: string,
+  enabled: boolean,
+): Promise<SourceActionResult> {
+  if (!isValidId(sourceId)) return INVALID_SOURCE_ID;
+  return resourceActionResult(
+    await send(() =>
+      client.api.v1.sources[":id"]["email-sender-verification"].$post({ param: { id: sourceId }, json: { enabled } }),
+    ),
+  );
+}
+
+// Saves the allowed senders of the email intake of a source. Errors (400, 422 too_many_senders and invalid_sender) are
+// shown with the server's message. Never rejects.
+export async function updateSourceEmailSenders(
+  client: ApiClient,
+  sourceId: string,
+  senders: string[],
+): Promise<SourceActionResult> {
+  if (!isValidId(sourceId)) return INVALID_SOURCE_ID;
+  return resourceActionResult(
+    await send(() => client.api.v1.sources[":id"]["email-senders"].$post({ param: { id: sourceId }, json: { senders } })),
+  );
+}
+
 // Sets or changes the TypeSafe API key of the workspace (checked with TypeSafe first). Never rejects.
 export async function setScreeningApiKey(client: ApiClient, apiKey: string): Promise<ResourceActionResult> {
   return resourceActionResult(

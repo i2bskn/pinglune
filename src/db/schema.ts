@@ -116,6 +116,13 @@ export const sources = sqliteTable(
     // Whether the events of the source are screened for instructions to AIs before delivery (src/screening/). 0 or 1.
     // Off by default.
     screeningEnabled: integer("screening_enabled").notNull().default(0),
+    // Whether the email intake checks the sender (Authentication-Results of Cloudflare and From, src/intake/
+    // email-sender.ts). 0 or 1. 0 by default so that the sources made before the check stay off; a new source is made
+    // with 1 (POST /api/v1/sources).
+    emailSenderVerification: integer("email_sender_verification").notNull().default(0),
+    // The allowed senders: a JSON array of normalized addresses and domains, used only while the check is on. NULL
+    // when there are none; [] is read as NULL.
+    emailAllowedSenders: text("email_allowed_senders"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },

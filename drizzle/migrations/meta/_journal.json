@@ -85,6 +85,13 @@
       "when": 1793811811243,
       "tag": "0011_screening",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1793815135678,
+      "tag": "0012_email_senders",
+      "breakpoints": true
     }
   ]
 }

@@ -31,13 +31,20 @@ const RECIPIENT = `${LOCAL_PART}@${DOMAIN}`;
 
 type FakeMessage = ForwardableEmailMessage & { rejects: string[] };
 
-function fakeMessage(raw: string | Uint8Array, options: { to?: string; rawSize?: number } = {}): FakeMessage {
+// headers: the headers Email Routing gives (message.headers), each appended as a line of its own. Whether raw was
+// read is message.raw.locked.
+function fakeMessage(
+  raw: string | Uint8Array,
+  options: { to?: string; rawSize?: number; headers?: [string, string][] } = {},
+): FakeMessage {
   const bytes = typeof raw === "string" ? new TextEncoder().encode(raw) : raw;
   const rejects: string[] = [];
+  const headers = new Headers();
+  for (const [name, value] of options.headers ?? []) headers.append(name, value);
   const message = {
     from: "sender@example.net",
     to: options.to ?? RECIPIENT,
-    headers: new Headers(),
+    headers,
     raw: new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(bytes);
@@ -559,6 +566,241 @@ describe("handleEmail", () => {
       "email intake: updating last_received_at failed",
       expect.objectContaining({ sourceId: source.id }),
     );
+  });
+
+  describe("the check of the sender", () => {
+    const AR_PASS = "mx.cloudflare.net; spf=pass; dkim=pass; dmarc=pass header.from=example.org";
+    const AUTH_FAILED = "Sender authentication failed";
+    const NOT_ALLOWED = "Sender not allowed";
+
+    async function setSenderCheck(enabled: boolean, senders: string | null) {
+      await env.DB.prepare("UPDATE sources SET email_sender_verification = ?, email_allowed_senders = ? WHERE id = ?")
+        .bind(enabled ? 1 : 0, senders, source.id)
+        .run();
+    }
+
+    function senderMail(...fromLines: string[]): string {
+      return mail(...fromLines, "Subject: Disk is full", "Message-ID: <m2@example.org>", "", "The disk is full.", "");
+    }
+
+    function authResults(...values: string[]): [string, string][] {
+      return values.map((value) => ["Authentication-Results", value]);
+    }
+
+    function loggedReasons(): unknown[] {
+      return (logs.warn.mock.calls as unknown[][])
+        .filter((call) => call[0] === "email intake: sender rejected")
+        .map((call) => (call[1] as { reason: unknown }).reason);
+    }
+
+    async function expectSenderRejected(message: FakeMessage, reject: string, reason: string) {
+      await handleEmail(message, testEnv());
+      expect(message.rejects).toEqual([reject]);
+      expect(await countTable("events")).toBe(0);
+      expect(await listEventDataKeys()).toEqual([]);
+      expect(loggedReasons()).toEqual([reason]);
+      expect(logs.warn).toHaveBeenCalledWith("email intake: sender rejected", { sourceId: source.id, reason });
+    }
+
+    async function expectAccepted(message: FakeMessage): Promise<Record<string, string>> {
+      await handleEmail(message, testEnv());
+      expect(message.rejects).toEqual([]);
+      expect(loggedReasons()).toEqual([]);
+      return JSON.parse((await onlyEvent()).labels) as Record<string, string>;
+    }
+
+    describe("off", () => {
+      it("accepts without Authentication-Results even with allowed senders", async () => {
+        await setSenderCheck(false, '["alerts@example.org"]');
+        expect(await expectAccepted(fakeMessage(senderMail("From: attacker@evil.com")))).toEqual({
+          from: "attacker@evil.com",
+        });
+      });
+
+      it("accepts a DMARC fail and several From lines", async () => {
+        await setSenderCheck(false, null);
+        const message = fakeMessage(senderMail("From: a@evil.com", "From: b@evil.com"), {
+          headers: authResults("mx.cloudflare.net; dmarc=fail header.from=evil.com"),
+        });
+        await expectAccepted(message);
+      });
+
+      it("does not read a broken list", async () => {
+        await setSenderCheck(false, "not json");
+        await expectAccepted(fakeMessage(senderMail("From: a@evil.com")));
+      });
+    });
+
+    describe("on without allowed senders", () => {
+      beforeEach(async () => {
+        await setSenderCheck(true, null);
+      });
+
+      it("accepts a DMARC pass whose header.from is the domain of From", async () => {
+        const message = fakeMessage(senderMail("From: Alerts <Alerts@Example.ORG>"), { headers: authResults(AR_PASS) });
+        expect(await expectAccepted(message)).toEqual({ from: "alerts@example.org" });
+      });
+
+      it("reads [] as no allowed senders", async () => {
+        await setSenderCheck(true, "[]");
+        const message = fakeMessage(senderMail("From: anyone@example.org"), { headers: authResults(AR_PASS) });
+        expect(await expectAccepted(message)).toEqual({ from: "anyone@example.org" });
+      });
+
+      it("rejects a message without Authentication-Results, without reading it", async () => {
+        const message = fakeMessage(senderMail("From: alerts@example.org"));
+        await expectSenderRejected(message, AUTH_FAILED, "ar_missing");
+        expect(message.raw.locked).toBe(false);
+      });
+
+      it("rejects a From of another domain than header.from", async () => {
+        const message = fakeMessage(senderMail("From: alerts@example.com"), { headers: authResults(AR_PASS) });
+        await expectSenderRejected(message, NOT_ALLOWED, "header_from_mismatch");
+      });
+    });
+
+    describe("on with allowed senders", () => {
+      beforeEach(async () => {
+        await setSenderCheck(true, '["alerts@example.org","example.net"]');
+      });
+
+      it("accepts an allowed address, with From as the label", async () => {
+        const message = fakeMessage(senderMail("From: Alerts <alerts@example.org>"), { headers: authResults(AR_PASS) });
+        expect(await expectAccepted(message)).toEqual({ from: "alerts@example.org" });
+      });
+
+      it("accepts an address of an allowed domain", async () => {
+        const message = fakeMessage(senderMail("From: cron@example.net"), {
+          headers: authResults("mx.cloudflare.net; dmarc=pass header.from=example.net"),
+        });
+        expect(await expectAccepted(message)).toEqual({ from: "cron@example.net" });
+      });
+
+      it("accepts a Japanese display name", async () => {
+        const message = fakeMessage(senderMail("From: =?UTF-8?B?44Ki44Op44O844OI?= <alerts@example.org>"), {
+          headers: authResults(AR_PASS),
+        });
+        expect(await expectAccepted(message)).toEqual({ from: "alerts@example.org" });
+      });
+
+      it("accepts a second Authentication-Results line of the sender after the one of Cloudflare", async () => {
+        const message = fakeMessage(senderMail("From: alerts@example.org"), {
+          headers: authResults(AR_PASS, "evil; dmarc=fail"),
+        });
+        await expectAccepted(message);
+      });
+
+      it("rejects an address that is not allowed", async () => {
+        const message = fakeMessage(senderMail("From: other@example.org"), { headers: authResults(AR_PASS) });
+        await expectSenderRejected(message, NOT_ALLOWED, "not_allowed");
+      });
+
+      it("rejects a subdomain of an allowed domain", async () => {
+        const message = fakeMessage(senderMail("From: a@mail.example.net"), {
+          headers: authResults("mx.cloudflare.net; dmarc=pass header.from=mail.example.net"),
+        });
+        await expectSenderRejected(message, NOT_ALLOWED, "not_allowed");
+      });
+
+      it.each([
+        ["ar_authserv", ["evil.example; dmarc=pass header.from=example.org"]],
+        ["ar_syntax", ['mx.cloudflare.net; spf=pass smtp.mailfrom="a); dmarc=pass ("@evil.com; dmarc=fail']],
+        ["ar_syntax", ["mx.cloudflare.net; dkim=pass header.d=evil(.com; dmarc=none", "x); dmarc=pass header.from=example.org"]],
+        ["dmarc_missing", ["mx.cloudflare.net; spf=pass", "mx.cloudflare.net; dmarc=pass header.from=example.org"]],
+        ["dmarc_multiple", ["mx.cloudflare.net; dmarc=pass header.from=example.org; dmarc=pass header.from=example.org"]],
+        ["dmarc_multiple", ["mx.cloudflare.net; dmarc=pass header.from=example.org header.from=example.org"]],
+        ["dmarc_fail", ["mx.cloudflare.net; dmarc=fail header.from=example.org", "evil; dmarc=pass header.from=example.org"]],
+        ["dmarc_fail", ["mx.cloudflare.net; dmarc=permerror header.from=example.org"]],
+        ["dmarc_none", ["mx.cloudflare.net; dmarc=none header.from=example.org"]],
+        ["header_from_missing", ["mx.cloudflare.net; spf=pass; dkim=pass; dmarc=pass"]],
+        ["header_from_invalid", ["mx.cloudflare.net; dmarc=pass header.from=example"]],
+      ])("rejects %s without reading the message (%j)", async (reason, values) => {
+        const message = fakeMessage(senderMail("From: alerts@example.org"), { headers: authResults(...values) });
+        await expectSenderRejected(message, AUTH_FAILED, reason);
+        expect(message.raw.locked).toBe(false);
+      });
+
+      it("throws for a DMARC temperror, without reading the message", async () => {
+        const message = fakeMessage(senderMail("From: alerts@example.org"), {
+          headers: authResults("mx.cloudflare.net; dmarc=temperror header.from=example.org"),
+        });
+        await expect(handleEmail(message, testEnv())).rejects.toThrow();
+        expect(message.rejects).toEqual([]);
+        expect(message.raw.locked).toBe(false);
+        expect(await countTable("events")).toBe(0);
+        expect(loggedReasons()).toEqual(["dmarc_temperror"]);
+        expect(logs.error).not.toHaveBeenCalled();
+      });
+
+      it("throws for a broken list, without reading the message", async () => {
+        for (const stored of ["not json", '{"a":1}', "[1]", '["localhost"]']) {
+          await setSenderCheck(true, stored);
+          const message = fakeMessage(senderMail("From: alerts@example.org"), { headers: authResults(AR_PASS) });
+          await expect(handleEmail(message, testEnv())).rejects.toThrow();
+          expect(message.rejects).toEqual([]);
+          expect(message.raw.locked).toBe(false);
+        }
+        expect(await countTable("events")).toBe(0);
+        expect(logs.error).toHaveBeenCalledWith("email intake: invalid email_allowed_senders", { sourceId: source.id });
+        expect(logs.error).toHaveBeenCalledTimes(4);
+      });
+
+      it.each([
+        ["from_unusable", "without From", []],
+        ["multiple_from", "with two From lines", ["From: alerts@example.org", "From: attacker@evil.com"]],
+        ["multiple_from", "with a From line whose key has an NBSP", ["From\u00a0: attacker@evil.com", "From: alerts@example.org"]],
+        ["multiple_from", "with a From line whose key has a control", ["From\u0001: attacker@evil.com", "From: alerts@example.org"]],
+        ["from_unusable", "with only a From line whose key has an NBSP", ["From\u00a0: alerts@example.org"]],
+        ["from_unusable", "with two addresses in From", ["From: alerts@example.org, attacker@evil.com"]],
+        ["from_unusable", "with a group", ["From: team: alerts@example.org;"]],
+        ["from_unusable", "without an address", ["From: Alerts"]],
+        ["from_unusable", "with a From over 998 characters", [`From: ${"x".repeat(990)} <alerts@example.org>`]],
+      ])("rejects %s %s", async (reason, _name, fromLines) => {
+        const message = fakeMessage(senderMail(...fromLines), { headers: authResults(AR_PASS) });
+        await expectSenderRejected(message, NOT_ALLOWED, reason);
+      });
+
+      it.each([
+        ["an address in angle brackets in another", "From: <attacker@evil.com <alerts@example.org>>"],
+        ["an encoded word of an address", "From: =?utf-8?B?PGFsZXJ0c0BleGFtcGxlLm9yZz4=?="],
+      ])("rejects %s whose domain is not header.from", async (_name, fromLine) => {
+        const message = fakeMessage(senderMail(fromLine), {
+          headers: authResults("mx.cloudflare.net; dmarc=pass header.from=evil.com"),
+        });
+        await expectSenderRejected(message, NOT_ALLOWED, "header_from_mismatch");
+      });
+
+      it("rejects an allowed address in the display name", async () => {
+        const message = fakeMessage(senderMail('From: "alerts@example.org" <attacker@evil.com>'), {
+          headers: authResults("mx.cloudflare.net; dmarc=pass header.from=evil.com"),
+        });
+        await expectSenderRejected(message, NOT_ALLOWED, "not_allowed");
+      });
+
+      it("rejects a From that postal-mime reads differently", async () => {
+        // postal-mime reads the first line of the key "from"; the counted one is the line of "from\u00a0".
+        const message = fakeMessage(senderMail("From\u00a0: alerts@example.org"), { headers: authResults(AR_PASS) });
+        await expectSenderRejected(message, NOT_ALLOWED, "from_unusable");
+      });
+
+      it("logs neither the addresses nor the headers", async () => {
+        await handleEmail(fakeMessage(senderMail("From: other@example.org"), { headers: authResults(AR_PASS) }), testEnv());
+        await handleEmail(fakeMessage(senderMail("From: alerts@example.org")), testEnv());
+        await expect(
+          handleEmail(
+            fakeMessage(senderMail("From: alerts@example.org"), {
+              headers: authResults("mx.cloudflare.net; dmarc=temperror header.from=example.org"),
+            }),
+            testEnv(),
+          ),
+        ).rejects.toThrow();
+        expect(loggedReasons()).toEqual(["not_allowed", "ar_missing", "dmarc_temperror"]);
+        const logged = JSON.stringify([logs.error.mock.calls, logs.warn.mock.calls, logs.log.mock.calls]).toLowerCase();
+        for (const secret of [LOCAL_PART, "other@", "alerts@", "example.org", "mx.cloudflare.net", "Disk is full"]) {
+          expect(logged).not.toContain(secret.toLowerCase());
+        }
+      });
+    });
   });
 
   it("logs neither the content of the message nor the local part", async () => {

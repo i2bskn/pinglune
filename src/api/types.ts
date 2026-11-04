@@ -71,7 +71,19 @@ export type Source = {
   // The screening of the events for instructions to AIs (src/screening/). available: the workspace has a TypeSafe API
   // key (whether it can be decrypted is not checked).
   screening: SourceScreening;
+  // Whether the email intake checks the sender (the DMARC result of Cloudflare and From). On for a new source, off for
+  // the sources made before the check.
+  email_sender_verification: boolean;
+  // The allowed senders (addresses or domains, normalized), used only while email_sender_verification is on. [] when
+  // there are none: every sender that passes DMARC is accepted.
+  email_senders: string[];
 };
+
+// POST /api/v1/sources/:id/email-sender-verification.
+export type UpdateSourceEmailSenderVerificationRequest = { enabled: boolean };
+
+// POST /api/v1/sources/:id/email-senders. Up to 20 elements; an empty list removes them.
+export type UpdateSourceEmailSendersRequest = { senders: string[] };
 
 export type SourceScreening = { enabled: boolean; available: boolean };
 

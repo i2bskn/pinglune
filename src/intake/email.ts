@@ -5,6 +5,10 @@
 // A permanent rejection calls message.setReject. A temporary failure throws instead: the reply to an exception is
 // not documented, but setReject would stop the sender from retrying, and a retry is what recovers the message.
 // Logs never carry the content of a message (subject, body, addresses) nor the local part.
+//
+// A source with email_sender_verification checks the sender (src/intake/email-sender.ts): the DMARC result of
+// Cloudflare before the message is read, then the From of the parsed message. Only two reasons are given to the
+// sender, so that the allowed senders are not easy to guess.
 
 import PostalMime from "postal-mime";
 import type { Address, Attachment, Email } from "postal-mime";
@@ -13,6 +17,13 @@ import { canonicalJson } from "../canonical-json";
 import { clock } from "../clock";
 import { parseEmailDomain, type Bindings } from "../env";
 import { EMAIL_LOCAL_PART_PATTERN, sha256Hex } from "../ids";
+import {
+  matchesAllowedSender,
+  parseAllowedSenders,
+  parseCloudflareAuthResults,
+  parseFromLine,
+  type SenderRejectReason,
+} from "./email-sender";
 import { acceptEvent, type IntakeDeps, type IntakeSource } from "./service";
 import {
   codePointLength,
@@ -54,6 +65,8 @@ const REJECT_DISABLED = "Recipient is disabled";
 const REJECT_TOO_LARGE = "Message too large";
 const REJECT_MALFORMED = "Malformed message";
 const REJECT_NOT_ACCEPTED = "Message could not be accepted";
+const REJECT_SENDER_AUTHENTICATION = "Sender authentication failed";
+const REJECT_SENDER_NOT_ALLOWED = "Sender not allowed";
 
 // A temporary failure that has been logged already.
 class TemporaryFailure extends Error {
@@ -61,7 +74,15 @@ class TemporaryFailure extends Error {
 }
 
 type AddressRow = { source_id: string; revoked_at: number | null };
-type SourceRow = { id: string; workspace_id: string; name: string; enabled: number; screening_enabled: number };
+type SourceRow = {
+  id: string;
+  workspace_id: string;
+  name: string;
+  enabled: number;
+  screening_enabled: number;
+  email_sender_verification: number;
+  email_allowed_senders: string | null;
+};
 
 type DataItem = { name: string; content_type: string; bytes: Uint8Array };
 
@@ -111,7 +132,8 @@ async function receive(
   }
   // The conversation source is never matched: it has no addresses anyway.
   const row = await env.DB.prepare(
-    "SELECT id, workspace_id, name, enabled, screening_enabled FROM sources WHERE id = ? AND kind = 'program'",
+    `SELECT id, workspace_id, name, enabled, screening_enabled, email_sender_verification, email_allowed_senders
+    FROM sources WHERE id = ? AND kind = 'program'`,
   )
     .bind(address.source_id)
     .first<SourceRow>();
@@ -133,10 +155,39 @@ async function receive(
     screeningEnabled: row.screening_enabled === 1,
   };
 
+  // The allowed senders, only when the sender is checked: they are not used otherwise. A broken value is a temporary
+  // failure, so that the message comes again once it is fixed.
+  const verifySender = row.email_sender_verification === 1;
+  let allowedSenders: string[] = [];
+  if (verifySender) {
+    const parsedSenders = parseAllowedSenders(row.email_allowed_senders);
+    if (parsedSenders === null) {
+      console.error("email intake: invalid email_allowed_senders", { sourceId: source.id });
+      throw new TemporaryFailure("email intake: invalid email_allowed_senders");
+    }
+    allowedSenders = parsedSenders;
+  }
+
   // 6. The size announced by Email Routing, before anything is read.
   if (message.rawSize > intakeLimits.maxPayloadBytes) {
     message.setReject(REJECT_TOO_LARGE);
     return;
+  }
+
+  // The DMARC result of Cloudflare, before the message is read.
+  let headerFrom: string | null = null;
+  if (verifySender) {
+    const auth = parseCloudflareAuthResults(message.headers.get("authentication-results"));
+    if (auth.result === "temperror") {
+      logSenderRejected(source.id, "dmarc_temperror");
+      throw new TemporaryFailure("email intake: DMARC temperror");
+    }
+    if (auth.result !== "pass" || auth.headerFrom === null) {
+      logSenderRejected(source.id, auth.reason ?? "header_from_missing");
+      message.setReject(REJECT_SENDER_AUTHENTICATION);
+      return;
+    }
+    headerFrom = auth.headerFrom;
   }
 
   // 7-8. Read and parse.
@@ -148,6 +199,16 @@ async function receive(
   if (parsed.kind === "malformed") {
     message.setReject(REJECT_MALFORMED);
     return;
+  }
+
+  // The From of the message, bound to the domain DMARC checked. headerFrom is set here; "" would match no From.
+  if (verifySender) {
+    const reason = checkFrom(parsed.email, headerFrom ?? "", allowedSenders);
+    if (reason !== null) {
+      logSenderRejected(source.id, reason);
+      message.setReject(REJECT_SENDER_NOT_ALLOWED);
+      return;
+    }
   }
 
   // 9. The event. now is read once and shared by the key, the intake and last_received_at.
@@ -184,6 +245,30 @@ async function receive(
       });
       message.setReject(REJECT_NOT_ACCEPTED);
   }
+}
+
+// Only the reason: neither the addresses nor the headers are logged.
+function logSenderRejected(sourceId: string, reason: SenderRejectReason): void {
+  console.warn("email intake: sender rejected", { sourceId, reason });
+}
+
+// The key of a header line without the characters a lenient reader may skip (non-ASCII, controls, the space), so that
+// a line such as "From\u00a0:" is counted as a From line too.
+function looseHeaderKey(key: string): string {
+  return key.replace(/[^\x21-\x7E]/g, "").toLowerCase();
+}
+
+// Why the From of the message is not accepted, or null: exactly one From line with one address, the same address as
+// postal-mime read, of the domain DMARC checked (headerFrom), and in the allowed senders unless there are none.
+function checkFrom(email: Email, headerFrom: string, allowedSenders: string[]): SenderRejectReason | null {
+  const lines = email.headers.filter((header) => looseHeaderKey(header.key) === "from");
+  if (lines.length === 0) return "from_unusable";
+  if (lines.length > 1) return "multiple_from";
+  const address = parseFromLine(lines[0]?.value ?? "");
+  if (address === null || address !== email.from?.address?.toLowerCase()) return "from_unusable";
+  if (address.slice(address.lastIndexOf("@") + 1) !== headerFrom) return "header_from_mismatch";
+  if (allowedSenders.length > 0 && !matchesAllowedSender(address, allowedSenders)) return "not_allowed";
+  return null;
 }
 
 // The lowercase local part, or null unless the address is <20 [a-z0-9]>@<domain>. Subaddresses (+) are not
@@ -268,7 +353,8 @@ function toOccurredAt(date: string | undefined): string | undefined {
 }
 
 // The first address of From (the first member of a group), in lowercase, or null if it cannot be a label.
-// The sender can forge From.
+// The sender can forge From, unless the source checks the sender: then it is the one address of From, of the domain
+// DMARC checked.
 function toFromLabel(from: Address | undefined): string | null {
   const mailbox = from?.group !== undefined ? from.group[0] : from;
   const address = mailbox?.address?.toLowerCase() ?? "";

@@ -12,6 +12,8 @@ const source = (id: string, name: string, enabled = true): Source => ({
   active_key_count: 0,
   conversation_start: { enabled: false, daily_limit: 10, max_ai_messages: 10 },
   screening: { enabled: false, available: false },
+  email_sender_verification: true,
+  email_senders: [],
 });
 
 function bot(id: string, overrides: Partial<Bot> = {}): Bot {

@@ -1,6 +1,7 @@
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import type { ApiKey, Source } from "../api/types";
 import type { Db } from "../db/client";
+import { parseAllowedSenders } from "../intake/email-sender";
 import { apiKeys, sources, type ApiKeyRow, type SourceRow } from "../db/schema";
 
 export type SourceWithKeyCount = SourceRow & { activeKeyCount: number };
@@ -18,6 +19,8 @@ const sourceColumns = {
   startDailyLimit: sources.startDailyLimit,
   startMaxAiMessages: sources.startMaxAiMessages,
   screeningEnabled: sources.screeningEnabled,
+  emailSenderVerification: sources.emailSenderVerification,
+  emailAllowedSenders: sources.emailAllowedSenders,
   createdAt: sources.createdAt,
   updatedAt: sources.updatedAt,
   activeKeyCount,
@@ -25,6 +28,12 @@ const sourceColumns = {
 
 // screeningAvailable: whether the workspace has a TypeSafe API key (workspaces.screening_api_key is set).
 export function toApiSource(source: SourceWithKeyCount, options: { screeningAvailable: boolean }): Source {
+  // A broken value is shown as none, so that the screen still works; the email intake fails temporarily meanwhile.
+  let emailSenders = parseAllowedSenders(source.emailAllowedSenders);
+  if (emailSenders === null) {
+    console.error("invalid email_allowed_senders", { sourceId: source.id });
+    emailSenders = [];
+  }
   return {
     id: source.id,
     name: source.name,
@@ -38,6 +47,8 @@ export function toApiSource(source: SourceWithKeyCount, options: { screeningAvai
       max_ai_messages: source.startMaxAiMessages,
     },
     screening: { enabled: source.screeningEnabled === 1, available: options.screeningAvailable },
+    email_sender_verification: source.emailSenderVerification === 1,
+    email_senders: emailSenders,
   };
 }
 

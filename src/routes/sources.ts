@@ -6,6 +6,8 @@ import type {
   CreatedApiKey,
   EmailAddressList,
   SourceList,
+  UpdateSourceEmailSendersRequest,
+  UpdateSourceEmailSenderVerificationRequest,
   UpdateSourceRequest,
   UpdateSourceScreeningRequest,
 } from "../api/types";
@@ -31,6 +33,7 @@ import {
   sha256Hex,
   SOURCE_ID_PATTERN,
 } from "../ids";
+import { MAX_ALLOWED_SENDERS, normalizeAllowedSender } from "../intake/email-sender";
 import { codePointLength } from "../intake/validation";
 import {
   countActiveApiKeys,
@@ -117,6 +120,40 @@ const sourceScreeningBody = jsonBody<UpdateSourceScreeningRequest, { enabled: bo
   },
 );
 
+const emailSenderVerificationBody = jsonBody<UpdateSourceEmailSenderVerificationRequest, { enabled: boolean }>(
+  (body, c) => {
+    const unknown = unknownField(body, ["enabled"]);
+    if (unknown !== null) return apiError(c, 400, "unknown_field", `未知の項目があります: ${unknown}`);
+    if (typeof body.enabled !== "boolean") {
+      return apiError(c, 400, "invalid_request", "enabled は true か false で指定してください");
+    }
+    return { ok: true, value: { enabled: body.enabled } };
+  },
+);
+
+// The senders normalized, without duplicates, in the order given. The limit counts the elements given, duplicates
+// included. The position in the message is that of the element (1-based), of the first invalid one.
+const emailSendersBody = jsonBody<UpdateSourceEmailSendersRequest, { senders: string[] }>((body, c) => {
+  const unknown = unknownField(body, ["senders"]);
+  if (unknown !== null) return apiError(c, 400, "unknown_field", `未知の項目があります: ${unknown}`);
+  const input: unknown = body.senders;
+  if (!Array.isArray(input) || !input.every((sender) => typeof sender === "string")) {
+    return apiError(c, 400, "invalid_request", "senders は文字列の配列で指定してください");
+  }
+  if (input.length > MAX_ALLOWED_SENDERS) {
+    return apiError(c, 422, "too_many_senders", `許可する送信者は ${MAX_ALLOWED_SENDERS} 個までです`);
+  }
+  const senders: string[] = [];
+  for (const [index, value] of (input as string[]).entries()) {
+    const sender = normalizeAllowedSender(value);
+    if (sender === null) {
+      return apiError(c, 422, "invalid_sender", `${index + 1}行目の送信者の書き方が正しくありません`);
+    }
+    if (!senders.includes(sender)) senders.push(sender);
+  }
+  return { ok: true, value: { senders } };
+});
+
 const updateSourceBody = jsonBody<UpdateSourceRequest, { name?: string; enabled?: boolean }>((body, c) => {
   const unknown = unknownField(body, ["name", "enabled"]);
   if (unknown !== null) return apiError(c, 400, "unknown_field", `未知の項目があります: ${unknown}`);
@@ -155,7 +192,11 @@ const sourcesApi = new Hono<AppEnv>()
     const now = clock.now();
     const id = newSourceId(now);
     try {
-      await db.insert(sources).values({ id, workspaceId, name, enabled: true, createdAt: now, updatedAt: now }).run();
+      // The sender of the email intake is checked from the start; only the sources made before the check are off.
+      await db
+        .insert(sources)
+        .values({ id, workspaceId, name, enabled: true, emailSenderVerification: 1, createdAt: now, updatedAt: now })
+        .run();
     } catch (error) {
       if (isUniqueViolation(error)) return apiError(c, 409, "source_name_taken", "この名前の送信元はすでにあります");
       throw error;
@@ -263,6 +304,42 @@ const sourcesApi = new Hono<AppEnv>()
     const updated = await findWorkspaceSource(db, workspace.id, id);
     if (!updated) return apiError(c, 404, "not_found", sourceNotFound);
     return c.json(toApiSource(updated, { screeningAvailable }), 200);
+  })
+  // The check of the sender of the email intake. Saved for a disabled source too. The allowed senders are kept when it
+  // is turned off, and used again when it is turned on. The screen asks before turning it off; the API does not.
+  .post("/:id/email-sender-verification", emailSenderVerificationBody, async (c) => {
+    const { enabled } = c.req.valid("json");
+    const workspace = c.get("workspace");
+    const id = c.req.param("id");
+    if (!SOURCE_ID_PATTERN.test(id)) return apiError(c, 404, "not_found", sourceNotFound);
+    // kind 'program': the conversation source is never matched.
+    const result = await c.env.DB.prepare(
+      `UPDATE sources SET email_sender_verification = ?1, updated_at = ?2
+      WHERE id = ?3 AND workspace_id = ?4 AND kind = 'program'`,
+    )
+      .bind(enabled ? 1 : 0, clock.now(), id, workspace.id)
+      .run();
+    if ((result.meta.changes ?? 0) === 0) return apiError(c, 404, "not_found", sourceNotFound);
+    const updated = await findWorkspaceSource(c.get("db"), workspace.id, id);
+    if (!updated) return apiError(c, 404, "not_found", sourceNotFound);
+    return c.json(toApiSource(updated, { screeningAvailable: hasScreeningApiKey(workspace) }), 200);
+  })
+  // The allowed senders of the email intake. Saved for a disabled source too. An empty list is stored as NULL.
+  .post("/:id/email-senders", emailSendersBody, async (c) => {
+    const { senders } = c.req.valid("json");
+    const workspace = c.get("workspace");
+    const id = c.req.param("id");
+    if (!SOURCE_ID_PATTERN.test(id)) return apiError(c, 404, "not_found", sourceNotFound);
+    const result = await c.env.DB.prepare(
+      `UPDATE sources SET email_allowed_senders = ?1, updated_at = ?2
+      WHERE id = ?3 AND workspace_id = ?4 AND kind = 'program'`,
+    )
+      .bind(senders.length === 0 ? null : JSON.stringify(senders), clock.now(), id, workspace.id)
+      .run();
+    if ((result.meta.changes ?? 0) === 0) return apiError(c, 404, "not_found", sourceNotFound);
+    const updated = await findWorkspaceSource(c.get("db"), workspace.id, id);
+    if (!updated) return apiError(c, 404, "not_found", sourceNotFound);
+    return c.json(toApiSource(updated, { screeningAvailable: hasScreeningApiKey(workspace) }), 200);
   })
   .get("/:id/api-keys", async (c) => {
     const db = c.get("db");

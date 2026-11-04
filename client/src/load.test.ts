@@ -89,6 +89,8 @@ describe("loadBotsView", () => {
     active_key_count: 0,
     conversation_start: { enabled: false, daily_limit: 10, max_ai_messages: 10 },
     screening: { enabled: false, available: false },
+    email_sender_verification: true,
+    email_senders: [],
   };
 
   it("loads the bots, the MCP connections, the subscriptions and the sources", async () => {
@@ -193,6 +195,8 @@ describe("loadFlow", () => {
     active_key_count: 0,
     conversation_start: { enabled: false, daily_limit: 10, max_ai_messages: 10 },
     screening: { enabled: false, available: false },
+    email_sender_verification: true,
+    email_senders: [],
   };
 
   it("loads the sources and the bots", async () => {
@@ -305,7 +309,7 @@ describe("loadEvents with a filter", () => {
 
 describe("loadEventsView", () => {
   const page = { events: [], next_cursor: null };
-  const SOURCE: Source = { id: "src_1", name: "app", enabled: true, created_at: 1, updated_at: 1, active_key_count: 1, conversation_start: { enabled: false, daily_limit: 10, max_ai_messages: 10 }, screening: { enabled: false, available: false } };
+  const SOURCE: Source = { id: "src_1", name: "app", enabled: true, created_at: 1, updated_at: 1, active_key_count: 1, conversation_start: { enabled: false, daily_limit: 10, max_ai_messages: 10 }, screening: { enabled: false, available: false }, email_sender_verification: true, email_senders: [] };
 
   it("loads the events with the filter and the sources", async () => {
     const { client } = setup({
@@ -351,7 +355,7 @@ describe("loadSourceBots", () => {
 });
 
 describe("loadSourceDetail", () => {
-  const SOURCE: Source = { id: "src_1", name: "app", enabled: true, created_at: 1, updated_at: 1, active_key_count: 1, conversation_start: { enabled: false, daily_limit: 10, max_ai_messages: 10 }, screening: { enabled: false, available: false } };
+  const SOURCE: Source = { id: "src_1", name: "app", enabled: true, created_at: 1, updated_at: 1, active_key_count: 1, conversation_start: { enabled: false, daily_limit: 10, max_ai_messages: 10 }, screening: { enabled: false, available: false }, email_sender_verification: true, email_senders: [] };
   const KEY: ApiKey = { key_id: "abcdefghij012345", created_at: 1, last_used_at: null, revoked_at: null };
 
   const ADDRESSES: EmailAddressList = {

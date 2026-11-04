@@ -10,8 +10,11 @@ import {
   updateSource,
   setScreeningApiKey,
   updateSourceConversationStart,
+  updateSourceEmailSenderVerification,
+  updateSourceEmailSenders,
   updateSourceScreening,
 } from "../actions";
+import { allowedSendersRequest, allowedSendersText } from "../email-senders";
 import { formatDateTime } from "../format";
 import { PlusIcon } from "../icons";
 import { Link } from "../Link";
@@ -206,6 +209,8 @@ export function SourceDetailView({ client, id, path }: { client: ApiClient; id: 
                   ))}
                 </ul>
               )}
+              <EmailSenderVerification client={client} source={source} onDone={onDone} />
+              <EmailAllowedSenders client={client} source={source} onDone={onDone} />
             </>
           )}
         </>
@@ -743,6 +748,190 @@ function ScreeningApiKey({
         </form>
       )}
     </div>
+  );
+}
+
+// The check of the sender of the email intake. Turning it off is confirmed here, since forged mail then reaches the AIs.
+function EmailSenderVerification({
+  client,
+  source,
+  onDone,
+}: {
+  client: ApiClient;
+  source: Source;
+  onDone: (message: string | null) => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+  const enabled = source.email_sender_verification;
+
+  async function run(next: boolean) {
+    setSending(true);
+    setFailure(null);
+    const result = await updateSourceEmailSenderVerification(client, source.id, next);
+    if (result.kind === "redirecting") return;
+    setSending(false);
+    if (result.kind === "ok") {
+      setConfirming(false);
+      onDone(next ? "送信者の確認をオンにしました" : "送信者の確認をオフにしました");
+      return;
+    }
+    if (result.kind === "notFound") {
+      onDone(GONE_MESSAGE);
+      return;
+    }
+    setFailure(resultMessage(result, GONE_MESSAGE));
+  }
+
+  return (
+    <section className="source-section" aria-labelledby="source-email-sender-verification">
+      <div className="section-head">
+        <h3 id="source-email-sender-verification">送信者の確認</h3>
+      </div>
+      {enabled ? (
+        <p>
+          <span className="badge badge-ok">オン</span> 送信者のドメインの認証（DMARC）に通ったメールだけを受け付けます
+        </p>
+      ) : (
+        <>
+          <p className="warning-note">この送信元は送信者の確認がオフです</p>
+          <p>
+            <span className="badge badge-off">オフ</span> 送信者を確かめずに受け付けます。From は偽装できます
+          </p>
+        </>
+      )}
+      {!confirming && (
+        <div className="actions">
+          {enabled ? (
+            <button
+              type="button"
+              className="button-danger-outline"
+              onClick={() => {
+                setConfirming(true);
+                setFailure(null);
+              }}
+              disabled={sending}
+            >
+              オフにする…
+            </button>
+          ) : (
+            <button type="button" onClick={() => void run(true)} disabled={sending}>
+              オンにする
+            </button>
+          )}
+        </div>
+      )}
+      {confirming && (
+        <form
+          className="folder-form"
+          aria-label="送信者の確認をオフにする"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void run(false);
+          }}
+        >
+          <p>
+            送信者の確認をオフにすると、この送信元の受付アドレスに届いたメールは、送信者を確かめずに受け付けます。From
+            は偽装できるので、知らない人が送ったメールも AI に届きます。許可する送信者の一覧も使われなくなります。DMARC
+            に対応していない送信者からメールを受ける場合だけオフにしてください
+          </p>
+          <div className="folder-form-actions">
+            <button type="submit" className="button-danger" disabled={sending}>
+              オフにする
+            </button>
+            <button type="button" onClick={() => setConfirming(false)} disabled={sending}>
+              キャンセル
+            </button>
+          </div>
+        </form>
+      )}
+      {failure !== null && <p role="alert">{failure}</p>}
+    </section>
+  );
+}
+
+// The allowed senders of the email intake, one per line. Used only while the check of the sender is on; the saved
+// list is still shown when it is off.
+function EmailAllowedSenders({
+  client,
+  source,
+  onDone,
+}: {
+  client: ApiClient;
+  source: Source;
+  onDone: (message: string | null) => void;
+}) {
+  const [text, setText] = useState(() => allowedSendersText(source.email_senders));
+  const [sending, setSending] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+  const disabled = sending || !source.email_sender_verification;
+
+  async function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const request = allowedSendersRequest(text);
+    if (!request.ok) {
+      setFailure(request.message);
+      return;
+    }
+    setSending(true);
+    setFailure(null);
+    const result = await updateSourceEmailSenders(client, source.id, request.value);
+    if (result.kind === "redirecting") return;
+    setSending(false);
+    if (result.kind === "ok") {
+      onDone("許可する送信者を保存しました");
+      return;
+    }
+    if (result.kind === "notFound") {
+      onDone(GONE_MESSAGE);
+      return;
+    }
+    setFailure(resultMessage(result, GONE_MESSAGE));
+  }
+
+  return (
+    <section className="source-section" aria-labelledby="source-email-senders">
+      <div className="section-head">
+        <h3 id="source-email-senders">許可する送信者</h3>
+      </div>
+      <form className="folder-form" aria-label="許可する送信者" onSubmit={(event) => void onSubmit(event)}>
+        {!source.email_sender_verification && <p className="hint">送信者の確認がオンのときだけ使われます</p>}
+        <p className="muted">
+          設定すると、From がこの一覧にあり、送信者のドメインの認証（DMARC）に通ったメールだけを受け付けます。それ以外のメールは送信者に返されます
+        </p>
+        <label>
+          送信者（1行に1つ）
+          <textarea
+            value={text}
+            onChange={(event) => setText(event.target.value)}
+            autoComplete="off"
+            spellCheck={false}
+            rows={4}
+            placeholder={"alerts@example.com\nexample.com"}
+            disabled={disabled}
+          />
+        </label>
+        <p className="muted">
+          アドレス（alerts@example.com）か、ドメイン（example.com）を書きます。一覧の照合はサブドメインを含みません。20個まで
+        </p>
+        <p className="muted">
+          DMARC が認証するのはドメインだけです。アドレスで書いても、そのドメインやサブドメインから送れる人（メール配信サービスを含む）は誰でも名乗れます。gmail.com
+          のような共有のドメインは書かないでください
+        </p>
+        <p className="muted">
+          DMARC を設定していないドメインからのメールと、転送されたメールは、一覧に入れても受け付けられません。メーリングリストは、From
+          をリストのアドレスに書き換えるものなら、そのアドレスを書けば受け付けられます
+        </p>
+        <p className="muted">空にすると、DMARC で認証された送信者なら誰でも受け付けます</p>
+        <div className="folder-form-actions">
+          <button type="submit" disabled={disabled}>
+            保存
+          </button>
+        </div>
+        {failure !== null && <p role="alert">{failure}</p>}
+      </form>
+    </section>
   );
 }
 
