@@ -183,6 +183,7 @@ if (!result.ok && result.error.retryable) {
 - 本文の検証と文言はBotの `POST /api/v1/bots/:id/conversation-start` と同じです。`daily_limit` は1〜1000、`max_ai_messages` は1〜100の整数です。
 - 無効の送信元でも保存できます。存在しない・他の利用者の送信元と、会話の隠し送信元は404 `not_found` です。
 - 許可を外しても、すでに始まった会話はそのまま続きます。
+- [AIへの指示の判定](#受付イベントの判定aiへの指示)が有効な送信元では、`enabled: true` は409 `screening_enabled` です（最初の発言は送信元のプログラムが書き、判定を通らずにBotへ届くため）。判定が有効な送信元から会話を始めようとすると、許可がない場合と同じ `start_not_allowed` になります。
 
 ### メール
 
@@ -263,15 +264,18 @@ RPCでは同じ分類のエラーを、種類を判別できる形で返しま�
 
 | エンドポイント | 内容 |
 | --- | --- |
-| `GET /api/v1/events?cursor=&type=&source_id=` | イベントの一覧（新しい順、50件、`next_cursor`）。会話のメッセージは出ない。`type` は種別1つ、`source_id` は送信元のID1つで絞り込む。次のページにも同じ絞り込みを付ける。他のワークスペースの送信元や存在しない送信元のIDでは空の一覧を返す |
-| `GET /api/v1/events/:id` | イベントの詳細と、本文・添付の一覧（`data`） |
+| `GET /api/v1/events?cursor=&type=&source_id=&screening=` | イベントの一覧（新しい順、50件、`next_cursor`）。会話のメッセージは出ない。`type` は種別1つ、`source_id` は送信元のID1つ、`screening` は判定の状態（`held` か `pending`）で絞り込む。次のページにも同じ絞り込みを付ける。他のワークスペースの送信元や存在しない送信元のIDでは空の一覧を返す。保留中・判定待ちのイベントも出る |
+| `GET /api/v1/events/:id` | イベントの詳細と、本文・添付の一覧（`data`）、判定（`screening`） |
+| `POST /api/v1/events/:id/screening/release` | 保留の解除（[受付イベントの判定](#受付イベントの判定aiへの指示)）。200でイベントの詳細を返す |
+| `POST /api/v1/events/:id/screening/retry` | 判定し直す（同上）。200でイベントの詳細を返す |
 | `GET /api/v1/events/:id/data/:dataRef` | 本文・添付の中身（下記） |
 | `GET /api/v1/deliveries?cursor=&event_id=&status=&subscription_id=` | 配信の記録（新しい順、50件、`next_cursor`）。`event_id` はイベント1つ、`status` は `pending`・`delivered`・`failed` のどれかで、`subscription_id` は配信先（購読）1つで絞り込む。組み合わせてよい。他のワークスペースの配信先のIDでは空の一覧を返す |
 | `POST /api/v1/deliveries/:id/retry` | 失敗した配信の再送（下記）。200で更新後の配信を返す |
 
 - イベントの一覧の各イベントには `delivery_summary`（`{ "delivered", "pending", "failed" }`、そのイベントの配信の状態ごとの件数）が付きます。配信がなければすべて0です。MCPの `list_events` には付きません。
+- イベントの一覧と詳細の各イベントには `screening` が付きます。判定していないイベントは `null` で、判定したイベントは `{ "status", "score", "error", "retryable", "requested_at", "screened_at", "released_at" }` です。MCPのツールとWebhookには付きません。
 - 配信の記録の各配信には `event`（`{ "type", "summary", "source_name" }`）が付きます。会話のメッセージでは、`source_name` は会話の隠し送信元の名前です。イベントが見つからなければ `null` です。
-- 絞り込みの値の誤り（形式の誤り、空文字、同じパラメータを2回以上指定）は400で、コードは `invalid_cursor`・`invalid_type`・`invalid_source_id`・`invalid_event_id`・`invalid_status`・`invalid_subscription_id` です。`type` の形式は送信元が渡す `type` と同じです。
+- 絞り込みの値の誤り（形式の誤り、空文字、同じパラメータを2回以上指定）は400で、コードは `invalid_cursor`・`invalid_type`・`invalid_source_id`・`invalid_screening`・`invalid_event_id`・`invalid_status`・`invalid_subscription_id` です。`type` の形式は送信元が渡す `type` と同じです。
 - 絞り込みに使えるインデックスはワークスペースとIDの組だけです。`type`・`source_id`・`status` で絞り込むと、該当が51件に達するまで走査が続くため、該当が少ないとワークスペース全体を読みます。個人から少人数での利用を前提にしています。
 - `subscription_id` を付けたときだけは、配信先ごとのインデックス（`deliveries_subscription_id_idx`）でその配信先の配信をすべて読み、新しい順に並べ替えます。ワークスペース全体は読みませんが、長く使った配信先ほど読む行が増えます。管理画面のBotの詳細（最近の配信）が使います。
 
@@ -288,8 +292,94 @@ RPCでは同じ分類のエラーを、種類を判別できる形で返しま�
 - 再送できるのは、失敗（`failed`）した、Webhook配信先かMCP Eventsの購読への配信で、その配信先が有効なときだけです。今のBotの紐づけ、Botの削除、会話の停止には関係なく、同じ配信先へ送り直します。
 - 配信を `pending`・試行0回に戻し（`last_error`・`last_http_status`・`last_attempt_at`・`delivered_at` も消す）、配信キューに入れます。あとは通常の配信と同じく、最初の試行から再送の間隔に従って送ります。元の失敗の記録は残りません。
 - キューに入れられなければ、配信を `failed`（`last_error: "retry_enqueue_failed"`）に戻して503 `temporarily_unavailable` を返します。
-- エラー：形式の誤り・見つからない・他のワークスペースの配信は404 `not_found`。次は409 `not_retryable` で、上から順に判定します：配信先が見つからない、ポーリング用キューの配信、失敗していない配信（同時に2回押した場合の2回目を含む）、配信先が終了・期限切れ。
+- エラー：形式の誤り・見つからない・他のワークスペースの配信は409より先に404 `not_found`。次の409を上から順に判定します：配信先が見つからない（`not_retryable`）、ポーリング用キューの配信（`not_retryable`）、イベントが保留中（`screening_held`）、イベントが判定待ち（`screening_pending`）、失敗していない配信（`not_retryable`。同時に2回押した場合の2回目を含む）、配信先が終了・期限切れ（`not_retryable`）。
 - 既知の制限：配信を `pending` に戻してからキューに入れるまでの間にWorkerが止まると、キューのメッセージがない `pending`（試行0回）の配信が残ることがあります。この配信は、同じイベントを送信元がもう一度送ったとき（重複として受け付け、未配信の配信をキューへ入れ直す）にだけ送られます。配信の作成から1時間を過ぎていれば、日次処理の警告ログ（`pending` のまま残っている配信の件数）に出ます。自動では回復しません。また、作成から1時間を過ぎた配信を再送すると、送り終えるまでの間に日次処理が走った場合は同じ警告ログに数えられます。
+
+## 受付イベントの判定（AIへの指示）
+
+送信元ごとに「AIへの指示の判定」を有効にできます。有効な送信元のイベントは、配信の前にTypeSafeのJev（`POST https://api.typesafe.ai/v1/systemone`、モデルは `jev-1.14.0` に固定）で「読んだAIへの指示を含むか」を判定し、スコアがしきい値以上なら保留します。保留したイベントはBotの配信先に届かず、MCPからも読めません。ワークスペースの持ち主が管理画面で内容を確かめ、保留を解除して配信できます。主な用途はメールの受付ですが、入口（HTTP・Service Bindings・メール）は問いません。
+
+### 設定
+
+- TypeSafeのAPIキーは環境変数ではなく、管理画面の送信元の「設定」で入力します。キーはワークスペースごとに1つで、そのワークスペースのすべての送信元で使います。
+- 保存の前に、キーで `GET https://api.typesafe.ai/v1/models` を呼んで確かめます。401・403なら422 `invalid_api_key`、それ以外の応答・タイムアウト（10秒）・接続の失敗なら503 `screening_unavailable` で、どちらも保存しません。キーは1〜256文字の印字可能なASCII（前後の空白は除く）で、それ以外は422 `invalid_api_key` です。
+- キーはWebhook配信先のBearerキーと同じく、`JWT_SECRET` から導出した鍵でAES-GCMで暗号化して保存します（追加認証データは `screening-api-key:<ワークスペースID>`）。応答で返すのは末尾4文字だけです。
+- `SCREENING_THRESHOLD`（任意の環境変数）：保留するスコアのしきい値。0より大きく1以下の数で、既定は0.5です。数として解釈できない値と範囲外の値は0.5にして警告ログを出します。`loadConfig` では検証しません（任意の機能の設定ミスで全体を止めないため）。
+
+| エンドポイント | 内容 |
+| --- | --- |
+| `POST /api/v1/sources/:id/screening` | 判定の有効・無効。本文は `{ "enabled": boolean, "api_key"?: string }`。200で `Source` を返す |
+| `GET /api/v1/screening` | `{ "api_key": null \| { "hint": "<末尾4文字>" } }`。キー自体は返さない |
+| `PUT /api/v1/screening/api-key` | キーの設定・変更。本文は `{ "api_key": string }`。確かめてから保存する |
+| `DELETE /api/v1/screening/api-key` | キーの削除 |
+
+- `Source` は `screening: { "enabled", "available" }` を持ちます。`available` はワークスペースにキーがあるか（復号できるかまでは見ない）です。
+- `enabled: true` で、ワークスペースにキーがなければ `api_key` が必須です（ないと422 `api_key_required`）。キーを確かめて保存してから有効にします。キーがあるときに `api_key` を渡すと422 `api_key_already_set` です（変更は `PUT /api/v1/screening/api-key` で行い、意図しない上書きを防ぐため）。
+- `enabled: false` はキーの有無に関係なくいつでもできます。
+- 会話の開始が許可されている送信元で `enabled: true` は409 `conversation_start_enabled` です。
+- キーは判定が有効な送信元があっても削除できます。その後のイベントは `screening_not_configured` で保留になります。
+- どのエンドポイントもログインが必要で、自分の個人用ワークスペースだけを扱います。
+
+### 判定の状態
+
+`events` に判定の状態（`screening.status`）を持ちます。
+
+| 状態 | 意味 | 配信 | MCPから読める |
+| --- | --- | --- | --- |
+| `null` | 判定の対象外（無効な送信元、有効にする前のイベント、会話のメッセージ） | する | 読める |
+| `pending` | 判定待ち | しない | 読めない |
+| `passed` | しきい値未満 | する | 読める |
+| `held` | 保留（しきい値以上、または判定できなかった） | しない | 読めない |
+| `released` | 持ち主が保留を解除した | する | 読める |
+
+- 送信元の設定は認証のときに読みます。有効にした直後に受け付けたイベントが判定されないことがあります。有効にする前に受け付けたイベントは判定しません。
+- スコアは判定のときに1回だけ求めて保存します。送信元の再送（重複）、保留の解除、配信の再送では判定し直しません。重複の受付では、判定待ちのイベントは判定をキューに入れ直し、保留中のイベントは何もしません。
+- 保留中・判定待ちのイベントは、MCPの `list_events` に出ず、`get_event` と `read_data` では存在しない場合と同じ `not_found` になり、`claim_events` でも取り出せません。管理画面の一覧には出ます。
+- 保留中・判定待ちのイベントのWebhook・MCP Eventsへの配信は `pending` のまま残り、`delivery_summary` でも `pending` に数えます。日次処理の「1時間以上未配信」の警告ログには数えません。ポーリング用キューの配信は7日で `expired` になります。
+
+### 判定に送るデータ
+
+AIがMCPやWebhookで読めるテキストをすべて送ります。
+
+- 共通の項目（すべてのリクエストに入れる）：`type`、`summary`、`labels`、全データの `{ name, content_type }`。これをJSONにしたものが16 KiBを超えたら、Jevを呼ばずに保留（`screening_too_large`）にします。
+- テキストとして読めるデータ（`read_data` がテキストとして返すもの：本文、`body.html`、テキストの添付）を、位置の順に `--- <名前> ---` の見出しを付けて1つのテキストにつなげ、UTF-8の文字境界で32 KiBずつに区切って、区切りごとに1リクエスト送ります（同時に2件まで）。合計が256 KiB（8リクエスト）を超えたら、Jevを呼ばずに保留（`screening_too_large`）にします。読めるデータがなければ共通の項目だけで1リクエスト送ります。
+- バイナリの添付やテキストでない本文は中身を送りません（AIも `read_data` でテキストとして読めません）。名前とContent-Typeは共通の項目で判定します。
+- 送り先はTypeSafe（米国）で、入力したAPIキーのアカウントで判定します。
+
+### 結果のまとめ方とエラー
+
+区切った各リクエストの結果は次の順にまとめます。
+
+1. しきい値以上のスコアが1件でもあれば、残りを送らずに保留（スコアを保存）。
+2. 再試行できる失敗が1件でもあれば、全体を再試行（途中のスコアは保存しない）。
+3. 再試行できない失敗があれば、その理由で保留（複数あれば下の表の上にあるもの）。
+4. すべて成功なら、最大のスコアで通過にし、配信をキューに入れる。
+
+| 状況 | 挙動 |
+| --- | --- |
+| 401・403 | 保留（`screening_auth_failed`） |
+| 400・413・415・422 | 保留（`screening_rejected`） |
+| 2xxだが `answers.ai_directed.noul` がない・0〜1の範囲外 | 保留（`screening_invalid_response`） |
+| 429・5xx・表にないステータス・タイムアウト（10秒）・接続の失敗、D1・R2の例外 | 再試行（30秒から倍々。`retry-after` があれば大きい方で、最大12時間）。キューの上限（5回）を超えたら保留（`screening_unavailable`） |
+| ワークスペースにAPIキーがない・復号できない | 保留（`screening_not_configured`） |
+| データの行はあるがR2にオブジェクトがない | 保留（`screening_data_missing`） |
+| 読めるデータが256 KiBを超える、共通の項目が16 KiBを超える | 保留（`screening_too_large`） |
+
+判定できなかったときは、通すのではなく保留にします。`usage.input_tokens` の合計はログに出します（費用の把握用）。
+
+### 保留の解除と判定し直し
+
+- `POST /api/v1/events/:id/screening/release`：保留中（`held`）なら解除（`released`）して配信をキューに入れます。解除済みなら状態は変えずに未配信の配信をキューに入れ直します（前回のキュー投入が失敗した場合のため）。それ以外は409 `not_releasable`、キューに入れられなければ503 `temporarily_unavailable`（状態は解除済みのまま）です。最初に解除した時刻とユーザーを記録します。
+- `POST /api/v1/events/:id/screening/retry`：判定できずに保留したイベントのうち、理由が `screening_unavailable`・`screening_auth_failed`・`screening_not_configured`・`screening_rejected`・`screening_invalid_response` のものを判定待ちに戻して判定し直します。判定待ちのまま10分以上たったイベントは、判定をキューに入れ直します。それ以外（スコアで保留したもの、`screening_too_large`・`screening_data_missing`）は409 `not_retryable`、キューに入れられなければ503 `temporarily_unavailable` です。
+- 他のワークスペースのイベントと会話のメッセージは404 `not_found` です。権限は配信の再送と同じく、ワークスペースの持ち主です。
+
+### 回収と注意
+
+- 判定のメッセージが失われた場合（キューの失敗など）、イベントは判定待ちのまま残ります。日次処理が、判定待ちのまま30分以上たったイベント（1回に100件まで）の判定をキューに入れ直し、通過・解除済みのイベントで30分以上未送信のまま残った配信（1回に100件のイベントまで）をキューに入れ直します。日次なので、回収まで最大24時間かかります。管理画面の「判定し直す」でもすぐに戻せます。
+- `JWT_SECRET` を変えると、保存したAPIキーが復号できなくなり、判定が有効な送信元のイベントは `screening_not_configured` で保留になります。キーを入れ直してから「判定し直す」で戻してください。
+- このバージョンより前にロールバックすると、保留が効かなくなります（古いコードは判定の状態を見ないため、保留中のイベントも配信され、MCPから読めます）。ロールバックの前に送信元の判定を無効にし、保留中のイベントがあれば確かめてください。
+- 長く保留した後で解除すると、MCP Eventsの購読が切れていれば `subscription_inactive` で失敗します。ポーリング用キューは7日を過ぎた配信を取り出せません。
+- 判定が有効な送信元からは会話を始められません（[送信元の設定](#送信元の設定)）。会話のメッセージは判定しません。
 
 ## MCP
 
@@ -421,6 +511,7 @@ AIがMCPに接続（承認）するたびに1つ増える接続を管理しま�
 - どのツールも、認証済みユーザーの個人用ワークスペースのデータだけを返す。それ以外のdata_refやevent_idは、存在を漏らさないよう「見つからない」として扱う。
 - さらに、読める範囲はMCP接続が割り当てられたBotの範囲に限る。受け取った内容に書かれた指示にAIが従っても、Botの範囲の外は読めないようにするため。
   - `list_events` に出るのは、Botに紐づけた送信元のイベントだけ。配信先の条件（`types`・`labels`）では絞らない。紐づけた送信元のないBotでは空の一覧になる。接続がBotに割り当てられていない（Botが削除済みを含む）と `unassigned` を返す（形式の正しくない `cursor` の `invalid_cursor` を先に返す）。
+  - 保留中・判定待ちのイベント（[受付イベントの判定](#受付イベントの判定aiへの指示)）は、どのツールでも読めない。`list_events` に出ず、`get_event` と `read_data` では `not_found` になる。
   - `get_event` と `read_data` で読めるのは、Botに紐づけた送信元のイベントと、呼び出した接続が参加している会話のメッセージだけ。範囲外は存在しない場合と同じ `not_found` を返し、`read_data` ではメタデータも返さず、R2も読まない。紐づけはその時点のものを使う。
   - 会話の参加者かどうかは `post_message` と同じく判定する。Bot導入前の参加者（`bot_id` がない）はOAuthクライアントで照合するので、Botに割り当てていない接続でも読める。接続がBotに割り当てられていなければ、送信元のイベントは `not_found` になる。
 - 時刻はISO 8601のUTC文字列で返す。結果はJSONのテキストで返し、エラーは `{ "error": { "code", "message" } }` の形で `isError` を付けて返す。

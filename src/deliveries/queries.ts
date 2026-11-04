@@ -5,6 +5,7 @@ import { and, desc, eq, inArray, lt, type SQL } from "drizzle-orm";
 import type { Delivery, DeliverySummary } from "../api/types";
 import type { Db } from "../db/client";
 import { deliveries, mcpConnections, subscriptions, type DeliveryRow } from "../db/schema";
+import { DELIVERABLE_EVENT_SQL } from "../screening/state";
 
 export const DELIVERY_PAGE_SIZE = 50;
 
@@ -28,12 +29,13 @@ export function insertDeliveryStatement(
 
 // The pending deliveries of an event that were never tried: their messages may not be in the queue. Deliveries
 // waiting for a retry are in the queue already. Deliveries to polling queues are never queued: they wait for
-// claim_events.
+// claim_events. The deliveries of an event that may not be delivered (src/screening/state.ts) are not found.
 export async function findUnsentDeliveryIds(d1: D1Database, eventId: string): Promise<string[]> {
   const { results } = await d1
     .prepare(
       `SELECT id FROM deliveries WHERE event_id = ? AND status = 'pending' AND attempts = 0
-        AND NOT EXISTS (SELECT 1 FROM subscriptions s WHERE s.id = deliveries.subscription_id AND s.kind = 'queue')`,
+        AND NOT EXISTS (SELECT 1 FROM subscriptions s WHERE s.id = deliveries.subscription_id AND s.kind = 'queue')
+        AND ${DELIVERABLE_EVENT_SQL}`,
     )
     .bind(eventId)
     .all<{ id: string }>();
@@ -83,7 +85,8 @@ export async function failPendingDelivery(d1: D1Database, id: string, reason: st
 }
 
 // The pending deliveries created before a time: their number and the oldest created_at. Deliveries to polling
-// queues are not counted: they stay pending until an AI takes them.
+// queues are not counted: they stay pending until an AI takes them. Nor are the deliveries of events held or waiting
+// for the screening: they stay pending until the event is released or screened.
 export async function stalePendingDeliveries(
   d1: D1Database,
   createdBefore: number,
@@ -91,11 +94,32 @@ export async function stalePendingDeliveries(
   const row = await d1
     .prepare(
       `SELECT COUNT(*) AS count, MIN(created_at) AS oldest FROM deliveries WHERE status = 'pending' AND created_at < ?
-        AND NOT EXISTS (SELECT 1 FROM subscriptions s WHERE s.id = deliveries.subscription_id AND s.kind = 'queue')`,
+        AND NOT EXISTS (SELECT 1 FROM subscriptions s WHERE s.id = deliveries.subscription_id AND s.kind = 'queue')
+        AND NOT EXISTS (SELECT 1 FROM events e WHERE e.id = deliveries.event_id AND e.screening_status IN ('pending', 'held'))`,
     )
     .bind(createdBefore)
     .first<{ count: number; oldest: number | null }>();
   return { count: row?.count ?? 0, oldestCreatedAt: row?.oldest ?? null };
+}
+
+// The events of screened deliveries (passed or released) with a delivery that is not to a polling queue, pending and
+// never tried, created before a time: their messages may have been lost (the enqueue after the screening failed even
+// in the dead letter queue). Read through deliveries_status_created_at_idx; at most limit events.
+export async function findScreenedEventsWithUnsentDeliveries(
+  d1: D1Database,
+  params: { createdBefore: number; limit: number },
+): Promise<string[]> {
+  const { results } = await d1
+    .prepare(
+      `SELECT DISTINCT event_id FROM deliveries INDEXED BY deliveries_status_created_at_idx
+      WHERE status = 'pending' AND created_at < ? AND attempts = 0
+        AND NOT EXISTS (SELECT 1 FROM subscriptions s WHERE s.id = deliveries.subscription_id AND s.kind = 'queue')
+        AND EXISTS (SELECT 1 FROM events e WHERE e.id = deliveries.event_id AND e.screening_status IN ('passed', 'released'))
+      LIMIT ?`,
+    )
+    .bind(params.createdBefore, params.limit)
+    .all<{ event_id: string }>();
+  return results.map((row) => row.event_id);
 }
 
 // The host of a callback URL, or null if it is not a URL.

@@ -159,6 +159,17 @@ export async function startSourceConversation(
       ),
     };
   }
+  // The first message is written by the program and would reach the bots without the screening. The settings refuse
+  // both at once; this covers a change of both at the same time.
+  if (row.screeningEnabled === 1) {
+    return {
+      ok: false,
+      error: withMessage(
+        intakeError("start_not_allowed"),
+        `送信元「${row.name}」は AI への指示の判定が有効なため、会話を始められません`,
+      ),
+    };
+  }
 
   // created_by_user_id: the owner of the (personal) workspace.
   const workspace = await findWorkspaceById(db, workspaceId);

@@ -3,15 +3,30 @@
 import { describeError } from "../auth/middleware";
 import { findUnsentDeliveryIds } from "./queries";
 
-// The message carries the delivery ID only; the consumer reads the rest from D1.
-export type DeliveryMessage = { delivery_id: string };
+// A delivery message carries the delivery ID only; the consumer reads the rest from D1. A screening message
+// (src/screening/service.ts) carries the event ID of an event waiting for the screening.
+export type DeliveryMessage = { delivery_id: string } | ScreeningMessage;
+
+export type ScreeningMessage = { kind: "screen"; event_id: string };
 
 // Queues accept up to 100 messages per sendBatch.
 const SEND_BATCH_SIZE = 100;
 
 export type EnqueueDeps = { db: D1Database; queue: Queue<DeliveryMessage> };
 
-// Sends a message for every pending delivery of the event that was never tried. Returns false if sending
+// Sends the screening message of an event. Returns false if sending failed.
+export async function enqueueScreening(deps: { queue: Queue<DeliveryMessage> }, eventId: string): Promise<boolean> {
+  try {
+    await deps.queue.send({ kind: "screen", event_id: eventId });
+    return true;
+  } catch (error) {
+    console.error("enqueueing the screening failed", { eventId, ...describeError(error) });
+    return false;
+  }
+}
+
+// Sends a message for every pending delivery of the event that was never tried. The deliveries of an event that may
+// not be delivered yet (held or waiting for the screening) are not found. Returns false if sending
 // failed; the intake then answers temporarily_unavailable, and the sender's retry (a duplicate) enqueues again.
 // A delivery whose message is still waiting in the queue may be sent twice; receivers deduplicate with
 // webhook-id.

@@ -142,6 +142,7 @@ describe("the sources of a bot", () => {
       updated_at: 1,
       active_key_count: 0,
       conversation_start: { enabled: false, daily_limit: 10, max_ai_messages: 10 },
+      screening: { enabled: false, available: false },
     });
     const choices = sourceChoices([source("src_1", "worker"), source("src_2", "app"), source("src_3", "batch")]);
     expect(choices.map((s) => s.name)).toEqual(["app", "batch", "worker"]);

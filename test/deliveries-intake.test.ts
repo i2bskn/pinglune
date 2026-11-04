@@ -49,7 +49,7 @@ beforeEach(async () => {
   other = await createUser({ email: "other@example.com" });
   workspace = await personalWorkspaceOf(owner);
   source = await createSource({ workspaceId: workspace.id, name: "app" });
-  intakeSource = { id: source.id, workspaceId: workspace.id, name: source.name, enabled: true };
+  intakeSource = { id: source.id, workspaceId: workspace.id, name: source.name, enabled: true, screeningEnabled: false };
   queue = fakeQueue();
 });
 
@@ -79,7 +79,7 @@ function uniqueCallback(): string {
 }
 
 function queuedIds(): string[] {
-  return queue.messages.map((message) => message.delivery_id).sort();
+  return queue.messages.map((message) => ("delivery_id" in message ? message.delivery_id : "")).sort();
 }
 
 describe("deliveries created by the intake", () => {
@@ -471,7 +471,7 @@ describe("matchesFilter", () => {
     for (const [i, item] of inputs.entries()) {
       const result = await acceptEvent(
         { db: env.DB, bucket: env.EVENT_DATA, queue, now: Date.now() },
-        { id: item.source.id, workspaceId: workspace.id, name: item.source.name, enabled: true },
+        { id: item.source.id, workspaceId: workspace.id, name: item.source.name, enabled: true, screeningEnabled: false },
         { idempotency_key: `k-${i}`, type: item.type, summary: "s", labels: item.labels },
       );
       if (!result.ok) throw new Error("ingest failed");

@@ -12,6 +12,7 @@ import { subscriptions, type SubscriptionRow } from "../db/schema";
 import { failPendingDelivery } from "../deliveries/queries";
 import { findWorkspaceEventsByIds } from "../events/queries";
 import { DELIVERY_ID_PATTERN } from "../ids";
+import { DELIVERABLE_EVENT_SQL } from "../screening/state";
 import type { StatementGuard } from "../subscriptions/queries";
 import { QUEUE_LEASE_MS, QUEUE_MAX_CLAIMS, QUEUE_RETENTION_MS } from "./constants";
 
@@ -102,8 +103,9 @@ export function endQueueStatements(
   ];
 }
 
-// The deliveries of a queue that may be claimed now, oldest first. A query of its own so that a test can check
-// its plan.
+// The deliveries of a queue that may be claimed now, oldest first. The deliveries of events that may not be
+// delivered (held or waiting for the screening, src/screening/state.ts) are not claimed. A query of its own so that
+// a test can check its plan.
 export function claimableDeliveriesStatement(
   d1: D1Database,
   params: { workspaceId: string; queueId: string; now: number; limit: number },
@@ -112,7 +114,7 @@ export function claimableDeliveriesStatement(
     .prepare(
       `SELECT id, event_id, attempts FROM deliveries INDEXED BY deliveries_status_created_at_idx
       WHERE status = 'pending' AND created_at > ?1 AND subscription_id = ?2 AND workspace_id = ?3 AND attempts < ?4
-        AND (attempts = 0 OR last_attempt_at <= ?5)
+        AND (attempts = 0 OR last_attempt_at <= ?5) AND ${DELIVERABLE_EVENT_SQL}
       ORDER BY created_at, id LIMIT ?6`,
     )
     .bind(

@@ -217,7 +217,13 @@ async function ingest(c: Context<AppEnv>): Promise<Response> {
   // 6. Validation and the shared intake.
   const result = await acceptEvent(
     { db: c.env.DB, bucket: c.env.EVENT_DATA, queue: c.env.DELIVERY_QUEUE, now },
-    { id: auth.source.id, workspaceId: auth.source.workspaceId, name: auth.source.name, enabled: auth.source.enabled },
+    {
+      id: auth.source.id,
+      workspaceId: auth.source.workspaceId,
+      name: auth.source.name,
+      enabled: auth.source.enabled,
+      screeningEnabled: auth.source.screeningEnabled === 1,
+    },
     structured.input,
   );
   if (!result.ok) return errorResponse(c, result.error);

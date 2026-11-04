@@ -1,17 +1,20 @@
 // The daily cron (wrangler.jsonc triggers): logs deliveries that stay pending, fails the deliveries of polling
-// queues that nobody took for 7 days, and deletes R2 objects that no event_data row refers to (left by intakes that
-// stopped or failed between R2 and D1).
+// queues that nobody took for 7 days, deletes R2 objects that no event_data row refers to (left by intakes that
+// stopped or failed between R2 and D1), and recovers the screening (src/screening/) when its messages were lost:
+// events left pending get their screening message again, and the deliveries of screened events that were never
+// queued are queued again. Lost messages are recovered within a day.
 //
 // Each run scans one page of R2 (up to 1,000 objects) and saves where it stopped, so that the Free plan's
 // per-invocation limits hold. With many objects a full pass takes days (100,000 objects: about 100 days).
 
 import { describeError } from "../auth/middleware";
-import { stalePendingDeliveries } from "../deliveries/queries";
+import { enqueuePendingDeliveries, enqueueScreening, type DeliveryMessage } from "../deliveries/enqueue";
+import { findScreenedEventsWithUnsentDeliveries, stalePendingDeliveries } from "../deliveries/queries";
 import { DATA_REF_PATTERN, EVENT_ID_PATTERN } from "../ids";
 import { QUEUE_RETENTION_MS } from "../queues/constants";
 import { expireQueueDeliveries } from "../queues/queries";
 
-export type MaintenanceDeps = { db: D1Database; bucket: R2Bucket; now: number };
+export type MaintenanceDeps = { db: D1Database; bucket: R2Bucket; queue: Queue<DeliveryMessage>; now: number };
 
 const HOUR_MS = 60 * 60 * 1000;
 // Pending for longer than this is logged.
@@ -24,6 +27,10 @@ const SCAN_LIMIT = 1000;
 export const SCAN_POSITION_KEY = "maintenance/orphan-scan-position";
 // Bound parameters per query stay under D1's limit of 100.
 const LOOKUP_CHUNK = 90;
+// Events pending or deliveries unsent for longer than this are recovered.
+const SCREENING_STALE_MS = 30 * 60 * 1000;
+// The events recovered per run, for each of the two recoveries.
+const SCREENING_RECOVERY_LIMIT = 100;
 
 // workspaces/<workspace>/events/<eventId>/<dataRef> (eventDataKey), or null for any other shape.
 function parseDataKey(key: string): { dataRef: string } | null {
@@ -41,6 +48,46 @@ async function checkStalePending(deps: MaintenanceDeps): Promise<void> {
     if (count > 0) console.warn("stale pending deliveries", { count, oldestCreatedAt });
   } catch (error) {
     console.error("checking stale pending deliveries failed", describeError(error));
+  }
+}
+
+// Events left pending by the screening (its message was lost, or a long retry-after): their message is sent again.
+// Read with events_screening_pending_idx. A message still waiting in the queue makes Jev run twice; the conditional
+// update keeps one result.
+async function resendStaleScreenings(deps: MaintenanceDeps): Promise<void> {
+  try {
+    const { results } = await deps.db
+      .prepare(
+        `SELECT id FROM events INDEXED BY events_screening_pending_idx
+        WHERE screening_status = 'pending' AND screening_requested_at < ? ORDER BY screening_requested_at LIMIT ?`,
+      )
+      .bind(deps.now - SCREENING_STALE_MS, SCREENING_RECOVERY_LIMIT)
+      .all<{ id: string }>();
+    if (results.length === 0) return;
+    console.warn("events left pending by the screening", { count: results.length });
+    let failed = 0;
+    for (const row of results) if (!(await enqueueScreening(deps, row.id))) failed++;
+    if (failed > 0) console.error("resending screenings failed", { count: failed });
+  } catch (error) {
+    console.error("resending stale screenings failed", describeError(error));
+  }
+}
+
+// The deliveries of passed or released events that were never queued (the enqueue after the screening or the release
+// failed, even in the dead letter queue).
+async function requeueScreenedDeliveries(deps: MaintenanceDeps): Promise<void> {
+  try {
+    const eventIds = await findScreenedEventsWithUnsentDeliveries(deps.db, {
+      createdBefore: deps.now - SCREENING_STALE_MS,
+      limit: SCREENING_RECOVERY_LIMIT,
+    });
+    if (eventIds.length === 0) return;
+    console.warn("screened events with unsent deliveries", { count: eventIds.length });
+    let failed = 0;
+    for (const eventId of eventIds) if (!(await enqueuePendingDeliveries(deps, eventId))) failed++;
+    if (failed > 0) console.error("requeueing screened deliveries failed", { count: failed });
+  } catch (error) {
+    console.error("requeueing screened deliveries failed", describeError(error));
   }
 }
 
@@ -120,5 +167,11 @@ async function deleteOrphanObjects(deps: MaintenanceDeps): Promise<void> {
 
 // The tasks are independent: a failure of one does not stop the others.
 export async function runDailyMaintenance(deps: MaintenanceDeps): Promise<void> {
-  await Promise.all([checkStalePending(deps), expireQueues(deps), deleteOrphanObjects(deps)]);
+  await Promise.all([
+    checkStalePending(deps),
+    expireQueues(deps),
+    deleteOrphanObjects(deps),
+    resendStaleScreenings(deps),
+    requeueScreenedDeliveries(deps),
+  ]);
 }

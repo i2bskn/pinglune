@@ -3,7 +3,7 @@ import type { Bot, Source } from "../../src/api/types";
 import { buildFlow, edgePath, relatedIds } from "./flow";
 
 function source(id: string, name: string, enabled = true): Source {
-  return { id, name, enabled, created_at: 1, updated_at: 1, active_key_count: 0, conversation_start: { enabled: false, daily_limit: 10, max_ai_messages: 10 } };
+  return { id, name, enabled, created_at: 1, updated_at: 1, active_key_count: 0, conversation_start: { enabled: false, daily_limit: 10, max_ai_messages: 10 }, screening: { enabled: false, available: false } };
 }
 
 const ACTIVE_HOOK: Bot["delivery"] = {

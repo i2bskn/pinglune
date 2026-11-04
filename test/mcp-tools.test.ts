@@ -91,7 +91,7 @@ async function ingest(
   sequence++;
   const result = await acceptEvent(
     { db: env.DB, bucket: env.EVENT_DATA, queue: fakeQueue(), now: receivedAt },
-    { id: source.id, workspaceId: source.workspaceId, name: source.name, enabled: true },
+    { id: source.id, workspaceId: source.workspaceId, name: source.name, enabled: true, screeningEnabled: false },
     { idempotency_key: `k-${sequence}`, type: "alert.observed", summary: `s${sequence}`, ...input },
   );
   if (!result.ok) throw new Error(`ingest failed: ${result.error.code}`);

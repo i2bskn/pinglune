@@ -18,6 +18,7 @@ import deliveriesApi from "./routes/deliveries";
 import eventsApi from "./routes/events";
 import { mcpConnectionsApi } from "./routes/mcp-connections";
 import me from "./routes/me";
+import screeningApi from "./routes/screening";
 import sourcesApi from "./routes/sources";
 import subscriptionsApi from "./routes/subscriptions";
 import usersApi from "./routes/users";
@@ -50,7 +51,8 @@ const apiRoutes = app
   .route("/api/v1/deliveries", deliveriesApi)
   .route("/api/v1/bots", botsApi)
   .route("/api/v1/conversations", conversationsApi)
-  .route("/api/v1/mcp-connections", mcpConnectionsApi);
+  .route("/api/v1/mcp-connections", mcpConnectionsApi)
+  .route("/api/v1/screening", screeningApi);
 
 // Types for hc<AppType>(). Only /api/v1/* is included.
 export type AppType = typeof apiRoutes;

@@ -13,7 +13,7 @@ import {
   toApiDeliveries,
 } from "../deliveries/queries";
 import type { AppEnv } from "../env";
-import { findWorkspaceEventsByIds } from "../events/queries";
+import { findWorkspaceEventScope, findWorkspaceEventsByIds } from "../events/queries";
 import { DELIVERY_ID_PATTERN, EVENT_ID_PATTERN, SUBSCRIPTION_ID_PATTERN } from "../ids";
 import { findSubscriptionById, isActiveSubscription } from "../subscriptions/queries";
 import { requirePersonalWorkspace } from "./workspace";
@@ -110,6 +110,14 @@ const deliveriesApi = new Hono<AppEnv>()
     }
     if (subscription.kind === "queue") {
       return apiError(c, 409, "not_retryable", "ポーリング用キューの配信は再送できません");
+    }
+    // A held event, or one waiting for the screening, is not sent: it is released (or screened) first.
+    const scope = await findWorkspaceEventScope(db, workspaceId, row.eventId);
+    if (scope?.screeningStatus === "held") {
+      return apiError(c, 409, "screening_held", "イベントが保留中のため再送できません。先に保留を解除してください");
+    }
+    if (scope?.screeningStatus === "pending") {
+      return apiError(c, 409, "screening_pending", "イベントの判定が終わっていないため再送できません");
     }
     if (row.status !== "failed") return apiError(c, 409, "not_retryable", "失敗した配信だけを再送できます");
     const now = clock.now();

@@ -1730,6 +1730,25 @@ textarea {
   margin-bottom: 0;
 }
 
+/* The TypeSafe API key under the screening settings of a source. The hint may wrap on narrow screens. */
+.screening-api-key {
+  margin-top: 1.25rem;
+  overflow-wrap: anywhere;
+}
+
+/* The screening of an event: its state, the reason and the operations. */
+.screening-panel {
+  margin: 1.25rem 0 0;
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow-wrap: anywhere;
+}
+
+.screening-panel > p:first-child {
+  margin-top: 0;
+}
+
 /* A title with its state badges, and the buttons of the screen next to it (below it on narrow screens). */
 .page-head-row {
   display: flex;

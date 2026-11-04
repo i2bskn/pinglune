@@ -33,7 +33,7 @@ beforeEach(async () => {
   const user = await createUser({ email: "owner@example.com" });
   const workspace = await personalWorkspaceOf(user);
   source = await createSource({ workspaceId: workspace.id, name: "app" });
-  intakeSource = { id: source.id, workspaceId: workspace.id, name: source.name, enabled: true };
+  intakeSource = { id: source.id, workspaceId: workspace.id, name: source.name, enabled: true, screeningEnabled: false };
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
 

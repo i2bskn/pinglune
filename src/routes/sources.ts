@@ -7,11 +7,12 @@ import type {
   EmailAddressList,
   SourceList,
   UpdateSourceRequest,
+  UpdateSourceScreeningRequest,
 } from "../api/types";
 import { apiError, requireUser } from "../auth/middleware";
 import { isUniqueViolation } from "../auth/users";
 import { clock } from "../clock";
-import { apiKeys, emailAddresses, sources } from "../db/schema";
+import { apiKeys, emailAddresses, sources, type WorkspaceRow } from "../db/schema";
 import {
   countActiveEmailAddresses,
   findSourceEmailAddress,
@@ -41,8 +42,10 @@ import {
   toApiKey,
   toApiSource,
 } from "../sources/queries";
+import { normalizeApiKey, verifyAndSaveApiKey } from "../screening/api-key";
 import { jsonBody } from "./api";
 import { conversationStartBody } from "./conversation-start";
+import { invalidApiKeyMessage, screeningApiKeyError } from "./screening";
 import { requirePersonalWorkspace } from "./workspace";
 
 export const MAX_SOURCES_PER_WORKSPACE = 100;
@@ -91,6 +94,29 @@ const createSourceBody = jsonBody<CreateSourceRequest, { name: string }>((body, 
   return { ok: true, value: { name } };
 });
 
+// Whether the workspace has a TypeSafe API key for the screening. Whether it can be decrypted is not checked.
+export function hasScreeningApiKey(workspace: WorkspaceRow): boolean {
+  return workspace.screeningApiKey !== null;
+}
+
+const screeningEnabledMessage = "AI への指示の判定が有効な送信元からは会話を始められません。先に判定を無効にしてください";
+const conversationStartEnabledMessage =
+  "会話の開始が有効な送信元では AI への指示の判定を有効にできません。先に会話の開始を無効にしてください";
+const apiKeyRequiredMessage = "判定を有効にするには TypeSafe の API キーを入力してください";
+const apiKeyAlreadySetMessage = "API キーは設定済みです。変更は API キーの「変更」から行ってください";
+
+const sourceScreeningBody = jsonBody<UpdateSourceScreeningRequest, { enabled: boolean; apiKey?: unknown }>(
+  (body, c) => {
+    const unknown = unknownField(body, ["enabled", "api_key"]);
+    if (unknown !== null) return apiError(c, 400, "unknown_field", `未知の項目があります: ${unknown}`);
+    if (typeof body.enabled !== "boolean") {
+      return apiError(c, 400, "invalid_request", "enabled は true か false で指定してください");
+    }
+    // Checked by the route: whether it is allowed depends on the key of the workspace.
+    return { ok: true, value: body.api_key === undefined ? { enabled: body.enabled } : { enabled: body.enabled, apiKey: body.api_key } };
+  },
+);
+
 const updateSourceBody = jsonBody<UpdateSourceRequest, { name?: string; enabled?: boolean }>((body, c) => {
   const unknown = unknownField(body, ["name", "enabled"]);
   if (unknown !== null) return apiError(c, 400, "unknown_field", `未知の項目があります: ${unknown}`);
@@ -114,7 +140,8 @@ const sourcesApi = new Hono<AppEnv>()
   .use("*", requireUser, requirePersonalWorkspace)
   .get("/", async (c) => {
     const rows = await listWorkspaceSources(c.get("db"), c.get("workspace").id);
-    const body: SourceList = { sources: rows.map(toApiSource) };
+    const screeningAvailable = hasScreeningApiKey(c.get("workspace"));
+    const body: SourceList = { sources: rows.map((row) => toApiSource(row, { screeningAvailable })) };
     return c.json(body, 200);
   })
   .post("/", createSourceBody, async (c) => {
@@ -135,7 +162,7 @@ const sourcesApi = new Hono<AppEnv>()
     }
     const created = await findWorkspaceSource(db, workspaceId, id);
     if (!created) throw new Error("created source not found");
-    return c.json(toApiSource(created), 201);
+    return c.json(toApiSource(created, { screeningAvailable: hasScreeningApiKey(c.get("workspace")) }), 201);
   })
   .patch("/:id", updateSourceBody, async (c) => {
     const input = c.req.valid("json");
@@ -157,10 +184,11 @@ const sourcesApi = new Hono<AppEnv>()
     }
     const updated = await findWorkspaceSource(db, workspaceId, id);
     if (!updated) return apiError(c, 404, "not_found", sourceNotFound);
-    return c.json(toApiSource(updated), 200);
+    return c.json(toApiSource(updated, { screeningAvailable: hasScreeningApiKey(c.get("workspace")) }), 200);
   })
   // The conversation start settings, as for a bot. Saved for a disabled source too. Turning them off does not stop
-  // the conversations the source has started.
+  // the conversations the source has started. Not turned on while the screening is on: the first message is written
+  // by the program and would reach the bots without the screening.
   .post("/:id/conversation-start", conversationStartBody, async (c) => {
     const input = c.req.valid("json");
     const db = c.get("db");
@@ -169,15 +197,72 @@ const sourcesApi = new Hono<AppEnv>()
     if (!SOURCE_ID_PATTERN.test(id)) return apiError(c, 404, "not_found", sourceNotFound);
     // kind 'program': the conversation source is never matched.
     const result = await c.env.DB.prepare(
-      `UPDATE sources SET can_start_conversations = ?, start_daily_limit = ?, start_max_ai_messages = ?, updated_at = ?
-      WHERE id = ? AND workspace_id = ? AND kind = 'program'`,
+      `UPDATE sources SET can_start_conversations = ?1, start_daily_limit = ?2, start_max_ai_messages = ?3, updated_at = ?4
+      WHERE id = ?5 AND workspace_id = ?6 AND kind = 'program' AND (?1 = 0 OR screening_enabled = 0)`,
     )
       .bind(input.enabled ? 1 : 0, input.dailyLimit, input.maxAiMessages, clock.now(), id, workspaceId)
       .run();
-    if ((result.meta.changes ?? 0) === 0) return apiError(c, 404, "not_found", sourceNotFound);
+    if ((result.meta.changes ?? 0) === 0) {
+      const source = await findWorkspaceSource(db, workspaceId, id);
+      if (source?.screeningEnabled === 1) {
+        return apiError(c, 409, "screening_enabled", screeningEnabledMessage);
+      }
+      return apiError(c, 404, "not_found", sourceNotFound);
+    }
     const updated = await findWorkspaceSource(db, workspaceId, id);
     if (!updated) return apiError(c, 404, "not_found", sourceNotFound);
-    return c.json(toApiSource(updated), 200);
+    return c.json(toApiSource(updated, { screeningAvailable: hasScreeningApiKey(c.get("workspace")) }), 200);
+  })
+  // The screening of the events for instructions to AIs (src/screening/). Turning it on needs the TypeSafe API key of
+  // the workspace: api_key is required when the workspace has none (it is checked and saved first), and rejected when
+  // it has one (PUT /api/v1/screening/api-key changes it). Turning it off is always allowed. Not turned on while the
+  // source may start conversations.
+  .post("/:id/screening", sourceScreeningBody, async (c) => {
+    const input = c.req.valid("json");
+    const db = c.get("db");
+    const workspace = c.get("workspace");
+    const id = c.req.param("id");
+    if (!SOURCE_ID_PATTERN.test(id)) return apiError(c, 404, "not_found", sourceNotFound);
+    const source = await findWorkspaceSource(db, workspace.id, id);
+    if (!source) return apiError(c, 404, "not_found", sourceNotFound);
+    let screeningAvailable = hasScreeningApiKey(workspace);
+    if (input.enabled) {
+      if (source.canStartConversations === 1) {
+        return apiError(c, 409, "conversation_start_enabled", conversationStartEnabledMessage);
+      }
+      if (screeningAvailable && input.apiKey !== undefined) {
+        return apiError(c, 422, "api_key_already_set", apiKeyAlreadySetMessage);
+      }
+      if (!screeningAvailable) {
+        if (input.apiKey === undefined) return apiError(c, 422, "api_key_required", apiKeyRequiredMessage);
+        const apiKey = normalizeApiKey(input.apiKey);
+        if (apiKey === null) return apiError(c, 422, "invalid_api_key", invalidApiKeyMessage);
+        const saved = await verifyAndSaveApiKey(c.env.DB, {
+          jwtSecret: c.get("config").jwtSecret,
+          workspaceId: workspace.id,
+          apiKey,
+        });
+        if (!saved.ok) return screeningApiKeyError(c, saved.code);
+        screeningAvailable = true;
+      }
+    }
+    // The conversation start is checked again in the same statement, for a change of both at the same time.
+    const result = await c.env.DB.prepare(
+      `UPDATE sources SET screening_enabled = ?1, updated_at = ?2
+      WHERE id = ?3 AND workspace_id = ?4 AND kind = 'program' AND (?1 = 0 OR can_start_conversations = 0)`,
+    )
+      .bind(input.enabled ? 1 : 0, clock.now(), id, workspace.id)
+      .run();
+    if ((result.meta.changes ?? 0) === 0) {
+      const current = await findWorkspaceSource(db, workspace.id, id);
+      if (current?.canStartConversations === 1) {
+        return apiError(c, 409, "conversation_start_enabled", conversationStartEnabledMessage);
+      }
+      return apiError(c, 404, "not_found", sourceNotFound);
+    }
+    const updated = await findWorkspaceSource(db, workspace.id, id);
+    if (!updated) return apiError(c, 404, "not_found", sourceNotFound);
+    return c.json(toApiSource(updated, { screeningAvailable }), 200);
   })
   .get("/:id/api-keys", async (c) => {
     const db = c.get("db");

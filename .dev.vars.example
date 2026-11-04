@@ -33,3 +33,9 @@ JWT_SECRET=
 # Email Routing catch-all rule sends mail to this Worker. Set it only when you use the email intake.
 # Keep it commented out here, so that the Deploy to Cloudflare button does not ask for it as a secret.
 # EMAIL_DOMAIN=example.com
+
+# Optional. The score (greater than 0, at most 1) at or above which the screening of events for instructions to AIs
+# holds an event. Default 0.5; an invalid value is treated as 0.5. The TypeSafe API key is entered on the management
+# screen (the settings of a source), not here. Keep it commented out here, so that the Deploy to Cloudflare button
+# does not ask for it as a secret.
+# SCREENING_THRESHOLD=0.5

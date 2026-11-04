@@ -41,6 +41,7 @@ import {
   findWorkspaceEventData,
   findWorkspaceEventScope,
   listWorkspaceEvents,
+  type EventScope,
 } from "../events/queries";
 import { CONVERSATION_ID_PATTERN, DATA_REF_PATTERN, EVENT_ID_PATTERN, newUlid, SUBSCRIPTION_ID_PATTERN } from "../ids";
 import { parseOccurredAt } from "../intake/validation";
@@ -53,6 +54,7 @@ import {
 } from "../queues/constants";
 import { ackQueueDeliveries, claimQueueDeliveries, findActiveWorkspaceQueue } from "../queues/queries";
 import { normalizeDisplayName } from "../routes/sources";
+import { isDeliverableScreening } from "../screening/state";
 import { findPersonalWorkspaceByUserId } from "../workspaces/queries";
 import { iso, toMcpEvent, toMcpEventDetail } from "./event-payload";
 import { isReadableText, sliceUtf8 } from "./text";
@@ -155,14 +157,11 @@ function toolError(code: ToolErrorCode, message: string): CallToolResult {
   return { isError: true, content: [{ type: "text", text: JSON.stringify({ error: { code, message } }) }] };
 }
 
-// Whether the request may read the event: a message of a conversation if the request is one of its participants
-// (isRequestParticipant, as post_message), and an event of a source if the source is linked to the bot of the
-// connection.
-async function canReadEvent(
-  deps: ToolDeps,
-  workspaceId: string,
-  event: { sourceId: string; conversationId: string | null },
-): Promise<boolean> {
+// Whether the request may read the event: never one held or waiting for the screening (src/screening/state.ts); a
+// message of a conversation if the request is one of its participants (isRequestParticipant, as post_message), and an
+// event of a source if the source is linked to the bot of the connection.
+async function canReadEvent(deps: ToolDeps, workspaceId: string, event: EventScope): Promise<boolean> {
+  if (!isDeliverableScreening(event.screeningStatus)) return false;
   if (event.conversationId !== null) {
     const participants = await listConversationParticipants(deps.db, event.conversationId);
     return participants.some((p) => isRequestParticipant(p, deps.connectionBot, deps.clientId));
@@ -421,14 +420,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
     (args) =>
       inWorkspace(deps, "get_event", { eventId: args.event_id }, async (workspaceId) => {
         if (!EVENT_ID_PATTERN.test(args.event_id)) return toolError("not_found", eventNotFound);
+        // Out of the scope (or held) is answered like a missing event, so that its existence is not told. Checked
+        // before the event is read.
+        const scope = await findWorkspaceEventScope(db, workspaceId, args.event_id);
+        if (!scope || !(await canReadEvent(deps, workspaceId, scope))) return toolError("not_found", eventNotFound);
         const event = await findWorkspaceEvent(db, workspaceId, args.event_id);
         if (!event) return toolError("not_found", eventNotFound);
-        // Out of the scope is answered like a missing event, so that its existence is not told.
-        const readable = await canReadEvent(deps, workspaceId, {
-          sourceId: event.source.id,
-          conversationId: event.conversation_id,
-        });
-        if (!readable) return toolError("not_found", eventNotFound);
         return ok(toMcpEventDetail(event));
       }),
   );

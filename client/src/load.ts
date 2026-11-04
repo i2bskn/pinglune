@@ -9,9 +9,10 @@ import type {
   DeliveryList,
   DeliveryStatus,
   EmailAddressList,
-  EventDetail,
   EventList,
+  ManagedEventDetail,
   McpConnection,
+  ScreeningSettings,
   Source,
   Subscription,
   User,
@@ -153,7 +154,7 @@ export async function loadEventsView(client: ApiClient, filter: EventFilterValue
   return { kind: "ready", data: { events: events.value, eventsError: null, ...sourceData } };
 }
 
-export async function loadEventDetail(client: ApiClient, id: string): Promise<Loaded<EventDetail>> {
+export async function loadEventDetail(client: ApiClient, id: string): Promise<Loaded<ManagedEventDetail>> {
   if (!isValidId(id)) return { kind: "notFound" };
   const event = await request(() => client.api.v1.events[":id"].$get({ param: { id } }));
   if (event.kind !== "ok") return failure([event]);
@@ -277,6 +278,15 @@ export async function loadOverview(client: ApiClient): Promise<Loaded<OverviewDa
       subscriptions: subscriptions.value.subscriptions,
     },
   };
+}
+
+// The TypeSafe API key of the workspace (its last 4 characters only), for the screening settings of a source.
+export async function loadScreeningSettings(client: ApiClient): Promise<Loaded<ScreeningSettings>> {
+  const settings = await request(() => client.api.v1.screening.$get());
+  if (settings.kind === "redirecting") return settings;
+  // The settings are never missing; a 404 here is an unexpected response.
+  if (settings.kind !== "ok") return { kind: "error", message: settings.message };
+  return { kind: "ready", data: settings.value };
 }
 
 export type SourceDetailData = { source: Source; apiKeys: ApiKey[]; emailAddresses: EmailAddressList };

@@ -1,15 +1,19 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { validator } from "hono/validator";
-import type { EventList } from "../api/types";
+import type { EventList, ManagedEventDetail } from "../api/types";
 import { apiError, requireUser } from "../auth/middleware";
+import { clock } from "../clock";
+import { enqueuePendingDeliveries, enqueueScreening } from "../deliveries/enqueue";
 import { deliverySummaries } from "../deliveries/queries";
 import type { AppEnv } from "../env";
 import {
   findEventDataOfEvent,
   findWorkspaceEvent,
+  findWorkspaceEventScreening,
   isWorkspaceProgramSource,
   listWorkspaceEvents,
 } from "../events/queries";
+import { isRetryableScreeningError } from "../screening/state";
 import { DATA_REF_PATTERN, EVENT_ID_PATTERN, SOURCE_ID_PATTERN } from "../ids";
 import { TYPE_MAX_LENGTH, TYPE_PATTERN } from "../intake/validation";
 import { requirePersonalWorkspace } from "./workspace";
@@ -17,13 +21,14 @@ import { requirePersonalWorkspace } from "./workspace";
 const eventNotFound = "イベントが見つかりません";
 const dataNotFound = "データが見つかりません";
 
-type ListQuery = { cursor?: string; type?: string; source_id?: string };
+type ListQuery = { cursor?: string; type?: string; source_id?: string; screening?: "held" | "pending" };
 
 // cursor: the last event_id of the previous page. type: only the events of that type. source_id: only the events of
-// that source. Any other value, including "" and a repeated parameter, is 400.
+// that source. screening: only the events held or waiting for the screening. Any other value, including "" and a
+// repeated parameter, is 400.
 const listQuery = validator("query", (value: Record<string, string | string[]>, c) => {
   const query: ListQuery = {};
-  const { cursor, type, source_id: sourceId } = value;
+  const { cursor, type, source_id: sourceId, screening } = value;
   if (cursor !== undefined) {
     if (typeof cursor !== "string" || !EVENT_ID_PATTERN.test(cursor)) {
       return apiError(c, 400, "invalid_cursor", "cursor が正しくありません");
@@ -42,8 +47,49 @@ const listQuery = validator("query", (value: Record<string, string | string[]>, 
     }
     query.source_id = sourceId;
   }
+  if (screening !== undefined) {
+    if (screening !== "held" && screening !== "pending") {
+      return apiError(c, 400, "invalid_screening", "判定の状態が正しくありません");
+    }
+    query.screening = screening;
+  }
   return query;
 });
+
+// A screening message sent again for an event pending for this long may be asked for from the screen.
+const SCREENING_RESEND_AFTER_MS = 10 * 60 * 1000;
+
+type ScreeningRecord = {
+  screening_status: string | null;
+  screening_error: string | null;
+  screening_requested_at: number | null;
+  conversation_id: string | null;
+};
+
+// The screening of an event of programs in the workspace; null for an event of another workspace and for a message of
+// a conversation.
+async function findScreeningRecord(d1: D1Database, workspaceId: string, id: string): Promise<ScreeningRecord | null> {
+  const row = await d1
+    .prepare(
+      "SELECT screening_status, screening_error, screening_requested_at, conversation_id FROM events WHERE id = ? AND workspace_id = ?",
+    )
+    .bind(id, workspaceId)
+    .first<ScreeningRecord>();
+  return row === null || row.conversation_id !== null ? null : row;
+}
+
+// The event as GET /api/v1/events/:id returns it, with its screening.
+async function managedEvent(c: Context<AppEnv>, id: string): Promise<ManagedEventDetail | null> {
+  const db = c.get("db");
+  const workspaceId = c.get("workspace").id;
+  const event = await findWorkspaceEvent(db, workspaceId, id);
+  if (!event) return null;
+  const screening = await findWorkspaceEventScreening(db, workspaceId, id);
+  return { ...event, screening: screening ?? null };
+}
+
+const enqueueFailedMessage = "配信を受け付けられませんでした。しばらくしてからもう一度お試しください";
+const screeningEnqueueFailedMessage = "判定を受け付けられませんでした。しばらくしてからもう一度お試しください";
 
 // The Content-Types served as they are. Anything else, including HTML and SVG, is served as
 // application/octet-stream, so that what a source wrote never runs on this origin.
@@ -95,7 +141,7 @@ export function attachmentDisposition(name: string): string {
 const eventsApi = new Hono<AppEnv>()
   .use("*", requireUser, requirePersonalWorkspace)
   .get("/", listQuery, async (c) => {
-    const { cursor, type, source_id: sourceId } = c.req.valid("query");
+    const { cursor, type, source_id: sourceId, screening } = c.req.valid("query");
     const db = c.get("db");
     const workspaceId = c.get("workspace").id;
     // A source of another workspace (or the source of the conversations) gives an empty list, not 404.
@@ -103,10 +149,13 @@ const eventsApi = new Hono<AppEnv>()
       const empty: EventList = { events: [], next_cursor: null };
       return c.json(empty, 200);
     }
-    const { events, nextCursor } = await listWorkspaceEvents(db, workspaceId, {
+    // The management screen lists the events held or waiting for the screening too.
+    const { events, screenings, nextCursor } = await listWorkspaceEvents(db, workspaceId, {
       cursor,
       filter: type === undefined ? undefined : { types: [type] },
       sourceIds: sourceId === undefined ? undefined : [sourceId],
+      includeScreened: true,
+      screening,
     });
     // Counted here rather than in listWorkspaceEvents, so that list_events of MCP runs no extra query.
     const summaries = await deliverySummaries(
@@ -118,6 +167,7 @@ const eventsApi = new Hono<AppEnv>()
       events: events.map((event) => ({
         ...event,
         delivery_summary: summaries.get(event.event_id) ?? { delivered: 0, pending: 0, failed: 0 },
+        screening: screenings.get(event.event_id) ?? null,
       })),
       next_cursor: nextCursor,
     };
@@ -126,7 +176,81 @@ const eventsApi = new Hono<AppEnv>()
   .get("/:id", async (c) => {
     const id = c.req.param("id");
     if (!EVENT_ID_PATTERN.test(id)) return apiError(c, 404, "not_found", eventNotFound);
-    const event = await findWorkspaceEvent(c.get("db"), c.get("workspace").id, id);
+    const event = await managedEvent(c, id);
+    if (!event) return apiError(c, 404, "not_found", eventNotFound);
+    return c.json(event, 200);
+  })
+  // Releases a held event and queues its deliveries. For a released event, only queues them again (a previous enqueue
+  // may have failed). The first release is recorded; a later one does not overwrite it.
+  .post("/:id/screening/release", async (c) => {
+    const id = c.req.param("id");
+    if (!EVENT_ID_PATTERN.test(id)) return apiError(c, 404, "not_found", eventNotFound);
+    const d1 = c.env.DB;
+    const workspaceId = c.get("workspace").id;
+    const record = await findScreeningRecord(d1, workspaceId, id);
+    if (!record) return apiError(c, 404, "not_found", eventNotFound);
+    if (record.screening_status === "held") {
+      const now = clock.now();
+      const result = await d1
+        .prepare(
+          `UPDATE events SET screening_status = 'released', screening_released_at = COALESCE(screening_released_at, ?),
+            screening_released_by = COALESCE(screening_released_by, ?)
+          WHERE id = ? AND workspace_id = ? AND screening_status = 'held'`,
+        )
+        .bind(now, c.get("user").id, id, workspaceId)
+        .run();
+      // Released at the same time by another request: the deliveries are queued again all the same.
+      if ((result.meta.changes ?? 0) === 0) {
+        const current = await findScreeningRecord(d1, workspaceId, id);
+        if (current?.screening_status !== "released") {
+          return apiError(c, 409, "not_releasable", "保留中のイベントだけを解除できます");
+        }
+      }
+    } else if (record.screening_status !== "released") {
+      return apiError(c, 409, "not_releasable", "保留中のイベントだけを解除できます");
+    }
+    if (!(await enqueuePendingDeliveries({ db: d1, queue: c.env.DELIVERY_QUEUE }, id))) {
+      // Left released: the same operation queues the deliveries again.
+      return apiError(c, 503, "temporarily_unavailable", enqueueFailedMessage);
+    }
+    const event = await managedEvent(c, id);
+    if (!event) return apiError(c, 404, "not_found", eventNotFound);
+    return c.json(event, 200);
+  })
+  // Screens an event again: one held for a reason that a change of the settings or time may fix (made pending again),
+  // or one pending for 10 minutes or more (its message sent again). An event held by its score is never screened again.
+  .post("/:id/screening/retry", async (c) => {
+    const id = c.req.param("id");
+    if (!EVENT_ID_PATTERN.test(id)) return apiError(c, 404, "not_found", eventNotFound);
+    const d1 = c.env.DB;
+    const workspaceId = c.get("workspace").id;
+    const record = await findScreeningRecord(d1, workspaceId, id);
+    if (!record) return apiError(c, 404, "not_found", eventNotFound);
+    const now = clock.now();
+    if (record.screening_status === "held" && isRetryableScreeningError(record.screening_error)) {
+      const result = await d1
+        .prepare(
+          `UPDATE events SET screening_status = 'pending', screening_score = NULL, screening_error = NULL, screened_at = NULL,
+            screening_requested_at = ?
+          WHERE id = ? AND workspace_id = ? AND screening_status = 'held' AND screening_error = ?`,
+        )
+        .bind(now, id, workspaceId, record.screening_error)
+        .run();
+      if ((result.meta.changes ?? 0) === 0) {
+        return apiError(c, 409, "not_retryable", "この状態のイベントは判定し直せません");
+      }
+    } else if (
+      record.screening_status !== "pending" ||
+      record.screening_requested_at === null ||
+      now - record.screening_requested_at < SCREENING_RESEND_AFTER_MS
+    ) {
+      return apiError(c, 409, "not_retryable", "この状態のイベントは判定し直せません");
+    }
+    // Left pending if this fails: the daily maintenance sends the message again.
+    if (!(await enqueueScreening({ queue: c.env.DELIVERY_QUEUE }, id))) {
+      return apiError(c, 503, "temporarily_unavailable", screeningEnqueueFailedMessage);
+    }
+    const event = await managedEvent(c, id);
     if (!event) return apiError(c, 404, "not_found", eventNotFound);
     return c.json(event, 200);
   })

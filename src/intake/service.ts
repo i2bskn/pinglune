@@ -5,11 +5,12 @@ import { canonicalJson } from "../canonical-json";
 import { activeBotsOfSource, resolveBotEventDestinations } from "../bots/queries";
 import { createDb, type Db } from "../db/client";
 import type { SubscriptionRow } from "../db/schema";
-import { enqueuePendingDeliveries, type DeliveryMessage } from "../deliveries/enqueue";
+import { enqueuePendingDeliveries, enqueueScreening, type DeliveryMessage } from "../deliveries/enqueue";
 import { insertDeliveryStatement } from "../deliveries/queries";
 import { matchesDeliveryFilter, parseStoredFilter } from "../events/filter";
 import { newDataRef, newDeliveryId, newEventId, sha256Hex } from "../ids";
 import { EVENT_NAME } from "../mcp/events";
+import { isDeliverableScreening } from "../screening/state";
 import { eventDataKey } from "./storage";
 import {
   intakeError,
@@ -29,8 +30,9 @@ export type IntakeDeps = {
 };
 
 // An authenticated source. The destinations of its events are those of the bots linked to id (bot_sources); name is
-// not used to select them.
-export type IntakeSource = { id: string; workspaceId: string; name: string; enabled: boolean };
+// not used to select them. screeningEnabled: the events are screened before delivery (src/screening/). Read when the
+// source is authenticated: an event accepted right after the screening is turned on may not be screened.
+export type IntakeSource = { id: string; workspaceId: string; name: string; enabled: boolean; screeningEnabled: boolean };
 
 export type AcceptResult = { ok: true; event_id: string; duplicate: boolean } | { ok: false; error: IntakeError };
 
@@ -44,11 +46,11 @@ type PreparedData = {
   position: number;
 };
 
-type ExistingEvent = { id: string; request_hash: string };
+type ExistingEvent = { id: string; request_hash: string; screening_status: string | null };
 
 function findEvent(db: D1Database, sourceId: string, idempotencyKey: string): Promise<ExistingEvent | null> {
   return db
-    .prepare("SELECT id, request_hash FROM events WHERE source_id = ? AND idempotency_key = ?")
+    .prepare("SELECT id, request_hash, screening_status FROM events WHERE source_id = ? AND idempotency_key = ?")
     .bind(sourceId, idempotencyKey)
     .first<ExistingEvent>();
 }
@@ -76,10 +78,15 @@ export function requestHash(
 }
 
 // A retry of an existing event (spec 4.4). The deliveries that may have missed the queue (a previous enqueue
-// failed) are queued again before success is answered.
+// failed) are queued again before success is answered. An event waiting for the screening gets its screening
+// message again instead; a held event gets nothing (it is never screened again by a retry).
 async function duplicateResult(deps: IntakeDeps, existing: ExistingEvent, hash: string): Promise<AcceptResult> {
   if (existing.request_hash !== hash) return { ok: false, error: intakeError("idempotency_conflict") };
-  if (!(await enqueuePendingDeliveries(deps, existing.id))) return unavailable();
+  if (existing.screening_status === "pending") {
+    if (!(await enqueueScreening(deps, existing.id))) return unavailable();
+  } else if (isDeliverableScreening(existing.screening_status)) {
+    if (!(await enqueuePendingDeliveries(deps, existing.id))) return unavailable();
+  }
   return { ok: true, event_id: existing.id, duplicate: true };
 }
 
@@ -191,12 +198,14 @@ async function accept(deps: IntakeDeps, source: IntakeSource, input: IntakeInput
     return unavailable();
   }
 
-  // 6. Write the event and its data to D1 in one batch.
+  // 6. Write the event and its data to D1 in one batch. The event of a source with screening waits for it.
+  const screened = source.screeningEnabled;
   const statements = [
     db
       .prepare(
-        `INSERT INTO events (id, workspace_id, source_id, idempotency_key, request_hash, type, summary, labels, occurred_at, received_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO events (id, workspace_id, source_id, idempotency_key, request_hash, type, summary, labels, occurred_at, received_at,
+          screening_status, screening_requested_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         eventId,
@@ -209,6 +218,8 @@ async function accept(deps: IntakeDeps, source: IntakeSource, input: IntakeInput
         JSON.stringify(event.labels),
         event.occurredAt ?? now,
         now,
+        screened ? "pending" : null,
+        screened ? now : null,
       ),
     ...data.map((item) =>
       db
@@ -269,8 +280,10 @@ async function accept(deps: IntakeDeps, source: IntakeSource, input: IntakeInput
     // Our write committed.
   }
 
-  // 7. Queue the deliveries before answering success. If this fails the event is stored; the sender retries
-  // with the same idempotency_key and the duplicate path queues them again.
-  if (!(await enqueuePendingDeliveries(deps, eventId))) return unavailable();
+  // 7. Queue the deliveries (or, with screening, the screening message, which queues them once the event passes)
+  // before answering success. If this fails the event is stored; the sender retries with the same idempotency_key and
+  // the duplicate path queues them again. An event without destinations is screened too: AIs may read it with MCP.
+  const queued = screened ? await enqueueScreening(deps, eventId) : await enqueuePendingDeliveries(deps, eventId);
+  if (!queued) return unavailable();
   return { ok: true, event_id: eventId, duplicate: false };
 }

@@ -11,6 +11,7 @@ import type {
   CreatedApiKey,
   DeliveryListItem,
   EmailAddress,
+  ManagedEventDetail,
   PostConversationMessageRequest,
   Source,
   Subscription,
@@ -18,6 +19,7 @@ import type {
   UpdateBotRequest,
   UpdateSourceConversationStartRequest,
   UpdateSourceRequest,
+  UpdateSourceScreeningRequest,
   User,
 } from "../../src/api/types";
 import { LoginRequiredError, responseErrorMessage, unexpectedResponseMessage } from "./api";
@@ -176,6 +178,69 @@ export async function updateSourceConversationStart(
   };
   return resourceActionResult(
     await send(() => client.api.v1.sources[":id"]["conversation-start"].$post({ param: { id: sourceId }, json })),
+  );
+}
+
+// Turns the screening of a source on or off. apiKey is sent only to turn it on in a workspace without a key. Errors
+// (409 with the conversation start, 422 for a key that is missing or refused, 503 when TypeSafe cannot be reached)
+// are shown with the server's message. Never rejects.
+export async function updateSourceScreening(
+  client: ApiClient,
+  sourceId: string,
+  input: { enabled: boolean; apiKey?: string },
+): Promise<SourceActionResult> {
+  if (!isValidId(sourceId)) return INVALID_SOURCE_ID;
+  const json: UpdateSourceScreeningRequest =
+    input.apiKey === undefined ? { enabled: input.enabled } : { enabled: input.enabled, api_key: input.apiKey };
+  return resourceActionResult(
+    await send(() => client.api.v1.sources[":id"].screening.$post({ param: { id: sourceId }, json })),
+  );
+}
+
+// Sets or changes the TypeSafe API key of the workspace (checked with TypeSafe first). Never rejects.
+export async function setScreeningApiKey(client: ApiClient, apiKey: string): Promise<ResourceActionResult> {
+  return resourceActionResult(
+    await send(() => client.api.v1.screening["api-key"].$put({ json: { api_key: apiKey } })),
+  );
+}
+
+// Deletes the TypeSafe API key of the workspace. Never rejects.
+export async function deleteScreeningApiKey(client: ApiClient): Promise<ResourceActionResult> {
+  return resourceActionResult(await send(() => client.api.v1.screening["api-key"].$delete()));
+}
+
+export type ScreeningActionResult = { kind: "ok"; event: ManagedEventDetail } | { kind: "notFound" } | SendFailure;
+
+const INVALID_EVENT_ID = { kind: "error", message: "イベントが見つかりません" } as const;
+
+async function screeningActionResult<R extends { ok: boolean; status: number; json(): Promise<unknown> }>(
+  sent: { kind: "response"; res: R } | SendFailure,
+): Promise<ScreeningActionResult> {
+  if (sent.kind !== "response") return sent;
+  const { res } = sent;
+  if (res.ok) {
+    const body = await okJson(res);
+    // res.ok is true here, so the body is the event.
+    return body.kind === "ok" ? { kind: "ok", event: body.value as ManagedEventDetail } : body;
+  }
+  if (res.status === 404) return { kind: "notFound" };
+  return { kind: "error", message: await responseErrorMessage(res) };
+}
+
+// Releases a held event and queues its deliveries (for a released one, queues them again). Errors (409, 503) are
+// shown with the server's message. Never rejects.
+export async function releaseEvent(client: ApiClient, eventId: string): Promise<ScreeningActionResult> {
+  if (!isValidId(eventId)) return INVALID_EVENT_ID;
+  return screeningActionResult(
+    await send(() => client.api.v1.events[":id"].screening.release.$post({ param: { id: eventId } })),
+  );
+}
+
+// Screens an event again. Errors (409, 503) are shown with the server's message. Never rejects.
+export async function retryScreening(client: ApiClient, eventId: string): Promise<ScreeningActionResult> {
+  if (!isValidId(eventId)) return INVALID_EVENT_ID;
+  return screeningActionResult(
+    await send(() => client.api.v1.events[":id"].screening.retry.$post({ param: { id: eventId } })),
   );
 }
 

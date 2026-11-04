@@ -1,6 +1,7 @@
 // The consumers of the delivery queue and of its dead letter queue (wrangler.jsonc).
 //
-// Each message is one delivery. The consumer reads the delivery, checks that the subscription is still active and
+// A message is one delivery, or the screening of one event ({ kind: "screen" }, src/screening/service.ts). Each
+// delivery message is one delivery. The consumer reads the delivery, checks that the subscription is still active and
 // that its user still has access to the workspace, builds the envelope from D1 and sends a webhook: signed for MCP
 // Events subscriptions, with the Bearer key for webhook destinations. Sends
 // that may succeed later are retried with a delay of 30 seconds doubling up to 5 times (about 15 minutes in
@@ -12,8 +13,15 @@ import { clock } from "../clock";
 import { createDb, type Db } from "../db/client";
 import type { DeliveryRow, SubscriptionRow } from "../db/schema";
 import { loadConfig, type Bindings } from "../env";
-import { findWorkspaceEvent } from "../events/queries";
-import { DELIVERY_ID_PATTERN } from "../ids";
+import { findWorkspaceEvent, findWorkspaceEventScope } from "../events/queries";
+import { DELIVERY_ID_PATTERN, EVENT_ID_PATTERN } from "../ids";
+import {
+  processScreening,
+  processScreeningDeadLetter,
+  screeningThreshold,
+  type ScreeningDeps,
+} from "../screening/service";
+import { isDeliverableScreening } from "../screening/state";
 import { decryptSecret, subscriptionSecretKey } from "../subscriptions/secret";
 import { findSubscriptionById } from "../subscriptions/queries";
 import { appOriginHost } from "../webhooks/destination";
@@ -35,18 +43,27 @@ const DEAD_LETTER_RETRY_SECONDS = 60;
 
 const encoder = new TextEncoder();
 
-type ConsumerDeps = { d1: D1Database; db: Db; jwtSecret: string; selfHosts: string[] };
+type ConsumerDeps = { d1: D1Database; db: Db; jwtSecret: string; selfHosts: string[]; screening: ScreeningDeps };
 
 // 30, 60, 120, 240, 480 seconds after the 1st to 5th try.
 function retryDelaySeconds(attempts: number): number {
   return RETRY_BASE_SECONDS * 2 ** (attempts - 1);
 }
 
-function deliveryIdOf(message: Message<unknown>): string | null {
+type ParsedMessage = { kind: "delivery"; id: string } | { kind: "screen"; eventId: string };
+
+// What the message asks for, or null if it is malformed (an unknown kind, or an ID that is not a string of the
+// right form).
+function parseMessage(message: Message<unknown>): ParsedMessage | null {
   const body = message.body;
   if (typeof body !== "object" || body === null) return null;
+  if ("kind" in body) {
+    const { kind, event_id: eventId } = body as { kind?: unknown; event_id?: unknown };
+    if (kind !== "screen" || typeof eventId !== "string" || !EVENT_ID_PATTERN.test(eventId)) return null;
+    return { kind: "screen", eventId };
+  }
   const id = (body as { delivery_id?: unknown }).delivery_id;
-  return typeof id === "string" && DELIVERY_ID_PATTERN.test(id) ? id : null;
+  return typeof id === "string" && DELIVERY_ID_PATTERN.test(id) ? { kind: "delivery", id } : null;
 }
 
 // Whether the subscription may still receive the delivery: active, in the delivery's workspace, and its user
@@ -129,6 +146,13 @@ async function deliver(deps: ConsumerDeps, message: Message<unknown>, id: string
   const delivery = await findDeliveryById(db, id);
   // Deleted with the user, or processed already.
   if (!delivery || delivery.status !== "pending") {
+    message.ack();
+    return;
+  }
+  // The event is held or waiting for the screening: the delivery stays pending, and is queued again when the event
+  // passes or is released.
+  const scope = await findWorkspaceEventScope(db, delivery.workspaceId, delivery.eventId);
+  if (scope && !isDeliverableScreening(scope.screeningStatus)) {
     message.ack();
     return;
   }
@@ -221,12 +245,17 @@ async function deliver(deps: ConsumerDeps, message: Message<unknown>, id: string
 }
 
 async function processDelivery(deps: ConsumerDeps, message: Message<unknown>): Promise<void> {
-  const id = deliveryIdOf(message);
-  if (id === null) {
+  const parsed = parseMessage(message);
+  if (parsed === null) {
     console.error("delivery message is malformed", { messageId: message.id });
     message.ack();
     return;
   }
+  if (parsed.kind === "screen") {
+    await processScreening(deps.screening, message, parsed.eventId);
+    return;
+  }
+  const id = parsed.id;
   try {
     await deliver(deps, message, id);
   } catch (error) {
@@ -240,13 +269,29 @@ async function processDelivery(deps: ConsumerDeps, message: Message<unknown>): P
 // A message that the delivery consumer could not finish (exceptions beyond max_retries). The delivery is recorded
 // as failed if it is still pending. If this keeps failing too, the message is dropped and the delivery stays
 // pending; the daily check logs it.
+// A screening message holds its event if it is still pending (screening_unavailable), and queues the deliveries of a
+// passed or released event again.
 async function processDeadLetter(deps: ConsumerDeps, message: Message<unknown>): Promise<void> {
-  const id = deliveryIdOf(message);
-  if (id === null) {
+  const parsed = parseMessage(message);
+  if (parsed === null) {
     console.error("dead-lettered delivery message is malformed", { messageId: message.id });
     message.ack();
     return;
   }
+  if (parsed.kind === "screen") {
+    try {
+      if (await processScreeningDeadLetter(deps.screening, message, parsed.eventId)) {
+        message.ack();
+      } else {
+        message.retry({ delaySeconds: DEAD_LETTER_RETRY_SECONDS });
+      }
+    } catch (error) {
+      console.error("recording a dead-lettered screening failed", { eventId: parsed.eventId, ...describeError(error) });
+      message.retry({ delaySeconds: DEAD_LETTER_RETRY_SECONDS });
+    }
+    return;
+  }
+  const id = parsed.id;
   try {
     await failPendingDelivery(deps.d1, id, "dead_lettered", clock.now());
     message.ack();
@@ -271,6 +316,13 @@ export async function handleQueue(batch: MessageBatch<unknown>, env: Bindings): 
     jwtSecret: config.config.jwtSecret,
     // There is no request host here; callbacks to APP_ORIGIN are blocked.
     selfHosts: appHost === null ? [] : [appHost],
+    screening: {
+      d1: env.DB,
+      bucket: env.EVENT_DATA,
+      queue: env.DELIVERY_QUEUE,
+      jwtSecret: config.config.jwtSecret,
+      threshold: screeningThreshold(env.SCREENING_THRESHOLD),
+    },
   };
   // Concurrently: one send takes up to about 20 seconds.
   const process = batch.queue === DEAD_LETTER_QUEUE ? processDeadLetter : processDelivery;

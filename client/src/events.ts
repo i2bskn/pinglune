@@ -1,4 +1,5 @@
 import type { DeliverySummary, EventData } from "../../src/api/types";
+import { parseScreeningFilter, type ScreeningFilter } from "./screening";
 
 // The event list and the event detail. No JSX, so that the tests can load it in Node.
 
@@ -16,28 +17,36 @@ export function deliverySummaryBadges(summary: DeliverySummary): SummaryBadge[] 
   return badges;
 }
 
-// The filters of the event list. Empty values are not filters.
-export type EventFilterValues = { type: string; sourceId: string };
+// The filters of the event list. Empty values are not filters. screening: only the events held or waiting for the
+// screening; left out for every event.
+export type EventFilterValues = { type: string; sourceId: string; screening?: ScreeningFilter };
 
-// The filters in the query of the event list. Missing values are empty; the server checks the rest.
+// The filters in the query of the event list. Missing values are empty; the server checks the rest. An unknown
+// screening value is ignored.
 export function eventFilterOf(params: URLSearchParams): EventFilterValues {
-  return { type: (params.get("type") ?? "").trim(), sourceId: (params.get("source_id") ?? "").trim() };
+  const filter: EventFilterValues = {
+    type: (params.get("type") ?? "").trim(),
+    sourceId: (params.get("source_id") ?? "").trim(),
+  };
+  const screening = parseScreeningFilter(params.get("screening"));
+  if (screening !== undefined) filter.screening = screening;
+  return filter;
 }
 
 export function isFiltered(filter: EventFilterValues): boolean {
-  return filter.type !== "" || filter.sourceId !== "";
+  return filter.type !== "" || filter.sourceId !== "" || filter.screening !== undefined;
 }
 
+type EventsQuery = { type?: string; source_id?: string; screening?: ScreeningFilter; cursor?: string };
+
 // The query of GET /api/v1/events: empty filters are left out.
-export function eventsQuery(
-  filter: EventFilterValues,
-  cursor?: string,
-): { type?: string; source_id?: string; cursor?: string } {
-  const query: { type?: string; source_id?: string; cursor?: string } = {};
+export function eventsQuery(filter: EventFilterValues, cursor?: string): EventsQuery {
+  const query: EventsQuery = {};
   const type = filter.type.trim();
   const sourceId = filter.sourceId.trim();
   if (type !== "") query.type = type;
   if (sourceId !== "") query.source_id = sourceId;
+  if (filter.screening !== undefined) query.screening = filter.screening;
   if (cursor !== undefined) query.cursor = cursor;
   return query;
 }

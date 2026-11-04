@@ -61,7 +61,7 @@ class TemporaryFailure extends Error {
 }
 
 type AddressRow = { source_id: string; revoked_at: number | null };
-type SourceRow = { id: string; workspace_id: string; name: string; enabled: number };
+type SourceRow = { id: string; workspace_id: string; name: string; enabled: number; screening_enabled: number };
 
 type DataItem = { name: string; content_type: string; bytes: Uint8Array };
 
@@ -111,7 +111,7 @@ async function receive(
   }
   // The conversation source is never matched: it has no addresses anyway.
   const row = await env.DB.prepare(
-    "SELECT id, workspace_id, name, enabled FROM sources WHERE id = ? AND kind = 'program'",
+    "SELECT id, workspace_id, name, enabled, screening_enabled FROM sources WHERE id = ? AND kind = 'program'",
   )
     .bind(address.source_id)
     .first<SourceRow>();
@@ -125,7 +125,13 @@ async function receive(
     message.setReject(REJECT_DISABLED);
     return;
   }
-  const source: IntakeSource = { id: row.id, workspaceId: row.workspace_id, name: row.name, enabled: true };
+  const source: IntakeSource = {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    name: row.name,
+    enabled: true,
+    screeningEnabled: row.screening_enabled === 1,
+  };
 
   // 6. The size announced by Email Routing, before anything is read.
   if (message.rawSize > intakeLimits.maxPayloadBytes) {

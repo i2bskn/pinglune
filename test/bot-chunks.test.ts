@@ -78,7 +78,7 @@ async function destinationBots(): Promise<{ botIds: string[]; subscriptions: Sub
 }
 
 function acceptOne(d1: D1Database) {
-  const intakeSource: IntakeSource = { id: source.id, workspaceId: workspace.id, name: source.name, enabled: true };
+  const intakeSource: IntakeSource = { id: source.id, workspaceId: workspace.id, name: source.name, enabled: true, screeningEnabled: false };
   return acceptEvent(
     { db: d1, bucket: env.EVENT_DATA, queue: fakeQueue(), now: Date.now() },
     intakeSource,

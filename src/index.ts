@@ -71,6 +71,8 @@ export default {
       console.error("invalid configuration", { invalid: result.invalid });
       return;
     }
-    ctx.waitUntil(runDailyMaintenance({ db: env.DB, bucket: env.EVENT_DATA, now: clock.now() }));
+    ctx.waitUntil(
+      runDailyMaintenance({ db: env.DB, bucket: env.EVENT_DATA, queue: env.DELIVERY_QUEUE, now: clock.now() }),
+    );
   },
 } satisfies ExportedHandler<Bindings>;

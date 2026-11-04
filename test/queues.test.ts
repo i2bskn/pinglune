@@ -84,7 +84,7 @@ async function ingest(
   sequence++;
   const result = await acceptEvent(
     { db: env.DB, bucket: env.EVENT_DATA, queue, now },
-    { id: source.id, workspaceId: source.workspaceId, name: source.name, enabled: true },
+    { id: source.id, workspaceId: source.workspaceId, name: source.name, enabled: true, screeningEnabled: false },
     { idempotency_key: `k-${sequence}`, type: "alert.observed", summary: `s${sequence}`, ...input },
   );
   if (!result.ok) throw new Error(`ingest failed: ${result.error.code}`);
@@ -349,7 +349,7 @@ describe("intake", () => {
     const first = fakeQueue();
     first.fail = true;
     const input = { idempotency_key: "dup", type: "alert.observed", summary: "s" };
-    const source = { id: aliceSource.id, workspaceId: aliceSource.workspaceId, name: "app", enabled: true };
+    const source = { id: aliceSource.id, workspaceId: aliceSource.workspaceId, name: "app", enabled: true, screeningEnabled: false };
     const failed = await acceptEvent({ db: env.DB, bucket: env.EVENT_DATA, queue: first, now }, source, input);
     expect(failed.ok).toBe(false);
 
@@ -468,7 +468,7 @@ describe("claim_events", () => {
     expect((await deliveriesOf(queue))[0]).toMatchObject({ status: "pending", attempts: 5 });
 
     vi.spyOn(console, "info").mockImplementation(() => {});
-    await runDailyMaintenance({ db: env.DB, bucket: env.EVENT_DATA, now });
+    await runDailyMaintenance({ db: env.DB, queue: fakeQueue(), bucket: env.EVENT_DATA, now });
     expect((await deliveriesOf(queue))[0]).toMatchObject({ status: "failed", last_error: "expired", updated_at: now });
   });
 
@@ -648,7 +648,7 @@ describe("daily maintenance of queues", () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
 
     const at = createdAt + 7 * DAY;
-    await runDailyMaintenance({ db: env.DB, bucket: env.EVENT_DATA, now: at });
+    await runDailyMaintenance({ db: env.DB, queue: fakeQueue(), bucket: env.EVENT_DATA, now: at });
     expect(info).toHaveBeenCalledWith("expired queue deliveries", { count: 2 });
     expect((await deliveriesOf(queue)).map((row) => [row.status, row.last_error])).toEqual([
       ["failed", "expired"],
@@ -667,12 +667,12 @@ describe("daily maintenance of queues", () => {
     await ingest();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "info").mockImplementation(() => {});
-    await runDailyMaintenance({ db: env.DB, bucket: env.EVENT_DATA, now: now + 2 * 60 * MINUTE });
+    await runDailyMaintenance({ db: env.DB, queue: fakeQueue(), bucket: env.EVENT_DATA, now: now + 2 * 60 * MINUTE });
     expect(warn).not.toHaveBeenCalledWith("stale pending deliveries", expect.anything());
 
     await routeToBot(await createSubscription({ user: alice }), [aliceSource.id]);
     await ingest();
-    await runDailyMaintenance({ db: env.DB, bucket: env.EVENT_DATA, now: now + 2 * 60 * MINUTE });
+    await runDailyMaintenance({ db: env.DB, queue: fakeQueue(), bucket: env.EVENT_DATA, now: now + 2 * 60 * MINUTE });
     expect(warn).toHaveBeenCalledWith("stale pending deliveries", expect.objectContaining({ count: 1 }));
   });
 });

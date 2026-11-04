@@ -205,6 +205,7 @@ describe("createSource", () => {
     updated_at: 1,
     active_key_count: 0,
     conversation_start: { enabled: false, daily_limit: 10, max_ai_messages: 10 },
+    screening: { enabled: false, available: false },
   };
 
   it("sends the name and is ok with the source on 201", async () => {

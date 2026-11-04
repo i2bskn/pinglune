@@ -1,19 +1,21 @@
 import { type FormEvent, useState } from "react";
-import type { DeliverySummary, EventListItem, EventSummary } from "../../../src/api/types";
+import type { DeliverySummary, EventListItem, EventScreening, EventSummary } from "../../../src/api/types";
 import { type EventFilterValues, deliverySummaryBadges, eventFilterOf, eventsPath, isFiltered } from "../events";
 import { formatDateTime, keepNumbersWithUnits } from "../format";
 import { Link } from "../Link";
 import { type ApiClient, type EventsViewData, loadEvents, loadEventsView, useView } from "../load";
 import { navigate, searchParams } from "../router";
+import { SCREENING_BADGE_CLASSES, SCREENING_STATUS_LABELS, parseScreeningFilter } from "../screening";
 import { ViewStatus, useDocumentTitle, viewTitle } from "./common";
 import { EventLabels } from "./EventDetailView";
 
-// The events of the signed-in user's workspace, newest first, filtered by type and source (?type=, ?source_id=).
+// The events of the signed-in user's workspace, newest first, filtered by type, source and screening (?type=,
+// ?source_id=, ?screening=).
 export function EventsView({ client, path }: { client: ApiClient; path: string }) {
   const filter = eventFilterOf(searchParams(path));
   const [state, reload] = useView(
     () => loadEventsView(client, filter),
-    `events:${filter.type}:${filter.sourceId}`,
+    `events:${filter.type}:${filter.sourceId}:${filter.screening ?? ""}`,
   );
   useDocumentTitle(viewTitle(state, () => "イベント"));
 
@@ -45,6 +47,7 @@ export function EventsView({ client, path }: { client: ApiClient; path: string }
 function EventFilterForm({ filter, data }: { filter: EventFilterValues; data: EventsViewData }) {
   const [type, setType] = useState(filter.type);
   const [sourceId, setSourceId] = useState(filter.sourceId);
+  const [screening, setScreening] = useState<string>(filter.screening ?? "");
   const sourcesUnavailable = data.sourcesError !== null;
   // A source in the URL that is not in the list (another workspace's, or deleted) is kept as a choice, so that the
   // select shows what the list is filtered by.
@@ -52,7 +55,8 @@ function EventFilterForm({ filter, data }: { filter: EventFilterValues; data: Ev
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    navigate(eventsPath({ type, sourceId }));
+    const screeningFilter = parseScreeningFilter(screening);
+    navigate(eventsPath(screeningFilter === undefined ? { type, sourceId } : { type, sourceId, screening: screeningFilter }));
   }
 
   return (
@@ -80,6 +84,14 @@ function EventFilterForm({ filter, data }: { filter: EventFilterValues; data: Ev
               </option>
             ))}
             {unknownSource && <option value={filter.sourceId}>不明な送信元</option>}
+          </select>
+        </label>
+        <label>
+          判定
+          <select value={screening} onChange={(event) => setScreening(event.target.value)}>
+            <option value="">すべて</option>
+            <option value="held">保留</option>
+            <option value="pending">判定待ち</option>
           </select>
         </label>
         <div className="filter-form-actions">
@@ -173,16 +185,22 @@ export function EventRow({
   event,
   hideSource = false,
 }: {
-  event: EventSummary & { delivery_summary?: DeliverySummary };
+  event: EventSummary & { delivery_summary?: DeliverySummary; screening?: EventScreening | null };
   hideSource?: boolean;
 }) {
   const summary = event.delivery_summary;
+  const screening = event.screening ?? null;
   return (
     <li>
       <Link to={`/events/${event.event_id}`} className="event-link">
         <span className="event-head">
           <span className="event-type">{event.type}</span>
           {!hideSource && <span className="event-source">{event.source.name}</span>}
+          {screening !== null && (
+            <span className={SCREENING_BADGE_CLASSES[screening.status]} aria-label="判定">
+              {SCREENING_STATUS_LABELS[screening.status]}
+            </span>
+          )}
           <time className="event-time" dateTime={new Date(event.occurred_at).toISOString()}>
             {formatDateTime(event.occurred_at)}
           </time>

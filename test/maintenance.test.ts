@@ -50,7 +50,7 @@ beforeEach(async () => {
   const source = await createSource({ workspaceId: workspace.id, name: "app" });
   const result = await acceptEvent(
     { db: env.DB, bucket: env.EVENT_DATA, queue: fakeQueue(), now: start },
-    { id: source.id, workspaceId: workspace.id, name: source.name, enabled: true },
+    { id: source.id, workspaceId: workspace.id, name: source.name, enabled: true, screeningEnabled: false },
     { idempotency_key: "k", type: "t", summary: "s", body: { content_type: "text/plain", bytes: new Uint8Array([1]) } },
   );
   if (!result.ok) throw new Error("ingest failed");
@@ -115,6 +115,7 @@ describe("deleting orphan objects", () => {
     // orphanKey(2) was uploaded within the last 24 hours.
     await runDailyMaintenance({
       db: env.DB,
+      queue: fakeQueue(),
       bucket: listingBucket({ recent: new Set([orphanKey(2)]), now }),
       now,
     });
@@ -128,7 +129,7 @@ describe("deleting orphan objects", () => {
 
   it("keeps every object within 24 hours of its upload", async () => {
     await env.EVENT_DATA.put(orphanKey(1), "x");
-    await runDailyMaintenance({ db: env.DB, bucket: env.EVENT_DATA, now: Date.now() + 23 * HOUR });
+    await runDailyMaintenance({ db: env.DB, queue: fakeQueue(), bucket: env.EVENT_DATA, now: Date.now() + 23 * HOUR });
     expect(await listEventDataKeys("workspaces/")).toEqual([referencedKey, orphanKey(1)].sort());
   });
 
@@ -137,17 +138,17 @@ describe("deleting orphan objects", () => {
     for (const n of [1, 2, 3, 4]) await env.EVENT_DATA.put(orphanKey(n), "x");
     const bucket = listingBucket({ pageSize: 2 });
 
-    await runDailyMaintenance({ db: env.DB, bucket, now: later() });
+    await runDailyMaintenance({ db: env.DB, queue: fakeQueue(), bucket, now: later() });
     expect(await listEventDataKeys("workspaces/")).toEqual([orphanKey(3), orphanKey(4), referencedKey].sort());
     expect(await scanPosition()).toBe(orphanKey(2));
 
-    await runDailyMaintenance({ db: env.DB, bucket, now: later() });
+    await runDailyMaintenance({ db: env.DB, queue: fakeQueue(), bucket, now: later() });
     expect(await listEventDataKeys("workspaces/")).toEqual([referencedKey]);
     expect(await scanPosition()).toBe(orphanKey(4));
 
     // The last page is not truncated: the position is removed.
     await env.EVENT_DATA.put(orphanKey(5), "x");
-    await runDailyMaintenance({ db: env.DB, bucket, now: later() });
+    await runDailyMaintenance({ db: env.DB, queue: fakeQueue(), bucket, now: later() });
     expect(await listEventDataKeys("workspaces/")).toEqual([referencedKey]);
     expect(await scanPosition()).toBeNull();
   });
@@ -155,7 +156,7 @@ describe("deleting orphan objects", () => {
   it("starts from the beginning when the saved position is not a key", async () => {
     await env.EVENT_DATA.put(orphanKey(1), "x");
     await env.EVENT_DATA.put(SCAN_POSITION_KEY, "garbage");
-    await runDailyMaintenance({ db: env.DB, bucket: env.EVENT_DATA, now: later() });
+    await runDailyMaintenance({ db: env.DB, queue: fakeQueue(), bucket: env.EVENT_DATA, now: later() });
     expect(await listEventDataKeys("workspaces/")).toEqual([referencedKey]);
     expect(await scanPosition()).toBeNull();
   });
@@ -168,7 +169,7 @@ describe("deleting orphan objects", () => {
         throw new Error("R2 is down");
       },
     });
-    await runDailyMaintenance({ db: env.DB, bucket, now: later() });
+    await runDailyMaintenance({ db: env.DB, queue: fakeQueue(), bucket, now: later() });
     expect(error).toHaveBeenCalledWith("deleting orphan objects failed", expect.anything());
     expect(await listEventDataKeys("workspaces/")).toEqual([referencedKey, orphanKey(1)].sort());
   });
@@ -181,7 +182,7 @@ describe("deleting orphan objects", () => {
         throw new Error("D1 is down");
       },
     });
-    await runDailyMaintenance({ db, bucket: env.EVENT_DATA, now: later() });
+    await runDailyMaintenance({ db, queue: fakeQueue(), bucket: env.EVENT_DATA, now: later() });
     expect(error).toHaveBeenCalledWith("deleting orphan objects failed", expect.anything());
     expect(await listEventDataKeys("workspaces/")).toEqual([referencedKey, orphanKey(1)].sort());
   });
@@ -208,7 +209,7 @@ describe("checking stale pending deliveries", () => {
     await insertDelivery("5", "failed", now - 5 * HOUR);
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    await runDailyMaintenance({ db: env.DB, bucket: env.EVENT_DATA, now });
+    await runDailyMaintenance({ db: env.DB, queue: fakeQueue(), bucket: env.EVENT_DATA, now });
 
     expect(warn).toHaveBeenCalledWith("stale pending deliveries", { count: 2, oldestCreatedAt: now - 3 * HOUR });
     const { results } = await env.DB.prepare("SELECT status FROM deliveries ORDER BY id").all<{ status: string }>();
@@ -218,7 +219,7 @@ describe("checking stale pending deliveries", () => {
   it("does not warn when nothing is stale", async () => {
     await insertDelivery("1", "pending", start - HOUR + 1);
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    await runDailyMaintenance({ db: env.DB, bucket: env.EVENT_DATA, now: start });
+    await runDailyMaintenance({ db: env.DB, queue: fakeQueue(), bucket: env.EVENT_DATA, now: start });
     expect(warn).not.toHaveBeenCalledWith("stale pending deliveries", expect.anything());
   });
 
@@ -234,7 +235,7 @@ describe("checking stale pending deliveries", () => {
         throw new Error("R2 is down");
       },
     });
-    await runDailyMaintenance({ db: env.DB, bucket: failingBucket, now: start });
+    await runDailyMaintenance({ db: env.DB, queue: fakeQueue(), bucket: failingBucket, now: start });
     expect(warn).toHaveBeenCalledWith("stale pending deliveries", expect.objectContaining({ count: 1 }));
 
     // The check fails: orphans are still deleted.
@@ -244,7 +245,7 @@ describe("checking stale pending deliveries", () => {
         return env.DB.prepare(query);
       },
     });
-    await runDailyMaintenance({ db: failingDb, bucket: env.EVENT_DATA, now: later() });
+    await runDailyMaintenance({ db: failingDb, queue: fakeQueue(), bucket: env.EVENT_DATA, now: later() });
     expect(error).toHaveBeenCalledWith("checking stale pending deliveries failed", expect.anything());
     expect(await listEventDataKeys("workspaces/")).toEqual([referencedKey]);
   });

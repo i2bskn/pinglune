@@ -24,6 +24,9 @@ export type Bindings = {
   // The domain of the email intake (the apex of a Cloudflare zone). Optional; read by parseEmailDomain, not by
   // loadConfig.
   EMAIL_DOMAIN?: string;
+  // The score at or above which the screening holds an event (src/screening/service.ts), greater than 0 and at most
+  // 1. Optional (0.5); read by screeningThreshold, not by loadConfig.
+  SCREENING_THRESHOLD?: string;
 };
 
 export type AuthMode = "oidc" | "password";

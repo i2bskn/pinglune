@@ -4,6 +4,7 @@ import {
   index,
   integer,
   primaryKey,
+  real,
   sqliteTable,
   text,
   uniqueIndex,
@@ -63,6 +64,11 @@ export const workspaces = sqliteTable(
     name: text("name"),
     // Set only for personal workspaces. Not deleted in cascade.
     ownerUserId: text("owner_user_id").references(() => users.id),
+    // The TypeSafe API key of the screening of events (src/screening/), encrypted (src/subscriptions/secret.ts).
+    // NULL when not set.
+    screeningApiKey: text("screening_api_key"),
+    // The last 4 characters of the key, for the management screen. NULL when not set.
+    screeningApiKeyHint: text("screening_api_key_hint"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },
@@ -107,6 +113,9 @@ export const sources = sqliteTable(
     startDailyLimit: integer("start_daily_limit").notNull().default(10),
     // 1 to 100: the default and the maximum of max_ai_messages of the conversations the source starts.
     startMaxAiMessages: integer("start_max_ai_messages").notNull().default(10),
+    // Whether the events of the source are screened for instructions to AIs before delivery (src/screening/). 0 or 1.
+    // Off by default.
+    screeningEnabled: integer("screening_enabled").notNull().default(0),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },
@@ -180,6 +189,20 @@ export const events = sqliteTable(
     // The conversation of a message (src/conversations/). NULL for the events of programs; the event lists show
     // only those.
     conversationId: text("conversation_id").references(() => conversations.id),
+    // The screening of the event (src/screening/state.ts): NULL (not screened), pending, passed, held or released.
+    // Checked by the application only: a CHECK constraint would rebuild the table.
+    screeningStatus: text("screening_status"),
+    // The score of the screening, 0 to 1. NULL when it was not scored.
+    screeningScore: real("screening_score"),
+    // The reason the screening could not be done. NULL when it was scored.
+    screeningError: text("screening_error"),
+    // When the event was made pending.
+    screeningRequestedAt: integer("screening_requested_at"),
+    // When the event was made passed or held.
+    screenedAt: integer("screened_at"),
+    // The first release by the owner of the workspace; not overwritten.
+    screeningReleasedAt: integer("screening_released_at"),
+    screeningReleasedBy: text("screening_released_by"),
   },
   (t) => [
     uniqueIndex("events_source_idempotency_unique").on(t.sourceId, t.idempotencyKey),
@@ -187,6 +210,10 @@ export const events = sqliteTable(
     index("events_workspace_id_id_idx").on(t.workspaceId, t.id),
     // The history of a conversation, in time order.
     index("events_conversation_id_id_idx").on(t.conversationId, t.id),
+    // The daily check of events left pending. The condition is a literal.
+    index("events_screening_pending_idx")
+      .on(t.screeningRequestedAt)
+      .where(sql`${t.screeningStatus} = 'pending'`),
   ],
 );
 

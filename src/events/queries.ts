@@ -1,7 +1,8 @@
 import { and, asc, desc, eq, gte, inArray, isNull, lt, sql, type SQL } from "drizzle-orm";
-import type { EventData, EventDetail, EventSummary } from "../api/types";
+import type { EventData, EventDetail, EventScreening, EventSummary } from "../api/types";
 import type { Db } from "../db/client";
 import { botSources, eventData, events, sources, type EventDataRow } from "../db/schema";
+import { deliverableScreening, isRetryableScreeningError, parseScreeningStatus } from "../screening/state";
 import type { EventFilter } from "./filter";
 
 export const EVENT_PAGE_SIZE = 50;
@@ -20,6 +21,13 @@ const eventColumns = {
   occurredAt: events.occurredAt,
   receivedAt: events.receivedAt,
   conversationId: events.conversationId,
+  screeningStatus: events.screeningStatus,
+  screeningScore: events.screeningScore,
+  screeningError: events.screeningError,
+  screeningRequestedAt: events.screeningRequestedAt,
+  screenedAt: events.screenedAt,
+  screeningReleasedAt: events.screeningReleasedAt,
+  screeningReleasedBy: events.screeningReleasedBy,
   // Qualified by hand: drizzle renders ${events.id} without the table name, which would bind to event_data.
   dataCount: sql<number>`(SELECT COUNT(*) FROM event_data WHERE event_data.event_id = events.id)`,
 };
@@ -55,6 +63,26 @@ function toSummary(row: EventWithCount, names: Map<string, string>): EventSummar
   };
 }
 
+type ScreeningColumns = Pick<
+  typeof events.$inferSelect,
+  "screeningStatus" | "screeningScore" | "screeningError" | "screeningRequestedAt" | "screenedAt" | "screeningReleasedAt"
+>;
+
+// The screening of an event for the management screen, or null if it was not screened. Never for MCP or webhooks.
+export function toApiScreening(row: ScreeningColumns): EventScreening | null {
+  const status = parseScreeningStatus(row.screeningStatus);
+  if (status === null) return null;
+  return {
+    status,
+    score: row.screeningScore,
+    error: row.screeningError,
+    retryable: status === "held" && isRetryableScreeningError(row.screeningError),
+    requested_at: row.screeningRequestedAt,
+    screened_at: row.screenedAt,
+    released_at: row.screeningReleasedAt,
+  };
+}
+
 function toApiEventData(row: EventDataRow): EventData {
   return {
     data_ref: row.id,
@@ -79,6 +107,11 @@ export type ListEventsOptions = {
   botId?: string;
   // UNIX ms: only events received at or after it.
   receivedSince?: number;
+  // Also the events that may not be read by AIs (held or waiting for the screening, src/screening/state.ts). Only the
+  // management screen passes true; the default keeps them from MCP.
+  includeScreened?: boolean;
+  // Only the events in this screening state, for the management screen.
+  screening?: "held" | "pending";
 };
 
 // The IDs of the sources of the workspace with one of the names. Other workspaces' sources of the same name
@@ -99,15 +132,23 @@ export async function listWorkspaceEvents(
   db: Db,
   workspaceId: string,
   options: ListEventsOptions = {},
-): Promise<{ events: EventSummary[]; nextCursor: string | null }> {
+): Promise<{
+  events: EventSummary[];
+  // The screening of each listed event (event_id to the screening), for the management screen.
+  screenings: Map<string, EventScreening | null>;
+  nextCursor: string | null;
+}> {
   const { cursor, filter, receivedSince, sourceIds, botId } = options;
   const limit = options.limit ?? EVENT_PAGE_SIZE;
+  const empty = { events: [], screenings: new Map<string, EventScreening | null>(), nextCursor: null };
   const conditions: SQL[] = [eq(events.workspaceId, workspaceId), isNull(events.conversationId)];
+  if (options.includeScreened !== true) conditions.push(deliverableScreening);
+  if (options.screening !== undefined) conditions.push(eq(events.screeningStatus, options.screening));
   if (cursor !== undefined) conditions.push(lt(events.id, cursor));
   if (receivedSince !== undefined) conditions.push(gte(events.receivedAt, receivedSince));
   if (filter?.types !== undefined) conditions.push(inArray(events.type, [...new Set(filter.types)]));
   if (sourceIds !== undefined) {
-    if (sourceIds.length === 0) return { events: [], nextCursor: null };
+    if (sourceIds.length === 0) return empty;
     conditions.push(inArray(events.sourceId, [...new Set(sourceIds)]));
   }
   if (botId !== undefined) {
@@ -123,7 +164,7 @@ export async function listWorkspaceEvents(
   }
   if (filter?.sources !== undefined) {
     const sourceIds = await workspaceSourceIds(db, workspaceId, filter.sources);
-    if (sourceIds.length === 0) return { events: [], nextCursor: null };
+    if (sourceIds.length === 0) return empty;
     conditions.push(inArray(events.sourceId, sourceIds));
   }
   for (const [key, value] of Object.entries(filter?.labels ?? {})) {
@@ -147,6 +188,7 @@ export async function listWorkspaceEvents(
   const last = page[page.length - 1];
   return {
     events: page.map((row) => toSummary(row, names)),
+    screenings: new Map(page.map((row) => [row.id, toApiScreening(row)])),
     nextCursor: rows.length > limit && last ? last.id : null,
   };
 }
@@ -170,18 +212,42 @@ export async function findWorkspaceEvent(db: Db, workspaceId: string, id: string
   return { ...toSummary(row, names), conversation_id: row.conversationId, data: data.map(toApiEventData) };
 }
 
-// The source and the conversation of an event, only if it belongs to the workspace. For the checks of what an MCP
-// connection may read.
-export function findWorkspaceEventScope(
-  db: Db,
-  workspaceId: string,
-  eventId: string,
-): Promise<{ sourceId: string; conversationId: string | null } | undefined> {
+export type EventScope = { sourceId: string; conversationId: string | null; screeningStatus: string | null };
+
+// The source, the conversation and the screening state of an event, only if it belongs to the workspace. For the
+// checks of what an MCP connection may read, and of whether the event may be delivered.
+export function findWorkspaceEventScope(db: Db, workspaceId: string, eventId: string): Promise<EventScope | undefined> {
   return db
-    .select({ sourceId: events.sourceId, conversationId: events.conversationId })
+    .select({
+      sourceId: events.sourceId,
+      conversationId: events.conversationId,
+      screeningStatus: events.screeningStatus,
+    })
     .from(events)
     .where(and(eq(events.id, eventId), eq(events.workspaceId, workspaceId)))
     .get();
+}
+
+// The screening of an event of the workspace, for the management screen: undefined if the event is not found, null
+// if it was not screened.
+export async function findWorkspaceEventScreening(
+  db: Db,
+  workspaceId: string,
+  id: string,
+): Promise<EventScreening | null | undefined> {
+  const row = await db
+    .select({
+      screeningStatus: events.screeningStatus,
+      screeningScore: events.screeningScore,
+      screeningError: events.screeningError,
+      screeningRequestedAt: events.screeningRequestedAt,
+      screenedAt: events.screenedAt,
+      screeningReleasedAt: events.screeningReleasedAt,
+    })
+    .from(events)
+    .where(and(eq(events.id, id), eq(events.workspaceId, workspaceId)))
+    .get();
+  return row === undefined ? undefined : toApiScreening(row);
 }
 
 // The events of the workspace with these IDs, in no particular order. IDs of other workspaces are not found.

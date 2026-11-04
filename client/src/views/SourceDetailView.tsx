@@ -2,12 +2,15 @@ import { type FormEvent, useState } from "react";
 import type { ApiKey, Bot, EmailAddress, EventList, Source } from "../../../src/api/types";
 import {
   type SourceActionResult,
+  deleteScreeningApiKey,
   issueApiKey,
   issueEmailAddress,
   revokeApiKey,
   revokeEmailAddress,
   updateSource,
+  setScreeningApiKey,
   updateSourceConversationStart,
+  updateSourceScreening,
 } from "../actions";
 import { formatDateTime } from "../format";
 import { PlusIcon } from "../icons";
@@ -22,7 +25,15 @@ import {
   sourceTabPath,
 } from "../bots";
 import { conversationCurlExample } from "../conversations";
-import { type ApiClient, type ViewState, loadEvents, loadSourceBots, loadSourceDetail, useView } from "../load";
+import {
+  type ApiClient,
+  type ViewState,
+  loadEvents,
+  loadScreeningSettings,
+  loadSourceBots,
+  loadSourceDetail,
+  useView,
+} from "../load";
 import { searchParams } from "../router";
 import { ViewStatus, useDocumentTitle, viewTitle } from "./common";
 import { EventRow } from "./EventsView";
@@ -37,7 +48,8 @@ const RECENT_EVENTS = 5;
 
 // One source, in three tabs (?tab=): the overview (the bots that receive its events and its newest events), how to
 // send (its ID for Service Bindings, its API keys, the example of starting a conversation and its email addresses),
-// and the settings (rename, enable or disable, the conversation start settings). A move to another tab loads the
+// and the settings (rename, enable or disable, the conversation start settings, the screening). A move to another tab
+// loads the
 // screen again.
 export function SourceDetailView({ client, id, path }: { client: ApiClient; id: string; path: string }) {
   const tab = sourceTabOf(searchParams(path));
@@ -98,6 +110,7 @@ export function SourceDetailView({ client, id, path }: { client: ApiClient; id: 
         <>
           <SourceSettings client={client} source={source} onDone={onDone} />
           <ConversationStartSection client={client} source={source} onDone={onDone} />
+          <ScreeningSection client={client} source={source} onDone={onDone} />
         </>
       )}
 
@@ -500,6 +513,236 @@ function ConversationStartSection({
         {failure !== null && <p role="alert">{failure}</p>}
       </form>
     </section>
+  );
+}
+
+// Whether the events of the source are screened for instructions to AIs (TypeSafe Jev), and the TypeSafe API key of
+// the workspace. Turning it on in a workspace without a key asks for the key on the spot.
+function ScreeningSection({
+  client,
+  source,
+  onDone,
+}: {
+  client: ApiClient;
+  source: Source;
+  onDone: (message: string | null) => void;
+}) {
+  const [settings] = useView(() => loadScreeningSettings(client), `screening-settings:${source.id}`);
+  const [enabled, setEnabled] = useState(source.screening.enabled);
+  const [apiKey, setApiKey] = useState("");
+  const [sending, setSending] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+  // The key is entered with the change only when turning it on without one.
+  const needsKey = enabled && !source.screening.enabled && !source.screening.available;
+
+  async function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSending(true);
+    setFailure(null);
+    const result = await updateSourceScreening(
+      client,
+      source.id,
+      needsKey ? { enabled, apiKey: apiKey.trim() } : { enabled },
+    );
+    if (result.kind === "redirecting") return;
+    setSending(false);
+    if (result.kind === "ok") {
+      onDone(enabled ? "AI への指示の判定を有効にしました" : "AI への指示の判定を無効にしました");
+      return;
+    }
+    if (result.kind === "notFound") {
+      onDone(GONE_MESSAGE);
+      return;
+    }
+    setFailure(resultMessage(result, GONE_MESSAGE));
+  }
+
+  return (
+    <section className="source-section" aria-labelledby="source-screening">
+      <div className="section-head">
+        <h2 id="source-screening">AIへの指示の判定</h2>
+      </div>
+      <form className="folder-form" aria-label="AIへの指示の判定" onSubmit={(event) => void onSubmit(event)}>
+        <label className="choice">
+          <input
+            type="checkbox"
+            name="screening_enabled"
+            checked={enabled}
+            onChange={(event) => setEnabled(event.target.checked)}
+            disabled={sending}
+          />
+          <span>
+            <span className="choice-title">この送信元のイベントに AI への指示が含まれていないか判定する</span>
+            <span className="choice-description">
+              AI への指示を含むと判定したイベントは保留し、Bot への配信と MCP からの読み取りの対象から外します。保留したイベントは、イベントの画面で内容を確かめて配信できます
+            </span>
+          </span>
+        </label>
+        {needsKey && (
+          <label>
+            TypeSafe の API キー
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(event) => setApiKey(event.target.value)}
+              autoComplete="off"
+              spellCheck={false}
+              required
+              maxLength={256}
+              disabled={sending}
+            />
+          </label>
+        )}
+        <p className="muted">
+          有効にすると、この送信元のイベントの種別・件名・ラベル・本文・添付の名前と形式・テキストの添付が、入力した API
+          キーの TypeSafe（米国）のアカウントに送られます。
+        </p>
+        <p className="muted">有効にする前に受け付けたイベントは判定しません。</p>
+        <p className="muted">判定を有効にすると、この送信元から会話を始められません。</p>
+        {source.conversation_start.enabled && (
+          <p className="hint">会話の開始が許可されているため、判定は有効にできません。先に「会話の開始」の許可を外してください。</p>
+        )}
+        {source.screening.enabled && !source.screening.available && (
+          <p role="alert">
+            API キーが設定されていないため、この送信元のイベントはすべて保留になります。下の「API キー」から設定してください。
+          </p>
+        )}
+        <div className="folder-form-actions">
+          <button type="submit" disabled={sending || enabled === source.screening.enabled}>
+            保存
+          </button>
+        </div>
+        {failure !== null && <p role="alert">{failure}</p>}
+      </form>
+      {settings.kind === "ready" && (
+        <ScreeningApiKey client={client} hint={settings.data.api_key?.hint ?? null} onDone={onDone} />
+      )}
+      {settings.kind === "error" && <p className="muted">API キーの設定を読み込めませんでした。{settings.message}</p>}
+    </section>
+  );
+}
+
+// The TypeSafe API key of the workspace: its last 4 characters, and its change and deletion. The deletion is
+// confirmed here, since it holds the events of every source with the screening on.
+function ScreeningApiKey({
+  client,
+  hint,
+  onDone,
+}: {
+  client: ApiClient;
+  hint: string | null;
+  onDone: (message: string | null) => void;
+}) {
+  const [mode, setMode] = useState<"idle" | "change" | "delete">("idle");
+  const [apiKey, setApiKey] = useState("");
+  const [sending, setSending] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+
+  async function run(action: () => ReturnType<typeof setScreeningApiKey>, success: string) {
+    setSending(true);
+    setFailure(null);
+    const result = await action();
+    if (result.kind === "redirecting") return;
+    setSending(false);
+    if (result.kind === "ok") {
+      setMode("idle");
+      onDone(success);
+      return;
+    }
+    setFailure(result.kind === "notFound" ? UNKNOWN_RESULT_MESSAGE : resultMessage(result, UNKNOWN_RESULT_MESSAGE));
+  }
+
+  return (
+    <div className="screening-api-key">
+      <p>
+        API キー:{" "}
+        {hint === null ? <span className="muted">未設定</span> : <code>{`••••${hint}`}</code>}
+        <span className="muted">（このワークスペースのすべての送信元で使います）</span>
+      </p>
+      {mode === "idle" && (
+        <div className="actions">
+          <button
+            type="button"
+            onClick={() => {
+              setMode("change");
+              setApiKey("");
+              setFailure(null);
+            }}
+          >
+            {hint === null ? "設定" : "変更"}
+          </button>
+          {hint !== null && (
+            <button
+              type="button"
+              className="button-danger-outline"
+              onClick={() => {
+                setMode("delete");
+                setFailure(null);
+              }}
+            >
+              削除…
+            </button>
+          )}
+        </div>
+      )}
+      {mode === "change" && (
+        <form
+          className="folder-form"
+          aria-label="API キーを変更"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void run(() => setScreeningApiKey(client, apiKey.trim()), "API キーを保存しました");
+          }}
+        >
+          <label>
+            TypeSafe の API キー
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(event) => setApiKey(event.target.value)}
+              autoComplete="off"
+              spellCheck={false}
+              required
+              maxLength={256}
+              disabled={sending}
+            />
+          </label>
+          <div className="folder-form-actions">
+            <button type="submit" disabled={sending}>
+              保存
+            </button>
+            <button type="button" onClick={() => setMode("idle")} disabled={sending}>
+              やめる
+            </button>
+          </div>
+          {failure !== null && <p role="alert">{failure}</p>}
+        </form>
+      )}
+      {mode === "delete" && (
+        <form
+          className="folder-form"
+          aria-label="API キーを削除"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void run(() => deleteScreeningApiKey(client), "API キーを削除しました");
+          }}
+        >
+          <p>
+            API キーを削除すると、判定が有効な送信元のイベントは判定できず、すべて保留になります。判定を無効にするか、API
+            キーを設定し直すまで続きます。
+          </p>
+          <div className="folder-form-actions">
+            <button type="submit" className="button-danger" disabled={sending}>
+              削除する
+            </button>
+            <button type="button" onClick={() => setMode("idle")} disabled={sending}>
+              やめる
+            </button>
+          </div>
+          {failure !== null && <p role="alert">{failure}</p>}
+        </form>
+      )}
+    </div>
   );
 }
 

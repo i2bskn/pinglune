@@ -135,7 +135,7 @@ async function ingest(labels: Record<string, string> = {}): Promise<string> {
   sequence++;
   const result = await acceptEvent(
     { db: env.DB, bucket: env.EVENT_DATA, queue: fakeQueue(), now },
-    { id: source.id, workspaceId: source.workspaceId, name: source.name, enabled: true },
+    { id: source.id, workspaceId: source.workspaceId, name: source.name, enabled: true, screeningEnabled: false },
     { idempotency_key: `k-${sequence}`, type: "alert.observed", summary: `s${sequence}`, labels },
   );
   if (!result.ok) throw new Error(`ingest failed: ${result.error.code}`);

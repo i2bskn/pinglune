@@ -99,7 +99,7 @@ afterEach(async () => {
 async function ingest(key: string, input: Record<string, unknown> = {}): Promise<{ eventId: string; deliveryId: string }> {
   const result = await acceptEvent(
     { db: env.DB, bucket: env.EVENT_DATA, queue: fakeQueue(), now },
-    { id: source.id, workspaceId: workspace.id, name: source.name, enabled: true },
+    { id: source.id, workspaceId: workspace.id, name: source.name, enabled: true, screeningEnabled: false },
     {
       idempotency_key: key,
       type: "alert.observed",

@@ -116,7 +116,7 @@ function structure(input: unknown): Structured {
   };
 }
 
-type SourceRow = { id: string; workspace_id: string; name: string; enabled: number };
+type SourceRow = { id: string; workspace_id: string; name: string; enabled: number; screening_enabled: number };
 
 // The source of props.source_id, or the error: unauthorized for a missing, malformed or unknown ID (the conversation
 // source is never matched: it is unknown here), source_disabled for a disabled source. A function, not a method: every
@@ -130,7 +130,7 @@ async function propsSource(
     return { ok: false, error: intakeError("unauthorized") };
   }
   const source = await d1
-    .prepare("SELECT id, workspace_id, name, enabled FROM sources WHERE id = ? AND kind = 'program'")
+    .prepare("SELECT id, workspace_id, name, enabled, screening_enabled FROM sources WHERE id = ? AND kind = 'program'")
     .bind(sourceId)
     .first<SourceRow>();
   if (!source) return { ok: false, error: intakeError("unauthorized") };
@@ -152,7 +152,13 @@ export class Intake extends WorkerEntrypoint<Bindings, IntakeProps> {
       if (!structured.ok) return toRpcError(structured.error);
       const result = await acceptEvent(
         { db: this.env.DB, bucket: this.env.EVENT_DATA, queue: this.env.DELIVERY_QUEUE, now: clock.now() },
-        { id: source.id, workspaceId: source.workspace_id, name: source.name, enabled: Boolean(source.enabled) },
+        {
+          id: source.id,
+          workspaceId: source.workspace_id,
+          name: source.name,
+          enabled: Boolean(source.enabled),
+          screeningEnabled: source.screening_enabled === 1,
+        },
         structured.input,
       );
       if (!result.ok) return toRpcError(result.error);

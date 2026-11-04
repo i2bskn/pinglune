@@ -68,7 +68,22 @@ export type Source = {
   // Whether the source may start conversations with bots (POST /ingest/v1/conversations, Intake.startConversation),
   // with the same fields and ranges as the conversation start settings of a bot.
   conversation_start: ConversationStartSettings;
+  // The screening of the events for instructions to AIs (src/screening/). available: the workspace has a TypeSafe API
+  // key (whether it can be decrypted is not checked).
+  screening: SourceScreening;
 };
+
+export type SourceScreening = { enabled: boolean; available: boolean };
+
+// POST /api/v1/sources/:id/screening. api_key is required to turn it on in a workspace without a key, and rejected in
+// one with a key (the key is changed with PUT /api/v1/screening/api-key).
+export type UpdateSourceScreeningRequest = { enabled: boolean; api_key?: string };
+
+// GET /api/v1/screening. The key itself is never returned; hint is its last 4 characters.
+export type ScreeningSettings = { api_key: { hint: string } | null };
+
+// PUT /api/v1/screening/api-key.
+export type UpdateScreeningApiKeyRequest = { api_key: string };
 
 export type SourceList = { sources: Source[] };
 
@@ -121,7 +136,23 @@ export type DeliverySummary = { delivered: number; pending: number; failed: numb
 // An interface rather than an intersection, so that hono's JSON typing of the response keeps labels as they are.
 export interface EventListItem extends EventSummary {
   delivery_summary: DeliverySummary;
+  screening: EventScreening | null;
 }
+
+export type ScreeningStatus = "pending" | "passed" | "held" | "released";
+
+// The screening of an event, for the management screen only (never for MCP or the webhooks). null: not screened.
+// score: 0 to 1, null when it was not scored. error: why it could not be screened (held without a score). retryable:
+// the owner may screen it again (POST /api/v1/events/:id/screening/retry).
+export type EventScreening = {
+  status: ScreeningStatus;
+  score: number | null;
+  error: string | null;
+  retryable: boolean;
+  requested_at: number | null;
+  screened_at: number | null;
+  released_at: number | null;
+};
 
 export type EventList = { events: EventListItem[]; next_cursor: string | null };
 
@@ -136,6 +167,9 @@ export type EventData = {
 // data is in position order: the body first, then the attachments in the order they were sent. conversation_id is
 // set for the messages of conversations, and null for the events of programs.
 export type EventDetail = EventSummary & { conversation_id: string | null; data: EventData[] };
+
+// An event of GET /api/v1/events/:id and of the screening operations: EventDetail with the screening.
+export type ManagedEventDetail = EventDetail & { screening: EventScreening | null };
 
 // The response of POST /ingest/v1/events: 201 for a new event, 200 for a retry of an existing one.
 export type IngestResponse = { event_id: string; duplicate: boolean };

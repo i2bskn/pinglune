@@ -1,11 +1,20 @@
 import { type SyntheticEvent, useEffect, useRef, useState } from "react";
-import type { DeliveryListItem, EventData, EventDetail } from "../../../src/api/types";
+import type { DeliveryList as DeliveryListData, DeliveryListItem, EventData, ManagedEventDetail } from "../../../src/api/types";
+import { type ScreeningActionResult, releaseEvent, retryScreening } from "../actions";
 import { previewKind, previewText } from "../events";
 import { formatBytes, formatDateTime, keepNumbersWithUnits } from "../format";
 import { Link } from "../Link";
-import { type ApiClient, fetchEventData, loadDeliveries, loadEventDetail, useView } from "../load";
+import { type ApiClient, type ViewState, fetchEventData, loadDeliveries, loadEventDetail, useView } from "../load";
+import {
+  SCREENING_BADGE_CLASSES,
+  SCREENING_STATUS_LABELS,
+  canRetryScreening,
+  hasUnsentDeliveries,
+  screeningReason,
+} from "../screening";
 import { ViewStatus, useDocumentTitle, viewTitle } from "./common";
 import { DeliveryList } from "./DeliveryHistoryView";
+import { UNKNOWN_RESULT_MESSAGE } from "./SourcesView";
 
 const PREVIEW_FAILED_MESSAGE = "プレビューを読み込めませんでした";
 // How long a downloaded file's object URL is kept: long enough for the browser to start saving it.
@@ -26,18 +35,43 @@ export function EventLabels({ labels }: { labels: Record<string, string> }) {
   );
 }
 
-// One event: its metadata, labels, its data (downloaded, and shown when it is safe and small) and its deliveries.
+// One event: its metadata, its screening, labels, its data (downloaded, and shown when it is safe and small) and its
+// deliveries.
 export function EventDetailView({ client, id }: { client: ApiClient; id: string }) {
   const [state, reload] = useView(() => loadEventDetail(client, id), `event:${id}`);
+  // The result of the last operation, kept across the reload that follows.
+  const [notice, setNotice] = useState<string | null>(null);
   useDocumentTitle(viewTitle(state, (event) => event.type));
 
   if (state.kind !== "ready") {
     return <ViewStatus state={state} notFoundMessage="イベントが見つかりません" onReload={reload} />;
   }
-  return <EventDetailContent client={client} event={state.data} />;
+  return (
+    <EventDetailContent
+      client={client}
+      event={state.data}
+      notice={notice}
+      onDone={(message) => {
+        setNotice(message);
+        reload();
+      }}
+    />
+  );
 }
 
-function EventDetailContent({ client, event }: { client: ApiClient; event: EventDetail }) {
+function EventDetailContent({
+  client,
+  event,
+  notice,
+  onDone,
+}: {
+  client: ApiClient;
+  event: ManagedEventDetail;
+  notice: string | null;
+  onDone: (message: string | null) => void;
+}) {
+  // Read once for both the deliveries and the screening panel (whether deliveries are left unsent).
+  const [deliveries] = useView(() => loadDeliveries(client, { eventId: event.event_id }), `deliveries:${event.event_id}`);
   return (
     <main className="main">
       <p className="breadcrumb">
@@ -49,6 +83,17 @@ function EventDetailContent({ client, event }: { client: ApiClient; event: Event
         </p>
         <h1 className="event-title event-detail-summary">{keepNumbersWithUnits(event.summary)}</h1>
       </header>
+      {notice !== null && (
+        <p className="notice" role="status">
+          {notice}
+        </p>
+      )}
+      <ScreeningPanel
+        client={client}
+        event={event}
+        deliveries={deliveries.kind === "ready" ? deliveries.data.deliveries : null}
+        onDone={onDone}
+      />
       <dl className="details">
         <dt>イベントID</dt>
         <dd>
@@ -94,8 +139,142 @@ function EventDetailContent({ client, event }: { client: ApiClient; event: Event
       )}
 
       <h2>配信</h2>
-      <EventDeliveries client={client} eventId={event.event_id} />
+      <EventDeliveries client={client} state={deliveries} />
     </main>
+  );
+}
+
+// The screening of the event (src/screening/): its state, the score or the reason, and the operations. A held event
+// is released only after a confirmation here.
+function ScreeningPanel({
+  client,
+  event,
+  deliveries,
+  onDone,
+}: {
+  client: ApiClient;
+  event: ManagedEventDetail;
+  // null while they are loading or could not be read.
+  deliveries: DeliveryListItem[] | null;
+  onDone: (message: string | null) => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+  const screening = event.screening;
+  if (screening === null) return null;
+  const reason = screeningReason(screening);
+  const canRetry = canRetryScreening(screening, Date.now());
+  const canRedeliver = screening.status === "released" && deliveries !== null && hasUnsentDeliveries(deliveries);
+
+  async function run(action: () => Promise<ScreeningActionResult>, success: string) {
+    setSending(true);
+    setFailure(null);
+    const result = await action();
+    if (result.kind === "redirecting") return;
+    setSending(false);
+    if (result.kind === "ok") {
+      setConfirming(false);
+      onDone(success);
+      return;
+    }
+    if (result.kind === "notFound") {
+      onDone("イベントが見つかりません");
+      return;
+    }
+    setFailure(result.kind === "error" ? result.message : UNKNOWN_RESULT_MESSAGE);
+  }
+
+  return (
+    <section className="screening-panel" aria-labelledby="event-screening">
+      <h2 id="event-screening">AIへの指示の判定</h2>
+      <p>
+        <span className={SCREENING_BADGE_CLASSES[screening.status]}>{SCREENING_STATUS_LABELS[screening.status]}</span>
+        {reason !== null && <span className="muted">（{reason}）</span>}
+      </p>
+      {screening.status === "held" && (
+        <p>AI への指示を含むか、判定できなかったため保留しています。Bot には配信されず、MCP からも読めません。</p>
+      )}
+      {screening.status === "pending" && <p>判定が終わるまで、Bot には配信されず、MCP からも読めません。</p>}
+      <dl className="details">
+        {screening.requested_at !== null && (
+          <>
+            <dt>判定の依頼</dt>
+            <dd>{formatDateTime(screening.requested_at)}</dd>
+          </>
+        )}
+        {screening.screened_at !== null && (
+          <>
+            <dt>判定日時</dt>
+            <dd>{formatDateTime(screening.screened_at)}</dd>
+          </>
+        )}
+        {screening.released_at !== null && (
+          <>
+            <dt>解除日時</dt>
+            <dd>{formatDateTime(screening.released_at)}</dd>
+          </>
+        )}
+      </dl>
+      {!confirming && (screening.status === "held" || canRetry || canRedeliver) && (
+        <div className="actions">
+          {screening.status === "held" && (
+            <button
+              type="button"
+              className="button-primary"
+              onClick={() => {
+                setConfirming(true);
+                setFailure(null);
+              }}
+              disabled={sending}
+            >
+              保留を解除して配信する…
+            </button>
+          )}
+          {canRetry && (
+            <button
+              type="button"
+              onClick={() => void run(() => retryScreening(client, event.event_id), "判定し直しています")}
+              disabled={sending}
+            >
+              判定し直す
+            </button>
+          )}
+          {canRedeliver && (
+            <button
+              type="button"
+              onClick={() => void run(() => releaseEvent(client, event.event_id), "配信をやり直しました")}
+              disabled={sending}
+            >
+              配信をやり直す
+            </button>
+          )}
+        </div>
+      )}
+      {confirming && (
+        <form
+          className="folder-form"
+          aria-label="保留を解除"
+          onSubmit={(formEvent) => {
+            formEvent.preventDefault();
+            void run(() => releaseEvent(client, event.event_id), "保留を解除して配信しました");
+          }}
+        >
+          <p>
+            このイベントを Bot の配信先に配信し、MCP から読めるようにします。下のデータで内容を確かめてから解除してください。元に戻せません。
+          </p>
+          <div className="folder-form-actions">
+            <button type="submit" className="button-primary" disabled={sending}>
+              解除して配信する
+            </button>
+            <button type="button" onClick={() => setConfirming(false)} disabled={sending}>
+              やめる
+            </button>
+          </div>
+        </form>
+      )}
+      {failure !== null && <p role="alert">{failure}</p>}
+    </section>
   );
 }
 
@@ -267,8 +446,7 @@ function ImagePreview({ client, eventId, data }: { client: ApiClient; eventId: s
 
 // The deliveries of the event (to MCP Events subscriptions, webhook destinations and polling queues): the first
 // page only. Failed ones can be sent again.
-function EventDeliveries({ client, eventId }: { client: ApiClient; eventId: string }) {
-  const [state] = useView(() => loadDeliveries(client, { eventId }), `deliveries:${eventId}`);
+function EventDeliveries({ client, state }: { client: ApiClient; state: ViewState<DeliveryListData> }) {
   switch (state.kind) {
     case "loading":
       return <p className="muted">読み込み中…</p>;

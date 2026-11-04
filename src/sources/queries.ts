@@ -17,12 +17,14 @@ const sourceColumns = {
   canStartConversations: sources.canStartConversations,
   startDailyLimit: sources.startDailyLimit,
   startMaxAiMessages: sources.startMaxAiMessages,
+  screeningEnabled: sources.screeningEnabled,
   createdAt: sources.createdAt,
   updatedAt: sources.updatedAt,
   activeKeyCount,
 };
 
-export function toApiSource(source: SourceWithKeyCount): Source {
+// screeningAvailable: whether the workspace has a TypeSafe API key (workspaces.screening_api_key is set).
+export function toApiSource(source: SourceWithKeyCount, options: { screeningAvailable: boolean }): Source {
   return {
     id: source.id,
     name: source.name,
@@ -35,6 +37,7 @@ export function toApiSource(source: SourceWithKeyCount): Source {
       daily_limit: source.startDailyLimit,
       max_ai_messages: source.startMaxAiMessages,
     },
+    screening: { enabled: source.screeningEnabled === 1, available: options.screeningAvailable },
   };
 }
 

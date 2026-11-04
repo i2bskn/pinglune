@@ -101,6 +101,7 @@ describe("GET /api/v1/events", () => {
           received_at: expect.any(Number),
           data_count: 2,
           delivery_summary: { delivered: 0, pending: 0, failed: 0 },
+          screening: null,
         },
       ],
       next_cursor: null,

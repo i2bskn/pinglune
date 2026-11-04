@@ -244,7 +244,7 @@ describe("events/list", () => {
     const source = await createSource({ workspaceId: (await personalWorkspaceOf(alice)).id, name: "app" });
     const accepted = await acceptEvent(
       { db: env.DB, bucket: env.EVENT_DATA, queue: fakeQueue(), now: T0 },
-      { id: source.id, workspaceId: source.workspaceId, name: source.name, enabled: true },
+      { id: source.id, workspaceId: source.workspaceId, name: source.name, enabled: true, screeningEnabled: false },
       {
         idempotency_key: "k",
         type: "alert.observed",
