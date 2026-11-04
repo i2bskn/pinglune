@@ -1,7 +1,7 @@
 import { and, asc, desc, eq, gte, inArray, isNull, lt, sql, type SQL } from "drizzle-orm";
 import type { EventData, EventDetail, EventSummary } from "../api/types";
 import type { Db } from "../db/client";
-import { eventData, events, sources, type EventDataRow } from "../db/schema";
+import { botSources, eventData, events, sources, type EventDataRow } from "../db/schema";
 import type { EventFilter } from "./filter";
 
 export const EVENT_PAGE_SIZE = 50;
@@ -74,6 +74,9 @@ export type ListEventsOptions = {
   // Only the events of these sources, by ID. The caller makes sure they are sources of the workspace; events of other
   // workspaces are never listed anyway. An empty array gives an empty list.
   sourceIds?: string[];
+  // Only the events of the sources linked to this bot (bot_sources), by a subquery: a bot may be linked to more
+  // sources than an IN list of bound values may hold. A bot without linked sources gives an empty list.
+  botId?: string;
   // UNIX ms: only events received at or after it.
   receivedSince?: number;
 };
@@ -97,7 +100,7 @@ export async function listWorkspaceEvents(
   workspaceId: string,
   options: ListEventsOptions = {},
 ): Promise<{ events: EventSummary[]; nextCursor: string | null }> {
-  const { cursor, filter, receivedSince, sourceIds } = options;
+  const { cursor, filter, receivedSince, sourceIds, botId } = options;
   const limit = options.limit ?? EVENT_PAGE_SIZE;
   const conditions: SQL[] = [eq(events.workspaceId, workspaceId), isNull(events.conversationId)];
   if (cursor !== undefined) conditions.push(lt(events.id, cursor));
@@ -106,6 +109,17 @@ export async function listWorkspaceEvents(
   if (sourceIds !== undefined) {
     if (sourceIds.length === 0) return { events: [], nextCursor: null };
     conditions.push(inArray(events.sourceId, [...new Set(sourceIds)]));
+  }
+  if (botId !== undefined) {
+    conditions.push(
+      inArray(
+        events.sourceId,
+        db
+          .select({ id: botSources.sourceId })
+          .from(botSources)
+          .where(and(eq(botSources.workspaceId, workspaceId), eq(botSources.botId, botId))),
+      ),
+    );
   }
   if (filter?.sources !== undefined) {
     const sourceIds = await workspaceSourceIds(db, workspaceId, filter.sources);
@@ -154,6 +168,20 @@ export async function findWorkspaceEvent(db: Db, workspaceId: string, id: string
     .orderBy(asc(eventData.position))
     .all();
   return { ...toSummary(row, names), conversation_id: row.conversationId, data: data.map(toApiEventData) };
+}
+
+// The source and the conversation of an event, only if it belongs to the workspace. For the checks of what an MCP
+// connection may read.
+export function findWorkspaceEventScope(
+  db: Db,
+  workspaceId: string,
+  eventId: string,
+): Promise<{ sourceId: string; conversationId: string | null } | undefined> {
+  return db
+    .select({ sourceId: events.sourceId, conversationId: events.conversationId })
+    .from(events)
+    .where(and(eq(events.id, eventId), eq(events.workspaceId, workspaceId)))
+    .get();
 }
 
 // The events of the workspace with these IDs, in no particular order. IDs of other workspaces are not found.

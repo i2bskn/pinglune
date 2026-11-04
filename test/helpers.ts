@@ -548,11 +548,12 @@ let botSequence = 0;
 // them, linked to the sources. The bot is created in the workspace of the first subscription, by the workspace's owner.
 // - webhook / queue: one subscription, the bot's delivery_subscription_id.
 // - mcp: one or more subscriptions; an active MCP connection is created for the bot and recorded on them.
-// Returns the IDs of the bot and of the connection (null for webhook and queue).
+// With connect, an active MCP connection is created for a webhook or queue bot too, for its AI to call the tools.
+// Returns the IDs of the bot and of the connection (null for webhook and queue without connect).
 export async function routeToBot(
   destinations: SubscriptionRow | SubscriptionRow[],
   sourceIds: string[],
-  options: { name?: string } = {},
+  options: { name?: string; connect?: boolean } = {},
 ): Promise<{ botId: string; connectionId: string | null }> {
   const rows = Array.isArray(destinations) ? destinations : [destinations];
   const [first] = rows;
@@ -577,7 +578,7 @@ export async function routeToBot(
     ),
   ];
   let connectionId: string | null = null;
-  if (kind === "mcp") {
+  if (kind === "mcp" || options.connect === true) {
     connectionId = newMcpConnectionId(now);
     statements.push(
       env.DB.prepare(
@@ -585,6 +586,10 @@ export async function routeToBot(
           created_at, updated_at)
         VALUES (?, ?, ?, ?, NULL, 'test-client', 'Test client', 'https://client.example.com/callback', ?, ?)`,
       ).bind(connectionId, first.userId, first.workspaceId, botId, now, now),
+    );
+  }
+  if (kind === "mcp") {
+    statements.push(
       ...rows.map((row) =>
         env.DB.prepare("UPDATE subscriptions SET connection_id = ? WHERE id = ?").bind(connectionId, row.id),
       ),

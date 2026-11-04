@@ -54,6 +54,8 @@ let aliceSource: SourceRow;
 let bobSource: SourceRow;
 let now: number;
 let sequence = 0;
+// The MCP connection of the bot of each queue made by routedQueue, by queue ID.
+let queueConnections: Map<string, string>;
 
 beforeEach(async () => {
   await resetDb();
@@ -65,6 +67,7 @@ beforeEach(async () => {
   aliceCookies = await login(alice.email);
   aliceSource = await createSource({ workspaceId: (await personalWorkspaceOf(alice)).id, name: "app" });
   bobSource = await createSource({ workspaceId: (await personalWorkspaceOf(bob)).id, name: "app" });
+  queueConnections = new Map();
 });
 
 afterEach(async () => {
@@ -88,18 +91,31 @@ async function ingest(
   return result.event_id;
 }
 
-// A polling queue that receives the events of its user's source: delivered to by a bot linked to the source.
+// A polling queue that receives the events of its user's source: delivered to by a bot linked to the source. The bot
+// has an MCP connection, which claim and ack use.
 async function routedQueue(params: Parameters<typeof createQueue>[0]): Promise<SubscriptionRow> {
   const row = await createQueue(params);
-  await routeToBot(row, [params.user.id === bob.id ? bobSource.id : aliceSource.id]);
+  const { connectionId } = await routeToBot(row, [params.user.id === bob.id ? bobSource.id : aliceSource.id], {
+    connect: true,
+  });
+  if (connectionId !== null) queueConnections.set(row.id, connectionId);
   return row;
 }
 
-// A webhook destination of alice that receives the events of her source.
-async function routedWebhook(): Promise<SubscriptionRow> {
+// A webhook destination of alice that receives the events of her source. With connect, its bot has an MCP connection,
+// whose ID is returned.
+async function routedWebhook(
+  options: { connect?: boolean } = {},
+): Promise<SubscriptionRow & { botConnectionId: string | null }> {
   const row = await createSubscription({ user: alice, kind: "webhook", name: "w", expiresAt: NO_EXPIRY });
-  await routeToBot(row, [aliceSource.id]);
-  return row;
+  const { connectionId } = await routeToBot(row, [aliceSource.id], options);
+  return { ...row, botConnectionId: connectionId };
+}
+
+function connectionOf(queue: SubscriptionRow): string {
+  const connectionId = queueConnections.get(queue.id);
+  if (connectionId === undefined) throw new Error("no connection for the queue");
+  return connectionId;
 }
 
 async function deliveriesOf(queue: SubscriptionRow): Promise<DeliveryRecord[]> {
@@ -111,10 +127,11 @@ async function errorOf(res: Response): Promise<{ status: number; code: string; m
   return { status: res.status, code: body.error.code, message: body.error.message };
 }
 
-async function rpc(user: UserRow, method: string, params: unknown): Promise<unknown> {
+// connectionId null is a connection without a row (a legacy connection), which is assigned to no bot.
+async function rpc(user: UserRow, connectionId: string | null, method: string, params: unknown): Promise<unknown> {
   const ctx = Object.assign(createExecutionContext(), {
-    props: { userId: user.id, authMode: "password" },
-    auth: { token: "t", audience: `${ORIGIN}/mcp`, scope: ["mcp"] },
+    props: { userId: user.id, authMode: "password", ...(connectionId === null ? {} : { connectionId }) },
+    auth: { token: "t", audience: `${ORIGIN}/mcp`, scope: ["mcp"], clientId: "test-client" },
   }) as unknown as OAuthResourceContext<unknown>;
   const request = new Request(`${ORIGIN}/mcp`, {
     method: "POST",
@@ -128,8 +145,8 @@ async function rpc(user: UserRow, method: string, params: unknown): Promise<unkn
   return body.result;
 }
 
-function callTool(user: UserRow, name: string, args: Record<string, unknown>) {
-  return rpc(user, "tools/call", { name, arguments: args }) as Promise<ToolResult>;
+function callTool(user: UserRow, connectionId: string | null, name: string, args: Record<string, unknown>) {
+  return rpc(user, connectionId, "tools/call", { name, arguments: args }) as Promise<ToolResult>;
 }
 
 function parse<T>(result: ToolResult): T {
@@ -137,12 +154,15 @@ function parse<T>(result: ToolResult): T {
   return JSON.parse(result.content[0]?.text ?? "") as T;
 }
 
+// From the connection of the queue's bot.
 async function claim(queue: SubscriptionRow, args: Record<string, unknown> = {}, user = alice) {
-  return parse<ClaimResult>(await callTool(user, "claim_events", { queue: queue.id, ...args }));
+  return parse<ClaimResult>(await callTool(user, connectionOf(queue), "claim_events", { queue: queue.id, ...args }));
 }
 
 async function ack(queue: SubscriptionRow, deliveryIds: string[], user = alice) {
-  return parse<AckResult>(await callTool(user, "ack_events", { queue: queue.id, delivery_ids: deliveryIds }));
+  return parse<AckResult>(
+    await callTool(user, connectionOf(queue), "ack_events", { queue: queue.id, delivery_ids: deliveryIds }),
+  );
 }
 
 function expectQueueNotFound(result: ToolResult) {
@@ -285,7 +305,7 @@ describe("deleting a polling queue", () => {
       [second, "failed", "subscription_inactive", now],
     ]);
     expect((await deliveriesOf(other)).map((row) => row.status)).toEqual(["pending", "pending"]);
-    expectQueueNotFound(await callTool(alice, "claim_events", { queue: queue.id }));
+    expectQueueNotFound(await callTool(alice, connectionOf(queue), "claim_events", { queue: queue.id }));
 
     // Deleting again answers the ended queue.
     now += 1000;
@@ -453,15 +473,63 @@ describe("claim_events", () => {
   });
 
   it("answers other workspaces', deleted, missing and malformed queues as not found", async () => {
+    const mine = await routedQueue({ user: alice });
     const theirs = await routedQueue({ user: bob });
     await ingest(bobSource);
     const ended = await routedQueue({ user: alice, unsubscribedAt: now });
     const webhook = await routedWebhook();
+    const connectionId = connectionOf(mine);
     for (const queue of [theirs.id, ended.id, webhook.id, MISSING_QUEUE, "sub_123", "x"]) {
-      expectQueueNotFound(await callTool(alice, "claim_events", { queue }));
-      expectQueueNotFound(await callTool(alice, "ack_events", { queue, delivery_ids: [MISSING_DELIVERY] }));
+      expectQueueNotFound(await callTool(alice, connectionId, "claim_events", { queue }));
+      expectQueueNotFound(await callTool(alice, connectionId, "ack_events", { queue, delivery_ids: [MISSING_DELIVERY] }));
     }
+    // The bot of the ended queue still delivers to it.
+    expectQueueNotFound(await callTool(alice, connectionOf(ended), "claim_events", { queue: ended.id }));
     expect((await deliveriesOf(theirs))[0]).toMatchObject({ attempts: 0 });
+  });
+
+  it("works only on the queue of the bot of the connection", async () => {
+    const mine = await routedQueue({ user: alice });
+    const other = await routedQueue({ user: alice });
+    const webhook = await routedWebhook({ connect: true });
+    await ingest();
+    expect((await claim(mine)).items).toHaveLength(1);
+
+    // The queue of another bot of the workspace.
+    const connectionId = connectionOf(mine);
+    expectQueueNotFound(await callTool(alice, connectionId, "claim_events", { queue: other.id }));
+    expectQueueNotFound(
+      await callTool(alice, connectionId, "ack_events", { queue: other.id, delivery_ids: [MISSING_DELIVERY] }),
+    );
+    // A bot that does not deliver to a queue: neither its own destination nor a queue.
+    for (const queue of [webhook.id, other.id]) {
+      expectQueueNotFound(await callTool(alice, webhook.botConnectionId, "claim_events", { queue }));
+      expectQueueNotFound(
+        await callTool(alice, webhook.botConnectionId, "ack_events", { queue, delivery_ids: [MISSING_DELIVERY] }),
+      );
+    }
+    expect((await deliveriesOf(other))[0]).toMatchObject({ attempts: 0 });
+  });
+
+  it("answers unassigned for a connection without a bot, after checking the queue ID", async () => {
+    const queue = await routedQueue({ user: alice });
+    await ingest();
+    const unassigned = {
+      error: {
+        code: "unassigned",
+        message:
+          "この MCP 接続は Bot に割り当てられていません。Pinglune の「AI の接続」画面で、この接続を Bot に割り当ててもらってください",
+      },
+    };
+    for (const result of [
+      await callTool(alice, null, "claim_events", { queue: queue.id }),
+      await callTool(alice, null, "ack_events", { queue: queue.id, delivery_ids: [MISSING_DELIVERY] }),
+    ]) {
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.content[0]?.text ?? "")).toEqual(unassigned);
+    }
+    expectQueueNotFound(await callTool(alice, null, "claim_events", { queue: "x" }));
+    expect((await deliveriesOf(queue))[0]).toMatchObject({ attempts: 0 });
   });
 
   it.each<[string, Record<string, unknown>]>([
@@ -470,7 +538,7 @@ describe("claim_events", () => {
     ["an unknown argument", { cursor: "x" }],
   ])("rejects %s", async (_label, args) => {
     const queue = await routedQueue({ user: alice });
-    expectInvalidArguments(await callTool(alice, "claim_events", { queue: queue.id, ...args }));
+    expectInvalidArguments(await callTool(alice, connectionOf(queue), "claim_events", { queue: queue.id, ...args }));
   });
 
   it("never returns the same delivery to two claims at the same time", async () => {
@@ -562,7 +630,7 @@ describe("ack_events", () => {
     ["an unknown argument", { delivery_ids: [MISSING_DELIVERY], limit: 1 }],
   ])("rejects %s", async (_label, args) => {
     const queue = await routedQueue({ user: alice });
-    expectInvalidArguments(await callTool(alice, "ack_events", { queue: queue.id, ...args }));
+    expectInvalidArguments(await callTool(alice, connectionOf(queue), "ack_events", { queue: queue.id, ...args }));
   });
 });
 

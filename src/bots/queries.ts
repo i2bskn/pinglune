@@ -220,6 +220,21 @@ export async function activeBotsOfSource(db: Db, workspaceId: string, sourceId: 
   return rows.flat();
 }
 
+// Whether the source is linked to the bot in the workspace (a row of bot_sources).
+export async function isSourceLinkedToBot(
+  db: Db,
+  workspaceId: string,
+  botId: string,
+  sourceId: string,
+): Promise<boolean> {
+  const row = await db
+    .select({ botId: botSources.botId })
+    .from(botSources)
+    .where(and(eq(botSources.botId, botId), eq(botSources.sourceId, sourceId), eq(botSources.workspaceId, workspaceId)))
+    .get();
+  return row !== undefined;
+}
+
 // The key under which MCP Events subscriptions of one connection deliver the same events: the callback, the event
 // name and the conditions that delivery uses (types and labels; sources is ignored). Broken arguments get a key of
 // their own, so that the caller logs and skips them.

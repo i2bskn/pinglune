@@ -9,19 +9,24 @@ import { mcpHandler } from "../src/mcp/handler";
 import { isReadableText } from "../src/mcp/text";
 import {
   bucketWith,
+  createQueue,
   createSource,
   createUser,
+  d1RecordingLargeBinds,
   fakeQueue,
   ORIGIN,
   personalWorkspaceOf,
   resetDb,
   resetEventData,
+  routeToBot,
 } from "./helpers";
 
 const MCP_ACCEPT = "application/json, text/event-stream";
 const T0 = Date.UTC(2026, 10, 1, 0, 0, 0);
 const MISSING_EVENT_ID = "evt_01JC9Z7H2K4M6N8P0Q2R4S6T8V";
 const MISSING_DATA_REF = "dat_01JC9Z7H2K4M6N8P0Q2R4S6T8V";
+// The OAuth client of the connections that routeToBot creates.
+const TEST_CLIENT = "test-client";
 
 type ToolResult = { isError?: boolean; content: { type: string; text: string }[] };
 
@@ -54,6 +59,8 @@ let alice: UserRow;
 let bob: UserRow;
 let aliceSource: SourceRow;
 let bobSource: SourceRow;
+// The default MCP connection of each user, by user ID: assigned to a bot linked to the user's source.
+let connections: Record<string, string>;
 let sequence = 0;
 
 beforeEach(async () => {
@@ -63,6 +70,10 @@ beforeEach(async () => {
   bob = await createUser({ email: "bob@example.com" });
   aliceSource = await createSource({ workspaceId: (await personalWorkspaceOf(alice)).id, name: "alice-app" });
   bobSource = await createSource({ workspaceId: (await personalWorkspaceOf(bob)).id, name: "bob-app" });
+  connections = {
+    [alice.id]: await connectBot(alice, [aliceSource.id]),
+    [bob.id]: await connectBot(bob, [bobSource.id]),
+  };
 });
 
 afterEach(async () => {
@@ -91,10 +102,29 @@ function text(value: string, contentType = "text/plain; charset=utf-8") {
   return { content_type: contentType, bytes: new TextEncoder().encode(value) };
 }
 
-async function rpc(user: UserRow, method: string, params: unknown, sharedEnv: Cloudflare.Env = env): Promise<unknown> {
+// The MCP connection of the request: the user's default one unless given. null is a connection without a row (a
+// legacy connection), which is assigned to no bot.
+type Caller = { connectionId?: string | null; clientId?: string };
+
+// A bot of the user linked to the sources, with a polling queue as its destination and an active MCP connection.
+// Returns the ID of the connection.
+async function connectBot(user: UserRow, sourceIds: string[]): Promise<string> {
+  const { connectionId } = await routeToBot(await createQueue({ user }), sourceIds, { connect: true });
+  if (connectionId === null) throw new Error("no connection");
+  return connectionId;
+}
+
+async function rpc(
+  user: UserRow,
+  method: string,
+  params: unknown,
+  sharedEnv: Cloudflare.Env = env,
+  caller: Caller = {},
+): Promise<unknown> {
+  const connectionId = caller.connectionId === undefined ? connections[user.id] : caller.connectionId;
   const ctx = Object.assign(createExecutionContext(), {
-    props: { userId: user.id, authMode: "password" },
-    auth: { token: "t", audience: `${ORIGIN}/mcp`, scope: ["mcp"] },
+    props: { userId: user.id, authMode: "password", ...(connectionId == null ? {} : { connectionId }) },
+    auth: { token: "t", audience: `${ORIGIN}/mcp`, scope: ["mcp"], clientId: caller.clientId ?? TEST_CLIENT },
   }) as unknown as OAuthResourceContext<unknown>;
   const request = new Request(`${ORIGIN}/mcp`, {
     method: "POST",
@@ -108,8 +138,14 @@ async function rpc(user: UserRow, method: string, params: unknown, sharedEnv: Cl
   return body.result;
 }
 
-function callTool(user: UserRow, name: string, args: Record<string, unknown>, sharedEnv?: Cloudflare.Env) {
-  return rpc(user, "tools/call", { name, arguments: args }, sharedEnv) as Promise<ToolResult>;
+function callTool(
+  user: UserRow,
+  name: string,
+  args: Record<string, unknown>,
+  sharedEnv?: Cloudflare.Env,
+  caller?: Caller,
+) {
+  return rpc(user, "tools/call", { name, arguments: args }, sharedEnv, caller) as Promise<ToolResult>;
 }
 
 function parse<T>(result: ToolResult): T {
@@ -144,6 +180,15 @@ async function bodyRef(user: UserRow, eventId: string): Promise<string> {
   const ref = event.data[0]?.data_ref;
   if (ref === undefined) throw new Error("no data");
   return ref;
+}
+
+// The data_ref of the first data item of an event, read from D1 (get_event may not return it).
+async function firstDataRef(eventId: string): Promise<string> {
+  const row = await env.DB.prepare("SELECT id FROM event_data WHERE event_id = ? ORDER BY position LIMIT 1")
+    .bind(eventId)
+    .first<{ id: string }>();
+  if (!row) throw new Error("no data");
+  return row.id;
 }
 
 function spyBucket() {
@@ -234,6 +279,7 @@ describe("authorization", () => {
 
   it("does not match another workspace's source of the same name", async () => {
     const sameName = await createSource({ workspaceId: bobSource.workspaceId, name: "alice-app" });
+    connections[bob.id] = await connectBot(bob, [bobSource.id, sameName.id]);
     await ingest(aliceSource);
     const bobEvent = await ingest(sameName);
     await ingest(bobSource);
@@ -328,6 +374,7 @@ describe("list_events", () => {
 
   it("matches any of the types, all of the labels, and all of the items", async () => {
     const other = await createSource({ workspaceId: aliceSource.workspaceId, name: "other-app" });
+    connections[alice.id] = await connectBot(alice, [aliceSource.id, other.id]);
     const a = await ingest(aliceSource, { type: "a.x", labels: { env: "prod", team: "t1" } }, T0);
     const b = await ingest(aliceSource, { type: "b.x", labels: { env: "prod", team: "t2" } }, T0 + 10);
     const c = await ingest(other, { type: "a.x", labels: { env: "prod", team: "t1" } }, T0 + 20);
@@ -496,9 +543,121 @@ describe("read_data", () => {
 describe("workspace", () => {
   it("answers internal_error when the personal workspace is missing", async () => {
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
-    await env.DB.prepare("DELETE FROM sources WHERE workspace_id = ?").bind(aliceSource.workspaceId).run();
+    const workspaceId = aliceSource.workspaceId;
+    await env.DB.batch(
+      ["deliveries", "mcp_connections", "bot_sources", "bots", "subscriptions", "sources"].map((table) =>
+        env.DB.prepare(`DELETE FROM ${table} WHERE workspace_id = ?`).bind(workspaceId),
+      ),
+    );
     await env.DB.prepare("DELETE FROM workspaces WHERE owner_user_id = ?").bind(alice.id).run();
-    expectToolError(await callTool(alice, "list_events", {}), "internal_error", "サーバーでエラーが発生しました");
+    const result = await callTool(alice, "list_events", {}, undefined, { connectionId: null });
+    expectToolError(result, "internal_error", "サーバーでエラーが発生しました");
     expect(errors).toHaveBeenCalledWith("personal workspace not found", { userId: alice.id });
+  });
+});
+
+describe("the scope of the bot of the connection", () => {
+  it("lists only the events of the sources linked to the bot", async () => {
+    const other = await createSource({ workspaceId: aliceSource.workspaceId, name: "other-app" });
+    const linked = await ingest(aliceSource);
+    await ingest(other);
+    expect((await listEvents(alice)).events.map((e) => e.event_id)).toEqual([linked]);
+    expect(await listEvents(alice, { sources: ["other-app"] })).toEqual({ events: [], next_cursor: null });
+    expect((await listEvents(alice, { sources: ["alice-app", "other-app"] })).events.map((e) => e.event_id)).toEqual([
+      linked,
+    ]);
+  });
+
+  it("lists nothing for a bot without linked sources", async () => {
+    await ingest(aliceSource);
+    const connectionId = await connectBot(alice, []);
+    const result = await callTool(alice, "list_events", {}, undefined, { connectionId });
+    expect(parse(result)).toEqual({ events: [], next_cursor: null });
+  });
+
+  it("answers unassigned for a connection without a bot, after checking the cursor", async () => {
+    await ingest(aliceSource);
+    const caller = { connectionId: null };
+    expectToolError(
+      await callTool(alice, "list_events", {}, undefined, caller),
+      "unassigned",
+      "この MCP 接続は Bot に割り当てられていません。Pinglune の「AI の接続」画面で、この接続を Bot に割り当ててもらってください",
+    );
+    expectToolError(
+      await callTool(alice, "list_events", { cursor: "evt_x" }, undefined, caller),
+      "invalid_cursor",
+      "cursor が正しくありません",
+    );
+  });
+
+  it("answers the event of a source not linked to the bot as not found, like a missing one", async () => {
+    const other = await createSource({ workspaceId: aliceSource.workspaceId, name: "other-app" });
+    const eventId = await ingest(other);
+    const unlinked = await callTool(alice, "get_event", { event_id: eventId });
+    expectToolError(unlinked, "not_found", "イベントが見つかりません");
+    expect(unlinked).toEqual(await callTool(alice, "get_event", { event_id: MISSING_EVENT_ID }));
+    // Neither can a connection without a bot read it.
+    const unassigned = await callTool(alice, "get_event", { event_id: eventId }, undefined, { connectionId: null });
+    expectToolError(unassigned, "not_found", "イベントが見つかりません");
+  });
+
+  it("answers the data of a source not linked to the bot as not found without reading R2", async () => {
+    const other = await createSource({ workspaceId: aliceSource.workspaceId, name: "other-app" });
+    const ref = await firstDataRef(await ingest(other, { body: text("secret") }));
+    const { get, env: spied } = spyBucket();
+    const unlinked = await callTool(alice, "read_data", { data_ref: ref }, spied);
+    expectToolError(unlinked, "not_found", "データが見つかりません");
+    expect(unlinked).toEqual(await callTool(alice, "read_data", { data_ref: MISSING_DATA_REF }, spied));
+    const unassigned = await callTool(alice, "read_data", { data_ref: ref }, spied, { connectionId: null });
+    expectToolError(unassigned, "not_found", "データが見つかりません");
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it("answers binary data and an offset at the end out of the scope as not found, without the metadata", async () => {
+    const other = await createSource({ workspaceId: aliceSource.workspaceId, name: "other-app" });
+    const binary = await firstDataRef(
+      await ingest(other, { body: { content_type: "application/pdf", bytes: new Uint8Array([0x25, 0x50]) } }),
+    );
+    const textRef = await firstDataRef(await ingest(other, { body: text("abc") }));
+    const { get, env: spied } = spyBucket();
+    expectToolError(await callTool(alice, "read_data", { data_ref: binary }, spied), "not_found", "データが見つかりません");
+    expectToolError(
+      await callTool(alice, "read_data", { data_ref: textRef, offset: 3 }, spied),
+      "not_found",
+      "データが見つかりません",
+    );
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it("lists the events of a bot with 100 sources and every filter without binding more than 100 values", async () => {
+    const linked: SourceRow[] = [];
+    for (let i = 0; i < 100; i++) {
+      linked.push(await createSource({ workspaceId: aliceSource.workspaceId, name: `s-${i}` }));
+    }
+    const unlinked = await createSource({ workspaceId: aliceSource.workspaceId, name: "unlinked" });
+    const connectionId = await connectBot(
+      alice,
+      linked.map((source) => source.id),
+    );
+    const last = linked[99];
+    if (last === undefined) throw new Error("no source");
+    const expected = await ingest(last, { type: "t0.x", labels: { env: "prod" } });
+    await ingest(unlinked, { type: "t0.x", labels: { env: "prod" } });
+
+    const { d1, large } = d1RecordingLargeBinds();
+    const result = await callTool(
+      alice,
+      "list_events",
+      {
+        types: Array.from({ length: 20 }, (_, i) => `t${i}.x`),
+        sources: ["unlinked", ...linked.slice(81).map((source) => source.name)],
+        labels: { env: "prod" },
+      },
+      { ...env, DB: d1 },
+      { connectionId },
+    );
+    const listed = parse<{ events: McpEvent[]; next_cursor: string | null }>(result);
+    expect(listed.events.map((e) => e.event_id)).toEqual([expected]);
+    expect(large).toEqual([]);
   });
 });

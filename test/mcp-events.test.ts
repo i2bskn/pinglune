@@ -14,6 +14,7 @@ import { endSubscription, NO_EXPIRY } from "../src/subscriptions/queries";
 import { decryptSecret, subscriptionSecretKey } from "../src/subscriptions/secret";
 import {
   countTable,
+  createQueue,
   createSource,
   createSubscription,
   createUser,
@@ -25,6 +26,7 @@ import {
   personalWorkspaceOf,
   resetDb,
   resetEventData,
+  routeToBot,
   send,
 } from "./helpers";
 
@@ -96,9 +98,16 @@ afterEach(async () => {
   await resetDb();
 });
 
-async function call(user: UserRow, method: string, params?: unknown, sharedEnv: Cloudflare.Env = env): Promise<RpcBody> {
+// connectionId: the MCP connection of the request; none (a legacy connection) by default.
+async function call(
+  user: UserRow,
+  method: string,
+  params?: unknown,
+  sharedEnv: Cloudflare.Env = env,
+  connectionId?: string,
+): Promise<RpcBody> {
   const ctx = Object.assign(createExecutionContext(), {
-    props: { userId: user.id, authMode: "password" },
+    props: { userId: user.id, authMode: "password", ...(connectionId === undefined ? {} : { connectionId }) },
     auth: { token: "t", audience: `${ORIGIN}/mcp`, scope: ["mcp"] },
   }) as unknown as OAuthResourceContext<unknown>;
   const request = new Request(`${ORIGIN}/mcp`, {
@@ -245,7 +254,15 @@ describe("events/list", () => {
       },
     );
     if (!accepted.ok) throw new Error("ingest failed");
-    const tool = await call(alice, "tools/call", { name: "get_event", arguments: { event_id: accepted.event_id } });
+    // get_event reads the events of the sources linked to the bot of the connection.
+    const { connectionId } = await routeToBot(await createQueue({ user: alice }), [source.id], { connect: true });
+    const tool = await call(
+      alice,
+      "tools/call",
+      { name: "get_event", arguments: { event_id: accepted.event_id } },
+      env,
+      connectionId ?? undefined,
+    );
     const detail = JSON.parse((tool.result as { content: { text: string }[] }).content[0]?.text ?? "") as unknown;
     const result = new Validator(schema as never, "2020-12").validate(detail);
     expect(result.errors).toEqual([]);

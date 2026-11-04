@@ -22,6 +22,7 @@ import { newBotId, newMcpConnectionId, newParticipantId } from "../src/ids";
 import { validateIntakeInput } from "../src/intake/validation";
 import { mcpHandler } from "../src/mcp/handler";
 import {
+  bucketWith,
   countTable,
   createApiKey,
   createEmailAddress,
@@ -217,7 +218,13 @@ async function connect(clientId: string, clientName: string, botId: string | nul
 
 // The MCP connection of clientId is passed in the props, as a grant made by POST /authorize carries it. A client
 // without a connection (undefined, or another user) is a legacy connection.
-async function rpc(user: UserRow, clientId: string | undefined, method: string, params: unknown): Promise<unknown> {
+async function rpc(
+  user: UserRow,
+  clientId: string | undefined,
+  method: string,
+  params: unknown,
+  envOverrides: Partial<Cloudflare.Env> = {},
+): Promise<unknown> {
   const connectionId = user.id === alice.id && clientId !== undefined ? connections[clientId] : undefined;
   const ctx = Object.assign(createExecutionContext(), {
     props: { userId: user.id, authMode: "password", ...(connectionId === undefined ? {} : { connectionId }) },
@@ -229,15 +236,21 @@ async function rpc(user: UserRow, clientId: string | undefined, method: string, 
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
   });
   // The deliveries go to the fake queue only.
-  const res = await mcpHandler.fetch(request, { ...env, DELIVERY_QUEUE: queue }, ctx);
+  const res = await mcpHandler.fetch(request, { ...env, DELIVERY_QUEUE: queue, ...envOverrides }, ctx);
   expect(res.status).toBe(200);
   const body = (await res.json()) as { result?: unknown; error?: unknown };
   expect(body.error).toBeUndefined();
   return body.result;
 }
 
-function callTool(clientId: string | undefined, name: string, args: Record<string, unknown>, user = alice) {
-  return rpc(user, clientId, "tools/call", { name, arguments: args }) as Promise<ToolResult>;
+function callTool(
+  clientId: string | undefined,
+  name: string,
+  args: Record<string, unknown>,
+  user = alice,
+  envOverrides: Partial<Cloudflare.Env> = {},
+) {
+  return rpc(user, clientId, "tools/call", { name, arguments: args }, envOverrides) as Promise<ToolResult>;
 }
 
 function parse<T>(result: ToolResult): T {
@@ -838,11 +851,9 @@ describe("get_conversation", () => {
     ]);
     expect(result.messages[1]?.created_at).toBe(new Date(now).toISOString());
     expect(result.older_cursor).toBeNull();
-    // A connection that is not a participant can read it too.
-    const muse = await getConversation(MUSE, { conversation_id: created.id });
-    expect(muse.participants.every((p) => !p.is_you)).toBe(true);
-    expect(muse.you).toEqual({ bot_name: "Muse" });
-    expect((await getConversation(undefined, { conversation_id: created.id })).you).toEqual({ bot_name: null });
+    // A connection that is not a participant cannot read it, nor can a connection without a bot.
+    expectToolError(await callTool(MUSE, "get_conversation", { conversation_id: created.id }), "not_found");
+    expectToolError(await callTool(undefined, "get_conversation", { conversation_id: created.id }), "not_found");
   });
 
   it("returns the newest messages and pages to older ones", async () => {
@@ -878,6 +889,25 @@ describe("get_conversation", () => {
       await callTool(DOT, "read_data", { data_ref: message?.data_ref, offset: 8190 }),
     );
     expect(read.text).toBe("あ".repeat(270));
+  });
+
+  it("answers a conversation the connection does not take part in as not found, without reading R2", async () => {
+    const created = await createConversation();
+    const get = vi.fn((...args: Parameters<R2Bucket["get"]>) => env.EVENT_DATA.get(...args));
+    const bucket = bucketWith({ get });
+    const result = await callTool(MUSE, "get_conversation", { conversation_id: created.id }, alice, {
+      EVENT_DATA: bucket,
+    });
+    expect(result).toEqual(
+      await callTool(MUSE, "get_conversation", { conversation_id: MISSING_CONVERSATION }, alice, { EVENT_DATA: bucket }),
+    );
+    expectToolError(result, "not_found");
+    expect(get).not.toHaveBeenCalled();
+    // A participant's request reads the messages.
+    parse<GetConversationResult>(
+      await callTool(DOT, "get_conversation", { conversation_id: created.id }, alice, { EVENT_DATA: bucket }),
+    );
+    expect(get).toHaveBeenCalled();
   });
 
   it("answers another workspace's or a missing conversation as not found", async () => {
@@ -999,6 +1029,46 @@ describe("the events of conversations", () => {
     expect(event.conversation_id).toBeUndefined();
     const read = parse<{ text: string }>(await callTool(DOT, "read_data", { data_ref: event.data[0]?.data_ref }));
     expect(read.text).toBe("こんにちは。\n今週の予定を相談しましょう。");
+  });
+
+  it("can be read only by the participants", async () => {
+    const created = await createConversation();
+    const eventId = (await messages(created.id)).messages[0]?.event_id ?? "";
+    const event = parse<{ data: { data_ref: string }[] }>(await callTool(GROK, "get_event", { event_id: eventId }));
+    const dataRef = event.data[0]?.data_ref ?? "";
+    expect(parse<{ text: string }>(await callTool(GROK, "read_data", { data_ref: dataRef })).text).toBe(
+      "こんにちは。\n今週の予定を相談しましょう。",
+    );
+    for (const clientId of [MUSE, undefined]) {
+      expectToolError(await callTool(clientId, "get_event", { event_id: eventId }), "not_found");
+      expectToolError(await callTool(clientId, "read_data", { data_ref: dataRef }), "not_found");
+    }
+  });
+
+  it("can be read by a participant created before bots from a connection without a bot", async () => {
+    const created = await createConversation({ participants: [{ bot_id: dotBot.id }] });
+    const workspaceId = (await personalWorkspaceOf(alice)).id;
+    await env.DB.prepare(
+      `INSERT INTO conversation_participants (id, conversation_id, workspace_id, name, oauth_client_id, subscription_id, created_at)
+      VALUES (?, ?, ?, 'old', 'client-legacy', ?, ?)`,
+    )
+      .bind(newParticipantId(now), created.id, workspaceId, grokQueue.id, now)
+      .run();
+    const eventId = (await messages(created.id)).messages[0]?.event_id ?? "";
+
+    // client-legacy has no MCP connection: assigned to no bot, matched by its OAuth client.
+    const event = parse<{ data: { data_ref: string }[] }>(
+      await callTool("client-legacy", "get_event", { event_id: eventId }),
+    );
+    const dataRef = event.data[0]?.data_ref ?? "";
+    expect(parse<{ text: string }>(await callTool("client-legacy", "read_data", { data_ref: dataRef })).text).toBe(
+      "こんにちは。\n今週の予定を相談しましょう。",
+    );
+    expect((await getConversation("client-legacy", { conversation_id: created.id })).messages).toHaveLength(1);
+    // Another client without a connection is not a participant.
+    expectToolError(await callTool("client-other", "get_event", { event_id: eventId }), "not_found");
+    expectToolError(await callTool("client-other", "read_data", { data_ref: dataRef }), "not_found");
+    expectToolError(await callTool("client-other", "get_conversation", { conversation_id: created.id }), "not_found");
   });
 
   it("are not delivered to the subscriptions of the workspace by their filters", async () => {
