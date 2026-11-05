@@ -1,10 +1,27 @@
-import { type SyntheticEvent, useEffect, useRef, useState } from "react";
-import type { DeliveryList as DeliveryListData, DeliveryListItem, EventData, ManagedEventDetail } from "../../../src/api/types";
+import { Fragment, type SyntheticEvent, useEffect, useRef, useState } from "react";
+import type {
+  DeliveryList as DeliveryListData,
+  DeliveryListItem,
+  EmailAttachment,
+  EmailView,
+  EventData,
+  ManagedEventDetail,
+} from "../../../src/api/types";
 import { type ScreeningActionResult, releaseEvent, retryScreening } from "../actions";
+import { type EmailBodyMode, attachmentPreview, defaultBodyMode, isEmailEvent, revealBidiControls } from "../email";
 import { previewKind, previewText } from "../events";
 import { formatBytes, formatDateTime, keepNumbersWithUnits } from "../format";
 import { Link } from "../Link";
-import { type ApiClient, type ViewState, fetchEventData, loadDeliveries, loadEventDetail, useView } from "../load";
+import {
+  type ApiClient,
+  type ViewState,
+  fetchEventData,
+  loadDeliveries,
+  loadEmailHtml,
+  loadEmailView,
+  loadEventDetail,
+  useView,
+} from "../load";
 import {
   SCREENING_BADGE_CLASSES,
   SCREENING_STATUS_LABELS,
@@ -41,6 +58,8 @@ export function EventDetailView({ client, id }: { client: ApiClient; id: string 
   const [state, reload] = useView(() => loadEventDetail(client, id), `event:${id}`);
   // The result of the last operation, kept across the reload that follows.
   const [notice, setNotice] = useState<string | null>(null);
+  // Counts the reloads after an operation, so that the email view is read again with the event.
+  const [reloads, setReloads] = useState(0);
   useDocumentTitle(viewTitle(state, (event) => event.type));
 
   if (state.kind !== "ready") {
@@ -51,8 +70,10 @@ export function EventDetailView({ client, id }: { client: ApiClient; id: string 
       client={client}
       event={state.data}
       notice={notice}
+      loadKey={`${id}:${reloads}`}
       onDone={(message) => {
         setNotice(message);
+        setReloads((n) => n + 1);
         reload();
       }}
     />
@@ -63,15 +84,30 @@ function EventDetailContent({
   client,
   event,
   notice,
+  loadKey,
   onDone,
 }: {
   client: ApiClient;
   event: ManagedEventDetail;
   notice: string | null;
+  // Changes when the event is read again after an operation.
+  loadKey: string;
   onDone: (message: string | null) => void;
 }) {
   // Read once for both the deliveries and the screening panel (whether deliveries are left unsent).
   const [deliveries] = useView(() => loadDeliveries(client, { eventId: event.event_id }), `deliveries:${event.event_id}`);
+  const email = isEmailEvent(event);
+  // A held or pending email is checked by reading the email view: the screening comes above it.
+  const screeningFirst = email && (event.screening?.status === "held" || event.screening?.status === "pending");
+  const screeningPanel = (
+    <ScreeningPanel
+      client={client}
+      event={event}
+      deliveries={deliveries.kind === "ready" ? deliveries.data.deliveries : null}
+      releaseCheck={email ? "下のメールの内容を確かめてから解除してください" : "下のデータで内容を確かめてから解除してください"}
+      onDone={onDone}
+    />
+  );
   return (
     <main className="main">
       <p className="breadcrumb">
@@ -81,19 +117,23 @@ function EventDetailContent({
         <p className="event-title-type">
           <span className="event-type">{event.type}</span>
         </p>
-        <h1 className="event-title event-detail-summary">{keepNumbersWithUnits(event.summary)}</h1>
+        <h1 className="event-title event-detail-summary">
+          {keepNumbersWithUnits(email ? revealBidiControls(event.summary) : event.summary)}
+        </h1>
       </header>
       {notice !== null && (
         <p className="notice" role="status">
           {notice}
         </p>
       )}
-      <ScreeningPanel
-        client={client}
-        event={event}
-        deliveries={deliveries.kind === "ready" ? deliveries.data.deliveries : null}
-        onDone={onDone}
-      />
+      {screeningFirst && screeningPanel}
+      {email && (
+        <>
+          <EmailSection client={client} eventId={event.event_id} loadKey={loadKey} />
+          <h2 className="email-detail-heading">イベントの詳細</h2>
+        </>
+      )}
+      {!screeningFirst && screeningPanel}
       <dl className="details">
         <dt>イベントID</dt>
         <dd>
@@ -133,7 +173,7 @@ function EventDetailContent({
       ) : (
         <ul className="list data-list">
           {event.data.map((data) => (
-            <DataItem key={data.data_ref} client={client} eventId={event.event_id} data={data} />
+            <DataItem key={data.data_ref} client={client} eventId={event.event_id} data={data} openBody={!email} />
           ))}
         </ul>
       )}
@@ -150,12 +190,15 @@ function ScreeningPanel({
   client,
   event,
   deliveries,
+  releaseCheck,
   onDone,
 }: {
   client: ApiClient;
   event: ManagedEventDetail;
   // null while they are loading or could not be read.
   deliveries: DeliveryListItem[] | null;
+  // Where to check the contents before releasing it.
+  releaseCheck: string;
   onDone: (message: string | null) => void;
 }) {
   const [confirming, setConfirming] = useState(false);
@@ -261,7 +304,7 @@ function ScreeningPanel({
           }}
         >
           <p>
-            このイベントを Bot の配信先に配信し、MCP から読めるようにします。下のデータで内容を確かめてから解除してください。元に戻せません。
+            このイベントを Bot の配信先に配信し、MCP から読めるようにします。{releaseCheck}。元に戻せません。
           </p>
           <div className="folder-form-actions">
             <button type="submit" className="button-primary" disabled={sending}>
@@ -298,12 +341,14 @@ function readAsDataUrl(blob: Blob): Promise<string> {
   });
 }
 
-// One body or attachment: its name, type and size, a download button and, for small text, JSON and images, a preview.
-function DataItem({ client, eventId, data }: { client: ApiClient; eventId: string; data: EventData }) {
+// Downloads a data item as a file of its name. Shared by the data list and the attachments of the email view.
+function useDownload(
+  client: ApiClient,
+  eventId: string,
+  data: Pick<EventData, "data_ref" | "name">,
+): { downloading: boolean; failure: string | null; download: () => Promise<void> } {
   const [downloading, setDownloading] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
-  const kind = previewKind(data);
-  const name = data.role === "body" ? "本文" : data.name;
 
   async function download() {
     setDownloading(true);
@@ -325,6 +370,26 @@ function DataItem({ client, eventId, data }: { client: ApiClient; eventId: strin
     setTimeout(() => URL.revokeObjectURL(url), OBJECT_URL_LIFETIME_MS);
   }
 
+  return { downloading, failure, download };
+}
+
+// One body or attachment: its name, type and size, a download button and, for small text, JSON and images, a preview.
+// openBody: the preview of the body is open from the start.
+function DataItem({
+  client,
+  eventId,
+  data,
+  openBody,
+}: {
+  client: ApiClient;
+  eventId: string;
+  data: EventData;
+  openBody: boolean;
+}) {
+  const { downloading, failure, download } = useDownload(client, eventId, data);
+  const kind = previewKind(data);
+  const name = data.role === "body" ? "本文" : data.name;
+
   return (
     <li>
       <span className="data-head">
@@ -339,7 +404,13 @@ function DataItem({ client, eventId, data }: { client: ApiClient; eventId: strin
       </span>
       {failure !== null && <p role="alert">{failure}</p>}
       {(kind === "text" || kind === "json") && (
-        <TextPreview client={client} eventId={eventId} data={data} kind={kind} initiallyOpen={data.role === "body"} />
+        <TextPreview
+          client={client}
+          eventId={eventId}
+          data={data}
+          kind={kind}
+          initiallyOpen={openBody && data.role === "body"}
+        />
       )}
       {kind === "image" && <ImagePreview client={client} eventId={eventId} data={data} />}
     </li>
@@ -355,12 +426,14 @@ function TextPreview({
   data,
   kind,
   initiallyOpen,
+  label = "中身を表示",
 }: {
   client: ApiClient;
   eventId: string;
-  data: EventData;
+  data: Pick<EventData, "data_ref">;
   kind: "text" | "json";
   initiallyOpen: boolean;
+  label?: string;
 }) {
   const [state, setState] = useState<PreviewState>({ kind: "idle" });
   const started = useRef(false);
@@ -399,7 +472,7 @@ function TextPreview({
 
   return (
     <details className="data-preview" open={initiallyOpen} onToggle={onToggle}>
-      <summary>中身を表示</summary>
+      <summary>{label}</summary>
       {state.kind === "loading" && <p className="muted">読み込み中…</p>}
       {state.kind === "error" && <p role="alert">{PREVIEW_FAILED_MESSAGE}</p>}
       {state.kind === "ready" && <pre>{state.value}</pre>}
@@ -409,7 +482,15 @@ function TextPreview({
 
 // An image of up to IMAGE_PREVIEW_MAX_BYTES, read when the screen is shown and put into a data: URL (the CSP allows
 // img-src data:, and the API URL itself is never put into the page).
-function ImagePreview({ client, eventId, data }: { client: ApiClient; eventId: string; data: EventData }) {
+function ImagePreview({
+  client,
+  eventId,
+  data,
+}: {
+  client: ApiClient;
+  eventId: string;
+  data: Pick<EventData, "data_ref" | "name">;
+}) {
   const [state, setState] = useState<PreviewState>({ kind: "loading" });
 
   useEffect(() => {
@@ -442,6 +523,245 @@ function ImagePreview({ client, eventId, data }: { client: ApiClient; eventId: s
     case "ready":
       return <img className="data-image" src={state.value} alt={data.name} loading="lazy" />;
   }
+}
+
+// An image previewed only once its details is opened.
+function LazyImagePreview({
+  client,
+  eventId,
+  data,
+}: {
+  client: ApiClient;
+  eventId: string;
+  data: Pick<EventData, "data_ref" | "name">;
+}) {
+  const [opened, setOpened] = useState(false);
+  return (
+    <details
+      className="data-preview"
+      onToggle={(event) => {
+        if (event.currentTarget.open) setOpened(true);
+      }}
+    >
+      <summary>プレビュー</summary>
+      {opened && <ImagePreview client={client} eventId={eventId} data={data} />}
+    </details>
+  );
+}
+
+// The email view of an email.received event, above the event detail: the source, the header lines, the body and the
+// attachments. Everything the sender wrote is shown as text, never as HTML. A failure here leaves the rest of the
+// screen as it is.
+function EmailSection({ client, eventId, loadKey }: { client: ApiClient; eventId: string; loadKey: string }) {
+  const [state, reload] = useView(() => loadEmailView(client, eventId), `email:${loadKey}`);
+  switch (state.kind) {
+    case "loading":
+      return <ViewStatus state={state} notFoundMessage="" onReload={reload} />;
+    case "redirecting":
+      return null;
+    case "notFound":
+    case "error":
+      return (
+        <section className="email-error" role="alert">
+          <h2>メールの表示を読み込めませんでした</h2>
+          <p>{state.kind === "error" ? state.message : "メールが見つかりません"}</p>
+          <button type="button" onClick={reload}>
+            再読み込み
+          </button>
+        </section>
+      );
+    case "ready":
+      return <EmailContent client={client} view={state.data} loadKey={loadKey} />;
+  }
+}
+
+function EmailContent({ client, view, loadKey }: { client: ApiClient; view: EmailView; loadKey: string }) {
+  const { headers } = view;
+  const optional: [string, string | null][] = [
+    ["宛先（To）", headers.to],
+    ["Cc", headers.cc],
+    ["返信先（Reply-To）", headers.reply_to],
+    ["日時（Date）", headers.date],
+    ["Message-ID", headers.message_id],
+  ];
+  return (
+    <section className="email-view" aria-label="メール">
+      <p className="email-source">
+        送信元: <Link to={`/sources/${view.source.id}`}>{view.source.name}</Link>
+      </p>
+      <dl className="details email-headers">
+        <dt>差出人（From のアドレス）</dt>
+        <dd className="email-from">
+          {view.from_address !== null ? (
+            <>
+              <strong>{revealBidiControls(view.from_address)}</strong>
+              {headers.from !== null && (
+                <span className="email-from-raw">メールの表記: {revealBidiControls(headers.from)}</span>
+              )}
+            </>
+          ) : headers.from !== null ? (
+            revealBidiControls(headers.from)
+          ) : (
+            "不明"
+          )}
+        </dd>
+        {optional.map(
+          ([label, value]) =>
+            value !== null && (
+              <Fragment key={label}>
+                <dt>{label}</dt>
+                <dd>{revealBidiControls(value)}</dd>
+              </Fragment>
+            ),
+        )}
+      </dl>
+
+      <EmailBody client={client} view={view} loadKey={loadKey} />
+
+      <h2>添付（{view.attachments.length} 件）</h2>
+      {view.attachments.length === 0 ? (
+        <p className="muted">添付はありません</p>
+      ) : (
+        <ul className="email-attachments">
+          {view.attachments.map((attachment) => (
+            <EmailAttachmentItem
+              key={attachment.data_ref}
+              client={client}
+              eventId={view.event_id}
+              attachment={attachment}
+            />
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+// The text of the body, or the HTML body converted to text (read when it is first shown).
+function EmailBody({ client, view, loadKey }: { client: ApiClient; view: EmailView; loadKey: string }) {
+  const [mode, setMode] = useState<EmailBodyMode>(() => defaultBodyMode(view));
+  // Kept once shown, so that switching back and forth does not read it again.
+  const [htmlShown, setHtmlShown] = useState(mode === "html");
+
+  function choose(next: EmailBodyMode) {
+    setMode(next);
+    if (next === "html") setHtmlShown(true);
+  }
+
+  return (
+    <>
+      <h2>本文</h2>
+      {view.html !== null && (
+        <div className="filter-tabs" role="group" aria-label="本文の表示">
+          <button type="button" className="filter-tab" aria-pressed={mode === "text"} onClick={() => choose("text")}>
+            テキスト
+          </button>
+          <button type="button" className="filter-tab" aria-pressed={mode === "html"} onClick={() => choose("html")}>
+            HTML
+          </button>
+        </div>
+      )}
+      <div hidden={mode !== "text"}>
+        {view.text === null ? (
+          <p className="muted">本文を読み込めませんでした</p>
+        ) : (
+          <div className="email-text">{view.text}</div>
+        )}
+        {view.text_truncated && (
+          <p className="hint">本文が長いため先頭の 256 KiB だけ表示しています。全体は下のデータの本文をダウンロードしてください</p>
+        )}
+      </div>
+      {view.html !== null && htmlShown && (
+        <div hidden={mode !== "html"}>
+          <EmailHtml client={client} eventId={view.event_id} loadKey={loadKey} />
+        </div>
+      )}
+    </>
+  );
+}
+
+function EmailHtml({ client, eventId, loadKey }: { client: ApiClient; eventId: string; loadKey: string }) {
+  const [state, reload] = useView(() => loadEmailHtml(client, eventId), `email-html:${loadKey}`);
+  switch (state.kind) {
+    case "loading":
+      return <p className="muted">読み込み中…</p>;
+    case "redirecting":
+      return null;
+    case "notFound":
+    case "error":
+      return (
+        <div className="email-error" role="alert">
+          <p>HTML の本文を読み込めませんでした。{state.kind === "error" ? state.message : ""}</p>
+          <button type="button" onClick={reload}>
+            再読み込み
+          </button>
+        </div>
+      );
+    case "ready": {
+      const { text, source, truncated } = state.data;
+      return (
+        <>
+          <p className="hint email-html-note">HTML をテキストに変換して表示しています（画像・レイアウト・リンクは表示しません）</p>
+          {text === null ? (
+            <p className="muted">HTML の本文をテキストにできませんでした</p>
+          ) : (
+            <div className="email-text">{text}</div>
+          )}
+          {truncated && <p className="hint">HTML が長いため先頭の 256 KiB だけ表示しています</p>}
+          {source !== null && (
+            <details className="data-preview">
+              <summary>HTML のソースを表示</summary>
+              <pre>{source}</pre>
+            </details>
+          )}
+        </>
+      );
+    }
+  }
+}
+
+// One attachment of the email view: a card with its name, type and size, the download and, for images and text, a
+// preview read when it is opened.
+function EmailAttachmentItem({
+  client,
+  eventId,
+  attachment,
+}: {
+  client: ApiClient;
+  eventId: string;
+  attachment: EmailAttachment;
+}) {
+  const { downloading, failure, download } = useDownload(client, eventId, attachment);
+  const kind = attachmentPreview(attachment);
+  const name = revealBidiControls(attachment.name);
+  return (
+    <li className="email-attachment">
+      <span className="email-attachment-name">{name}</span>
+      <span className="data-meta">
+        <span>{attachment.content_type}</span>
+        <span>{formatBytes(attachment.size)}</span>
+      </span>
+      <span className="email-attachment-actions">
+        <button type="button" className="data-download" onClick={() => void download()} disabled={downloading}>
+          {downloading ? "読み込み中…" : "ダウンロード"}
+        </button>
+      </span>
+      {failure !== null && <p role="alert">{failure}</p>}
+      {(kind === "text" || kind === "json") && (
+        <TextPreview
+          client={client}
+          eventId={eventId}
+          data={attachment}
+          kind={kind}
+          initiallyOpen={false}
+          label="プレビュー"
+        />
+      )}
+      {kind === "image" && (
+        <LazyImagePreview client={client} eventId={eventId} data={{ data_ref: attachment.data_ref, name }} />
+      )}
+    </li>
+  );
 }
 
 // The deliveries of the event (to MCP Events subscriptions, webhook destinations and polling queues): the first

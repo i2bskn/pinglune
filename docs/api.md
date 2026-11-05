@@ -305,10 +305,13 @@ RPCでは同じ分類のエラーを、種類を判別できる形で返しま�
 | `POST /api/v1/events/:id/screening/release` | 保留の解除（[受付イベントの判定](#受付イベントの判定aiへの指示)）。200でイベントの詳細を返す |
 | `POST /api/v1/events/:id/screening/retry` | 判定し直す（同上）。200でイベントの詳細を返す |
 | `GET /api/v1/events/:id/data/:dataRef` | 本文・添付の中身（下記） |
+| `GET /api/v1/events/:id/email` | `email.received` のイベントをメールとして読む表示（[メールの表示](#メールの表示)） |
+| `GET /api/v1/events/:id/email/html` | 同じイベントのHTMLの本文をテキストにしたもの（同上） |
 | `GET /api/v1/deliveries?cursor=&event_id=&status=&subscription_id=` | 配信の記録（新しい順、50件、`next_cursor`）。`event_id` はイベント1つ、`status` は `pending`・`delivered`・`failed` のどれかで、`subscription_id` は配信先（購読）1つで絞り込む。組み合わせてよい。他のワークスペースの配信先のIDでは空の一覧を返す |
 | `POST /api/v1/deliveries/:id/retry` | 失敗した配信の再送（下記）。200で更新後の配信を返す |
 
 - イベントの一覧の各イベントには `delivery_summary`（`{ "delivered", "pending", "failed" }`、そのイベントの配信の状態ごとの件数）が付きます。配信がなければすべて0です。MCPの `list_events` には付きません。
+- イベントの一覧の各イベントには `email` が付きます。`type` が `email.received` のイベントでは `{ "from", "attachment_count" }`（`from` はラベル `from` の値か `null`、`attachment_count` はHTMLの本文 `body.html` を除いた添付の数）、それ以外は `null` です。MCPの `list_events` には付きません。
 - イベントの一覧と詳細の各イベントには `screening` が付きます。判定していないイベントは `null` で、判定したイベントは `{ "status", "score", "error", "retryable", "requested_at", "screened_at", "released_at" }` です。MCPのツールとWebhookには付きません。
 - 配信の記録の各配信には `event`（`{ "type", "summary", "source_name" }`）が付きます。会話のメッセージでは、`source_name` は会話の隠し送信元の名前です。イベントが見つからなければ `null` です。
 - 絞り込みの値の誤り（形式の誤り、空文字、同じパラメータを2回以上指定）は400で、コードは `invalid_cursor`・`invalid_type`・`invalid_source_id`・`invalid_screening`・`invalid_event_id`・`invalid_status`・`invalid_subscription_id` です。`type` の形式は送信元が渡す `type` と同じです。
@@ -322,6 +325,50 @@ RPCでは同じ分類のエラーを、種類を判別できる形で返しま�
   - `Content-Type`：保存されたContent-Typeを `;` の前で切って小文字にし、`image/png`・`image/jpeg`・`image/gif`・`image/webp` ならそのまま、`application/json` なら `application/json; charset=utf-8`、`text/plain`・`text/csv` は `charset` がないか `utf-8` のときだけ `; charset=utf-8` を付けて返します。それ以外（HTML、SVG、他の文字コードのテキストなど）は `application/octet-stream` です。
   - `Content-Disposition: attachment; filename*=UTF-8''<名前>`（RFC 5987でエンコード。常に `attachment`）
   - `X-Content-Type-Options: nosniff`、`Content-Security-Policy: sandbox; default-src 'none'`、`Cache-Control: private, no-store`、`Content-Length`
+
+### メールの表示
+
+`type` が `email.received` のイベント（会話のメッセージを除く）を、管理画面でメールとして読むためのAPIです。保留中・判定待ちのイベントも読めます。MCPとWebhookの内容は変わりません。
+
+- `type` は予約されていないため、HTTPやService Bindingsの送信元も同じ形のイベントを作れます。メールの受付から届いたものかは区別しません。応答には送信元（`source`）を必ず含めます。
+- 他のワークスペースのイベント、会話のメッセージ、`type` が `email.received` でないイベント、IDの形式の誤りは404 `not_found` です。`/email/html` はHTMLの本文がないときも404です。
+
+`GET /api/v1/events/:id/email` の応答（200）：
+
+```json
+{
+  "event_id": "evt_…",
+  "source": { "id": "src_…", "name": "mail" },
+  "from_address": "alice@example.com",
+  "headers": {
+    "from": "Alice <Alice@Example.COM>",
+    "to": "Bob <bob@example.org>",
+    "cc": null,
+    "reply_to": null,
+    "subject": "Disk is full",
+    "date": "Mon, 2 Nov 2026 01:02:03 +0000",
+    "message_id": "<m1@example.com>"
+  },
+  "text": "The disk of db-1 is full.\nPlease check.\n",
+  "text_truncated": false,
+  "html_only": false,
+  "html": { "data_ref": "dat_…", "size": 1234 },
+  "attachments": [{ "data_ref": "dat_…", "name": "report.pdf", "content_type": "application/pdf", "size": 2048 }]
+}
+```
+
+- `from_address`：ラベル `from` の値（なければ `null`）。
+- `headers`：本文（`text/plain; charset=utf-8` のもの）の先頭にメールの受付が書いた `From`・`To`・`Cc`・`Reply-To`・`Subject`・`Date`・`Message-ID` の行です。メールに書かれていた値で、確かめたものではありません。最初の空行までのすべての行がこの順のこれらの行（各1回まで）で、`From` の行がラベル `from` を含み（`from` がなければ `From` の行もない）、`Subject` の行を概要と同じ規則で1行にしたものが `summary` と一致する（`Subject` の行がなければ `summary` が `(件名なし)`）ときだけ取り出します。それ以外はすべて `null` で、本文全体を `text` にします。
+- `text`：ヘッダーの行の後ろの本文。先頭の256 KiBまでで、切ったときは `text_truncated` が `true` です。本文がない、Content-Typeが違う、R2にオブジェクトがないときは `null`（ヘッダーもすべて `null`）です。
+- `html_only`：テキストの本文がなくHTMLの本文だけのメール（`text` がメールの受付の書く注記）のとき `true`。
+- `html`：HTMLの本文（`role` が `attachment`、`position` が1、名前が `body.html`、Content-Typeがちょうど `text/html; charset=utf-8` のデータ）があれば `{ "data_ref", "size" }`、なければ `null`。
+- `attachments`：本文とHTMLの本文を除いたデータ（`position` の順）。送信者が付けた `body.html` は添付として出ます。ただし、HTMLの本文がないメールで、送信者の添付のContent-Typeが引用符付きで `text/html; charset=utf-8` になったものはHTMLの本文として扱います（既知の制限）。
+
+`GET /api/v1/events/:id/email/html` の応答（200）は `{ "text", "source", "truncated" }` です。
+
+- `body.html` の先頭256 KiB（`truncated`）を、HTMLとして描画せずにテキストへ変換したもの（`text`）と、そのままのもの（`source`）です。変換はWorkersの `HTMLRewriter` で行い、`script`・`style`・`title`・`noscript`・`template`・`svg` の中身を除き、ブロック要素・`br`・`hr` で改行し、`li` に「・」、表のセルにタブを入れ、画像は `[画像: alt]` か `[画像]` にします。リンクは、テキストが `href`（`http:`・`https:`・`mailto:` のものだけ）と違えば後ろに ` <href>` を付けます。文字参照は数値参照と一部の名前付き参照だけをデコードします。
+- 変換に失敗したときは `text` が `null`、R2にオブジェクトがないときは `text` と `source` が `null` です。
+- HTMLの変換をこのAPIに分けているのは、変換がWorkersのCPU時間の上限を超えて失敗しても、`/email` の表示（ヘッダー・本文・添付）に影響させないためです。
 
 ### 配信の再送
 

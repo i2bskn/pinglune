@@ -9,6 +9,8 @@ import type {
   DeliveryList,
   DeliveryStatus,
   EmailAddressList,
+  EmailHtmlView,
+  EmailView,
   EventList,
   ManagedEventDetail,
   McpConnection,
@@ -159,6 +161,22 @@ export async function loadEventDetail(client: ApiClient, id: string): Promise<Lo
   const event = await request(() => client.api.v1.events[":id"].$get({ param: { id } }));
   if (event.kind !== "ok") return failure([event]);
   return { kind: "ready", data: event.value };
+}
+
+// The email view of an email.received event: its header lines, text and attachments.
+export async function loadEmailView(client: ApiClient, id: string): Promise<Loaded<EmailView>> {
+  if (!isValidId(id)) return { kind: "notFound" };
+  const view = await request(() => client.api.v1.events[":id"].email.$get({ param: { id } }));
+  if (view.kind !== "ok") return failure([view]);
+  return { kind: "ready", data: view.value };
+}
+
+// The HTML body of an email.received event converted to text, read only when it is shown.
+export async function loadEmailHtml(client: ApiClient, id: string): Promise<Loaded<EmailHtmlView>> {
+  if (!isValidId(id)) return { kind: "notFound" };
+  const html = await request(() => client.api.v1.events[":id"].email.html.$get({ param: { id } }));
+  if (html.kind !== "ok") return failure([html]);
+  return { kind: "ready", data: html.value };
 }
 
 // A page of the delivery list. cursor is the next_cursor of the previous page; eventId limits it to one event, status

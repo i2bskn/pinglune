@@ -2677,6 +2677,140 @@ textarea {
   margin-top: 1rem;
 }
 
+/* ---------- Email view (event detail) ---------- */
+
+/* The From of an email in the event list, above its subject. */
+.event-from {
+  min-width: 0;
+  font-size: 0.8125rem;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+/* The text and HTML switch of the body: buttons drawn as the filter tabs (.filter-tab sets the size, colors and
+   border; this takes back what the button style adds). */
+button.filter-tab {
+  gap: 0;
+  font-family: inherit;
+  line-height: 1.2;
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.filter-tab[aria-pressed="true"],
+.filter-tab[aria-pressed="true"]:hover {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.email-view {
+  min-width: 0;
+  margin: 1.25rem 0 0;
+}
+
+.email-source {
+  margin: 0 0 0.75rem;
+  font-size: 0.875rem;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.email-headers dd {
+  overflow-wrap: anywhere;
+}
+
+.email-headers .email-from {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.125rem;
+}
+
+.email-from-raw {
+  font-size: 0.8125rem;
+  color: var(--ink-3);
+}
+
+/* The text of an email: line breaks kept, long words and URLs wrapped, never a sideways scroll. */
+.email-text {
+  margin: 0 0 1rem;
+  padding: 1rem 1.25rem;
+  font-size: 0.9375rem;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+}
+
+.email-html-note {
+  max-width: none;
+  margin: 0 0 0.5rem;
+}
+
+/* The attachments: cards in two columns, one on phones. */
+.email-attachments {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin: 0 0 1.25rem;
+  padding: 0;
+  list-style: none;
+}
+
+.email-attachment {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+  padding: 0.75rem 1rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+.email-attachment-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.email-attachment-actions {
+  display: flex;
+}
+
+.email-attachment-actions .data-download {
+  margin-left: 0;
+}
+
+.email-attachment p[role] {
+  margin: 0;
+}
+
+@media (max-width: 639px) {
+  .email-attachments {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.email-error {
+  margin: 1.25rem 0 0;
+  padding: 1rem 1.25rem;
+  background: var(--danger-soft);
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  border-radius: var(--radius-lg);
+  overflow-wrap: anywhere;
+}
+
+.email-error > :first-child {
+  margin-top: 0;
+}
+
+.email-detail-heading {
+  margin-top: 2.25rem;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

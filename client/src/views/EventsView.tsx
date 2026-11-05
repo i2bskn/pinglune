@@ -1,5 +1,12 @@
 import { type FormEvent, useState } from "react";
-import type { DeliverySummary, EventListItem, EventScreening, EventSummary } from "../../../src/api/types";
+import type {
+  DeliverySummary,
+  EventListEmail,
+  EventListItem,
+  EventScreening,
+  EventSummary,
+} from "../../../src/api/types";
+import { EMAIL_EVENT_TYPE, revealBidiControls } from "../email";
 import { type EventFilterValues, deliverySummaryBadges, eventFilterOf, eventsPath, isFiltered } from "../events";
 import { formatDateTime, keepNumbersWithUnits } from "../format";
 import { Link } from "../Link";
@@ -28,6 +35,22 @@ export function EventsView({ client, path }: { client: ApiClient; path: string }
         <h1>イベント</h1>
         <p className="lead">送信元から受け取ったイベントです。新しいものから並びます。</p>
       </header>
+      <nav className="filter-tabs" aria-label="種類で絞り込む">
+        <Link
+          to={eventsPath({ ...filter, type: "" })}
+          className="filter-tab"
+          aria-current={filter.type === "" ? "page" : undefined}
+        >
+          すべて
+        </Link>
+        <Link
+          to={eventsPath({ ...filter, type: EMAIL_EVENT_TYPE })}
+          className="filter-tab"
+          aria-current={filter.type === EMAIL_EVENT_TYPE ? "page" : undefined}
+        >
+          メール
+        </Link>
+      </nav>
       <EventFilterForm filter={filter} data={state.data} />
       {state.data.events === null ? (
         <p role="alert">{state.data.eventsError}</p>
@@ -179,22 +202,35 @@ function EventList({
 }
 
 // One event in a list: its type and source, its summary, when it happened, its labels and, when given, how its
-// deliveries went.
+// deliveries went. An email event shows its From and the number of its attachments instead of the data.
 // hideSource leaves out the name of the source (on the screen of that source).
 export function EventRow({
   event,
   hideSource = false,
 }: {
-  event: EventSummary & { delivery_summary?: DeliverySummary; screening?: EventScreening | null };
+  event: EventSummary & {
+    delivery_summary?: DeliverySummary;
+    screening?: EventScreening | null;
+    email?: EventListEmail | null;
+  };
   hideSource?: boolean;
 }) {
   const summary = event.delivery_summary;
   const screening = event.screening ?? null;
+  const email = event.email ?? null;
+  const dataNote =
+    email === null
+      ? event.data_count > 0
+        ? `データ ${event.data_count} 件`
+        : "データなし"
+      : email.attachment_count > 0
+        ? `添付 ${email.attachment_count} 件`
+        : null;
   return (
     <li>
       <Link to={`/events/${event.event_id}`} className="event-link">
         <span className="event-head">
-          <span className="event-type">{event.type}</span>
+          <span className="event-type">{email === null ? event.type : "メール"}</span>
           {!hideSource && <span className="event-source">{event.source.name}</span>}
           {screening !== null && (
             <span className={SCREENING_BADGE_CLASSES[screening.status]} aria-label="判定">
@@ -205,10 +241,13 @@ export function EventRow({
             {formatDateTime(event.occurred_at)}
           </time>
         </span>
-        <span className="event-summary">{keepNumbersWithUnits(event.summary)}</span>
-        {(event.data_count > 0 || summary !== undefined) && (
+        {email !== null && email.from !== null && <span className="event-from">From: {revealBidiControls(email.from)}</span>}
+        <span className="event-summary">
+          {keepNumbersWithUnits(email === null ? event.summary : revealBidiControls(event.summary))}
+        </span>
+        {((email === null ? event.data_count > 0 : dataNote !== null) || summary !== undefined) && (
           <span className="event-meta">
-            <span>{event.data_count > 0 ? `データ ${event.data_count} 件` : "データなし"}</span>
+            {dataNote !== null && <span>{dataNote}</span>}
             {summary !== undefined && (
               <span className="event-deliveries" aria-label="配信">
                 {deliverySummaryBadges(summary).map((badge) => (

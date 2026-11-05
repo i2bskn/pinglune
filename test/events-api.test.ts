@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { EventDetail, EventList } from "../src/api/types";
+import type { EmailView, EventDetail, EventList } from "../src/api/types";
 import { env } from "cloudflare:workers";
 import type { SourceRow, UserRow } from "../src/db/schema";
 import {
@@ -7,6 +7,7 @@ import {
   createSource,
   createSubscription,
   createUser,
+  insertOpenConversations,
   login,
   personalWorkspaceOf,
   resetDb,
@@ -102,6 +103,7 @@ describe("GET /api/v1/events", () => {
           data_count: 2,
           delivery_summary: { delivered: 0, pending: 0, failed: 0 },
           screening: null,
+          email: null,
         },
       ],
       next_cursor: null,
@@ -344,5 +346,80 @@ describe("GET /api/v1/events/:id", () => {
       expect(res.status).toBe(404);
       expect(((await res.json()) as { error: { code: string } }).error.code).toBe("not_found");
     }
+  });
+});
+
+describe("GET /api/v1/events/:id/email", () => {
+  async function emailEvent(key: string, extra: Record<string, unknown> = {}): Promise<string> {
+    return ingest(key, { idempotency_key: crypto.randomUUID(), type: "email.received", summary: "Hello", ...extra });
+  }
+
+  it("shows an email.received event that a source sent over HTTP, with the source", async () => {
+    const id = await emailEvent(memberKey, {
+      labels: { from: "a@example.com" },
+      body: "From: A <a@example.com>\nSubject: Hello\n\nhi",
+    });
+    const res = await send(`/api/v1/events/${id}/email`, { cookies: memberCookies });
+    expect(res.status).toBe(200);
+    const view = (await res.json()) as EmailView;
+    expect(view.source).toEqual({ id: source.id, name: "app" });
+    expect(view.from_address).toBe("a@example.com");
+    expect(view.headers.from).toBe("A <a@example.com>");
+    expect(view.text).toBe("hi");
+    expect(view.html).toBeNull();
+  });
+
+  it("shows no header lines for a body of another Content-Type", async () => {
+    const id = await emailEvent(memberKey, {
+      labels: { from: "a@example.com" },
+      body: "From: A <a@example.com>\nSubject: Hello\n\nhi",
+      body_content_type: "text/plain",
+    });
+    const view = (await (await send(`/api/v1/events/${id}/email`, { cookies: memberCookies })).json()) as EmailView;
+    expect(view.headers.from).toBeNull();
+    expect(view.text).toBeNull();
+  });
+
+  it("answers 404 for another type, another workspace, a message of a conversation and a malformed ID", async () => {
+    const otherType = await ingest(memberKey, { idempotency_key: "t", type: "alert.observed", summary: "s" });
+    const theirs = await emailEvent(otherKey);
+    const message = await emailEvent(memberKey);
+    await insertOpenConversations(member, 1, null);
+    const conversation = await env.DB.prepare("SELECT id FROM conversations").first<{ id: string }>();
+    await env.DB.prepare("UPDATE events SET conversation_id = ? WHERE id = ?").bind(conversation?.id, message).run();
+    for (const id of [otherType, theirs, message, "evt_x"]) {
+      for (const path of ["email", "email/html"]) {
+        const res = await send(`/api/v1/events/${id}/${path}`, { cookies: memberCookies });
+        expect(res.status).toBe(404);
+        expect(((await res.json()) as { error: { code: string } }).error.code).toBe("not_found");
+      }
+    }
+  });
+
+  it("answers 404 for the HTML of an event without an HTML body", async () => {
+    const id = await emailEvent(memberKey, { body: "hi" });
+    expect((await send(`/api/v1/events/${id}/email/html`, { cookies: memberCookies })).status).toBe(404);
+  });
+
+  it("counts the attachments of the email events in the list, without the HTML body", async () => {
+    const form = new FormData();
+    form.append(
+      "metadata",
+      JSON.stringify({ idempotency_key: "m", type: "email.received", summary: "s", labels: { from: "a@example.com" } }),
+    );
+    form.append("body", new File(["b"], "b", { type: "text/plain; charset=utf-8" }));
+    form.append("attachments", new File(["<p>x</p>"], "body.html", { type: "text/html; charset=utf-8" }));
+    form.append("attachments", new File(["<p>y</p>"], "body.html", { type: "text/html" }));
+    form.append("attachments", new File(["a"], "a.txt", { type: "text/plain" }));
+    const mailId = await ingestForm(memberKey, form);
+    const bare = await emailEvent(memberKey);
+    const other = await ingest(memberKey, { idempotency_key: "o", type: "alert.observed", summary: "s" });
+
+    const body = (await (await list()).json()) as EventList;
+    expect(body.events.map((e) => [e.event_id, e.email])).toEqual([
+      [other, null],
+      [bare, { from: null, attachment_count: 0 }],
+      [mailId, { from: "a@example.com", attachment_count: 2 }],
+    ]);
   });
 });

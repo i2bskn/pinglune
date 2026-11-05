@@ -149,7 +149,12 @@ export type DeliverySummary = { delivered: number; pending: number; failed: numb
 export interface EventListItem extends EventSummary {
   delivery_summary: DeliverySummary;
   screening: EventScreening | null;
+  // Only for an event of type email.received (any source may send one, not only the email intake); null otherwise.
+  email: EventListEmail | null;
 }
+
+// from: labels.from, or null. attachment_count: the attachments without the HTML body (body.html).
+export type EventListEmail = { from: string | null; attachment_count: number };
 
 export type ScreeningStatus = "pending" | "passed" | "held" | "released";
 
@@ -182,6 +187,39 @@ export type EventDetail = EventSummary & { conversation_id: string | null; data:
 
 // An event of GET /api/v1/events/:id and of the screening operations: EventDetail with the screening.
 export type ManagedEventDetail = EventDetail & { screening: EventScreening | null };
+
+// The header lines of the body of an email.received event, as the body has them (what the message said, not checked).
+// All null when the body has no header block that matches the event (src/events/email-view.ts).
+export type EmailHeaders = {
+  from: string | null;
+  to: string | null;
+  cc: string | null;
+  reply_to: string | null;
+  subject: string | null;
+  date: string | null;
+  message_id: string | null;
+};
+
+export type EmailAttachment = { data_ref: string; name: string; content_type: string; size: number };
+
+// GET /api/v1/events/:id/email. text: the text of the body after the header lines, up to 256 KiB (text_truncated);
+// null when the body cannot be read. html_only: the message had only an HTML body. html: the HTML body, read as text
+// with GET /api/v1/events/:id/email/html. attachments: the data in position order without the body and the HTML body.
+export type EmailView = {
+  event_id: string;
+  source: { id: string; name: string };
+  from_address: string | null;
+  headers: EmailHeaders;
+  text: string | null;
+  text_truncated: boolean;
+  html_only: boolean;
+  html: { data_ref: string; size: number } | null;
+  attachments: EmailAttachment[];
+};
+
+// GET /api/v1/events/:id/email/html: the first 256 KiB of the HTML body (truncated) converted to text, and as it is.
+// text is null when the conversion failed; both are null when the object is missing.
+export type EmailHtmlView = { text: string | null; source: string | null; truncated: boolean };
 
 // The response of POST /ingest/v1/events: 201 for a new event, 200 for a retry of an existing one.
 export type IngestResponse = { event_id: string; duplicate: boolean };

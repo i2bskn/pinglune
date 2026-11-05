@@ -46,7 +46,7 @@ const HTML_NAME = "body.html";
 const HTML_CONTENT_TYPE = "text/html; charset=utf-8";
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
 const NO_SUBJECT = "(件名なし)";
-const HTML_ONLY_TEXT = "（テキストの本文はありません。HTML の本文は添付の body.html にあります）";
+export const HTML_ONLY_TEXT = "（テキストの本文はありません。HTML の本文は添付の body.html にあります）";
 const NO_BODY_TEXT = "（本文はありません）";
 // The names of the dropped attachments listed in the note of the body.
 const MAX_DROPPED_NAMES = 10;
@@ -340,7 +340,7 @@ function truncate(value: string, maxLength: number): string {
 }
 
 // The decoded subject on one line, within the limit of the summary.
-function toSummary(subject: string | undefined): string {
+export function toSummary(subject: string | undefined): string {
   const line = (subject ?? "").replace(LINE_BREAKING, " ").replace(/ {2,}/g, " ").trim();
   const summary = truncate(line, SUMMARY_MAX_LENGTH).trim();
   return summary === "" ? NO_SUBJECT : summary;

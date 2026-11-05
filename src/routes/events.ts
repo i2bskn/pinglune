@@ -1,18 +1,34 @@
 import { Hono, type Context } from "hono";
 import { validator } from "hono/validator";
-import type { EventList, ManagedEventDetail } from "../api/types";
+import type { EmailHtmlView, EmailView, EventList, ManagedEventDetail } from "../api/types";
 import { apiError, requireUser } from "../auth/middleware";
 import { clock } from "../clock";
 import { enqueuePendingDeliveries, enqueueScreening } from "../deliveries/enqueue";
 import { deliverySummaries } from "../deliveries/queries";
 import type { AppEnv } from "../env";
 import {
+  emptyHeaders,
+  htmlToText,
+  isEmailBodyData,
+  isHtmlBodyData,
+  isHtmlOnlyText,
+  parseEmailBody,
+  readTextPrefix,
+} from "../events/email-view";
+import {
+  countEmailAttachments,
+  findEmailEvent,
   findEventDataOfEvent,
   findWorkspaceEvent,
   findWorkspaceEventScreening,
   isWorkspaceProgramSource,
+  listEventDataRows,
   listWorkspaceEvents,
+  sourceNames,
+  type EmailEventRecord,
+  type EventDataListRow,
 } from "../events/queries";
+import { EMAIL_EVENT_TYPE } from "../intake/email";
 import { isRetryableScreeningError } from "../screening/state";
 import { DATA_REF_PATTERN, EVENT_ID_PATTERN, SOURCE_ID_PATTERN } from "../ids";
 import { TYPE_MAX_LENGTH, TYPE_PATTERN } from "../intake/validation";
@@ -86,6 +102,20 @@ async function managedEvent(c: Context<AppEnv>, id: string): Promise<ManagedEven
   if (!event) return null;
   const screening = await findWorkspaceEventScreening(db, workspaceId, id);
   return { ...event, screening: screening ?? null };
+}
+
+// An email.received event of programs in the workspace with its data rows, or null (404): another workspace's
+// event, a message of a conversation and an event of another type are not found.
+async function findEmailEventWithData(
+  c: Context<AppEnv>,
+  id: string,
+): Promise<{ event: EmailEventRecord; rows: EventDataListRow[] } | null> {
+  const db = c.get("db");
+  const workspaceId = c.get("workspace").id;
+  const event = await findEmailEvent(db, workspaceId, id);
+  if (!event || event.type !== EMAIL_EVENT_TYPE || event.conversationId !== null) return null;
+  const rows = await listEventDataRows(db, workspaceId, id);
+  return { event, rows };
 }
 
 const enqueueFailedMessage = "配信を受け付けられませんでした。しばらくしてからもう一度お試しください";
@@ -163,11 +193,18 @@ const eventsApi = new Hono<AppEnv>()
       workspaceId,
       events.map((event) => event.event_id),
     );
+    // The list has no messages of conversations, so every email.received event here gets the email item.
+    const emailIds = events.filter((event) => event.type === EMAIL_EVENT_TYPE).map((event) => event.event_id);
+    const attachmentCounts = await countEmailAttachments(db, workspaceId, emailIds);
     const body: EventList = {
       events: events.map((event) => ({
         ...event,
         delivery_summary: summaries.get(event.event_id) ?? { delivered: 0, pending: 0, failed: 0 },
         screening: screenings.get(event.event_id) ?? null,
+        email:
+          event.type === EMAIL_EVENT_TYPE
+            ? { from: event.labels.from ?? null, attachment_count: attachmentCounts.get(event.event_id) ?? 0 }
+            : null,
       })),
       next_cursor: nextCursor,
     };
@@ -179,6 +216,73 @@ const eventsApi = new Hono<AppEnv>()
     const event = await managedEvent(c, id);
     if (!event) return apiError(c, 404, "not_found", eventNotFound);
     return c.json(event, 200);
+  })
+  // An email.received event read as a message: the header lines and the text of the body, the HTML body (converted
+  // by /email/html, so that a failure there leaves this one working) and the attachments. Held and pending events are
+  // shown too: this is the management screen only.
+  .get("/:id/email", async (c) => {
+    const id = c.req.param("id");
+    if (!EVENT_ID_PATTERN.test(id)) return apiError(c, 404, "not_found", eventNotFound);
+    const found = await findEmailEventWithData(c, id);
+    if (!found) return apiError(c, 404, "not_found", eventNotFound);
+    const { event, rows } = found;
+    const names = await sourceNames(c.get("db"), [event.sourceId]);
+    const from = event.labels.from ?? null;
+
+    let headers = emptyHeaders();
+    let text: string | null = null;
+    let textTruncated = false;
+    const bodyRow = rows.find((row) => row.role === "body");
+    if (bodyRow !== undefined && isEmailBodyData(bodyRow)) {
+      const read = await readTextPrefix(c.env.EVENT_DATA, bodyRow);
+      if (read === null) {
+        console.error("email view: body object not found", { eventId: id, dataRef: bodyRow.id });
+      } else {
+        const parsed = parseEmailBody(read.text, { summary: event.summary, from });
+        headers = parsed.headers;
+        text = parsed.text;
+        textTruncated = read.truncated;
+      }
+    }
+    const htmlRow = rows.find(isHtmlBodyData);
+    const body: EmailView = {
+      event_id: event.id,
+      source: { id: event.sourceId, name: names.get(event.sourceId) ?? "" },
+      from_address: from,
+      headers,
+      text,
+      text_truncated: textTruncated,
+      html_only: text !== null && isHtmlOnlyText(text),
+      html: htmlRow === undefined ? null : { data_ref: htmlRow.id, size: htmlRow.size },
+      attachments: rows
+        .filter((row) => row.role === "attachment" && !isHtmlBodyData(row))
+        .map((row) => ({ data_ref: row.id, name: row.name, content_type: row.contentType, size: row.size })),
+    };
+    return c.json(body, 200);
+  })
+  // The HTML body of an email.received event converted to text, and its source, both from its first 256 KiB. 404
+  // when the event has no HTML body.
+  .get("/:id/email/html", async (c) => {
+    const id = c.req.param("id");
+    if (!EVENT_ID_PATTERN.test(id)) return apiError(c, 404, "not_found", eventNotFound);
+    const found = await findEmailEventWithData(c, id);
+    const htmlRow = found?.rows.find(isHtmlBodyData);
+    if (!found || htmlRow === undefined) return apiError(c, 404, "not_found", eventNotFound);
+    const read = await readTextPrefix(c.env.EVENT_DATA, htmlRow);
+    if (read === null) {
+      console.error("email view: HTML body object not found", { eventId: id, dataRef: htmlRow.id });
+      const missing: EmailHtmlView = { text: null, source: null, truncated: false };
+      return c.json(missing, 200);
+    }
+    let text: string | null = null;
+    try {
+      text = await htmlToText(read.text);
+    } catch {
+      // Only the event: the error may carry what the sender wrote.
+      console.error("email view: converting the HTML body failed", { eventId: id });
+    }
+    const body: EmailHtmlView = { text, source: read.text, truncated: read.truncated };
+    return c.json(body, 200);
   })
   // Releases a held event and queues its deliveries. For a released event, only queues them again (a previous enqueue
   // may have failed). The first release is recorded; a later one does not overwrite it.

@@ -3,6 +3,7 @@ import type { EventData, EventDetail, EventScreening, EventSummary } from "../ap
 import type { Db } from "../db/client";
 import { botSources, eventData, events, sources, type EventDataRow } from "../db/schema";
 import { deliverableScreening, isRetryableScreeningError, parseScreeningStatus } from "../screening/state";
+import { isHtmlBodyData } from "./email-view";
 import type { EventFilter } from "./filter";
 
 export const EVENT_PAGE_SIZE = 50;
@@ -297,4 +298,74 @@ export async function isWorkspaceProgramSource(db: Db, workspaceId: string, sour
     .where(and(eq(sources.id, sourceId), eq(sources.workspaceId, workspaceId), eq(sources.kind, "program")))
     .get();
   return row !== undefined;
+}
+
+export type EmailEventRecord = {
+  id: string;
+  type: string;
+  summary: string;
+  labels: Record<string, string>;
+  sourceId: string;
+  conversationId: string | null;
+};
+
+// An event of the workspace with only what the email view needs, or undefined. The caller checks the type and the
+// conversation.
+export async function findEmailEvent(db: Db, workspaceId: string, id: string): Promise<EmailEventRecord | undefined> {
+  const row = await db
+    .select({
+      id: events.id,
+      type: events.type,
+      summary: events.summary,
+      labels: events.labels,
+      sourceId: events.sourceId,
+      conversationId: events.conversationId,
+    })
+    .from(events)
+    .where(and(eq(events.workspaceId, workspaceId), eq(events.id, id)))
+    .get();
+  return row === undefined ? undefined : { ...row, labels: parseLabels(row.labels) };
+}
+
+export type EventDataListRow = Pick<EventDataRow, "id" | "role" | "name" | "contentType" | "size" | "r2Key" | "position">;
+
+// The data rows of an event of the workspace, in position order.
+export function listEventDataRows(db: Db, workspaceId: string, eventId: string): Promise<EventDataListRow[]> {
+  return db
+    .select({
+      id: eventData.id,
+      role: eventData.role,
+      name: eventData.name,
+      contentType: eventData.contentType,
+      size: eventData.size,
+      r2Key: eventData.r2Key,
+      position: eventData.position,
+    })
+    .from(eventData)
+    .where(and(eq(eventData.workspaceId, workspaceId), eq(eventData.eventId, eventId)))
+    .orderBy(asc(eventData.position))
+    .all();
+}
+
+// The number of attachments of each event (event_id to the count), without the HTML body of the email intake. For
+// the email events of one page of the event list (up to EVENT_PAGE_SIZE IDs), in one query.
+export async function countEmailAttachments(db: Db, workspaceId: string, eventIds: string[]): Promise<Map<string, number>> {
+  const counts = new Map<string, number>();
+  if (eventIds.length === 0) return counts;
+  const rows = await db
+    .select({
+      eventId: eventData.eventId,
+      role: eventData.role,
+      name: eventData.name,
+      contentType: eventData.contentType,
+      position: eventData.position,
+    })
+    .from(eventData)
+    .where(and(eq(eventData.workspaceId, workspaceId), inArray(eventData.eventId, [...new Set(eventIds)])))
+    .all();
+  for (const row of rows) {
+    if (row.role !== "attachment" || isHtmlBodyData(row)) continue;
+    counts.set(row.eventId, (counts.get(row.eventId) ?? 0) + 1);
+  }
+  return counts;
 }

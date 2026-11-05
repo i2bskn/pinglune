@@ -36,7 +36,7 @@ const MESSAGE_NAME = "message.txt";
 const MESSAGE_CONTENT_TYPE = "text/plain; charset=utf-8";
 const SUMMARY_MAX_LENGTH = 2000;
 const SENDER_MAX_LENGTH = 64;
-const UTF8_BOUNDARY_MARGIN = 6;
+export const UTF8_BOUNDARY_MARGIN = 6;
 export const DEFAULT_MAX_AI_MESSAGES = 20;
 export const MAX_AI_MESSAGES_LIMIT = 100;
 export const MAX_PARTICIPANTS = 5;
