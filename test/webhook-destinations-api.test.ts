@@ -1,13 +1,14 @@
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Subscription, SubscriptionList } from "../src/api/types";
-import { clock } from "../src/clock";
+import { clock } from "@i2bskn/workers-app-core";
 import { MAX_ACTIVE_WEBHOOK_DESTINATIONS_PER_WORKSPACE } from "../src/routes/subscriptions";
 import type { SourceRow, UserRow } from "../src/db/schema";
 import { acceptEvent } from "../src/intake/service";
 import { findSubscriptionById, NO_EXPIRY } from "../src/subscriptions/queries";
 import { decryptSecret, subscriptionSecretKey } from "../src/subscriptions/secret";
 import {
+  appDb,
   createSource,
   createSubscription,
   createUser,
@@ -121,7 +122,7 @@ describe("POST /api/v1/subscriptions/webhooks", () => {
     const text = JSON.stringify(body);
     for (const hidden of [TOKEN, "abc-123", "automations", "x=1", alice.id]) expect(text).not.toContain(hidden);
 
-    const row = await findSubscriptionById(db, body.id);
+    const row = await findSubscriptionById(appDb, body.id);
     expect(row).toMatchObject({
       userId: alice.id,
       workspaceId: (await personalWorkspaceOf(alice)).id,
@@ -145,7 +146,7 @@ describe("POST /api/v1/subscriptions/webhooks", () => {
   it("stores no conditions as {}", async () => {
     const body = await created();
     expect(body.arguments).toEqual({});
-    expect((await findSubscriptionById(db, body.id))?.arguments).toBe("{}");
+    expect((await findSubscriptionById(appDb, body.id))?.arguments).toBe("{}");
   });
 
   it("allows the same name twice", async () => {
@@ -289,13 +290,13 @@ describe("POST /api/v1/subscriptions/:id/delete", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ id: destination.id, kind: "webhook", status: "unsubscribed", updated_at: now });
     const ended = now;
-    expect((await findSubscriptionById(db, destination.id))?.unsubscribedAt).toBe(ended);
+    expect((await findSubscriptionById(appDb, destination.id))?.unsubscribedAt).toBe(ended);
 
     now += 1000;
     const again = await remove(destination.id);
     expect(again.status).toBe(200);
     expect(await again.json()).toMatchObject({ status: "unsubscribed", updated_at: ended });
-    expect((await findSubscriptionById(db, destination.id))?.unsubscribedAt).toBe(ended);
+    expect((await findSubscriptionById(appDb, destination.id))?.unsubscribedAt).toBe(ended);
   });
 
   it("returns 404 for another workspace's destination", async () => {
@@ -305,7 +306,7 @@ describe("POST /api/v1/subscriptions/:id/delete", () => {
       code: "not_found",
       message: "配信先が見つかりません",
     });
-    expect((await findSubscriptionById(db, theirs.id))?.unsubscribedAt).toBeNull();
+    expect((await findSubscriptionById(appDb, theirs.id))?.unsubscribedAt).toBeNull();
   });
 
   it("stops an MCP subscription", async () => {
@@ -313,13 +314,13 @@ describe("POST /api/v1/subscriptions/:id/delete", () => {
     const res = await remove(subscription.id);
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ id: subscription.id, kind: "mcp", status: "unsubscribed", updated_at: now });
-    expect((await findSubscriptionById(db, subscription.id))?.unsubscribedAt).toBe(now);
+    expect((await findSubscriptionById(appDb, subscription.id))?.unsubscribedAt).toBe(now);
   });
 
   it("returns 404 for another workspace's MCP subscription", async () => {
     const subscription = await createSubscription({ user: bob });
     expect(await errorOf(await remove(subscription.id))).toMatchObject({ status: 404, code: "not_found" });
-    expect((await findSubscriptionById(db, subscription.id))?.unsubscribedAt).toBeNull();
+    expect((await findSubscriptionById(appDb, subscription.id))?.unsubscribedAt).toBeNull();
   });
 
   it.each(["sub_123", "sub_0123456789ABCDEF0123456789ABCDEF", "x"])("returns 404 for the malformed ID %s", async (id) => {
@@ -380,7 +381,7 @@ describe("deliveries to webhook destinations", () => {
   // A webhook destination created through the API, delivered to by a bot linked to alice's source.
   async function routed(body: Body = {}): Promise<Subscription> {
     const destination = await created(body);
-    const row = await findSubscriptionById(db, destination.id);
+    const row = await findSubscriptionById(appDb, destination.id);
     if (!row) throw new Error("created webhook destination not found");
     await routeToBot(row, [aliceSource.id]);
     return destination;
@@ -413,7 +414,7 @@ describe("the kind column", () => {
     )
       .bind("sub_ffffffffffffffffffffffffffffffff", alice.id, workspace.id, now + 1000, now, now)
       .run();
-    const row = await findSubscriptionById(db, "sub_ffffffffffffffffffffffffffffffff");
+    const row = await findSubscriptionById(appDb, "sub_ffffffffffffffffffffffffffffffff");
     expect(row).toMatchObject({ kind: "mcp", name: null });
   });
 });

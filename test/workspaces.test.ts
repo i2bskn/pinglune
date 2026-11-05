@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
-import { isUniqueViolation } from "../src/auth/users";
+import { isUniqueViolation } from "@i2bskn/workers-app-core";
 import type { UserRow } from "../src/db/schema";
 import { insertPersonalWorkspaceStatement } from "../src/workspaces/queries";
 import { countPersonalWorkspaces, countWorkspaces, createUser, resetDb } from "./helpers";

@@ -1,5 +1,5 @@
 import { and, eq } from "drizzle-orm";
-import type { Db } from "../db/client";
+import type { Db } from "@i2bskn/workers-app-core";
 import { workspaces, type WorkspaceRow } from "../db/schema";
 
 // Inserts the user's personal workspace only if the user exists and has none yet (idempotent).

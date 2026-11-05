@@ -3,16 +3,17 @@ import { createExecutionContext, createMessageBatch, getQueueResult } from "clou
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Subscription, SubscriptionList } from "../src/api/types";
-import { clock } from "../src/clock";
+import { clock } from "@i2bskn/workers-app-core";
 import type { SourceRow, SubscriptionRow, UserRow } from "../src/db/schema";
 import worker from "../src/index";
 import { acceptEvent } from "../src/intake/service";
 import { runDailyMaintenance } from "../src/maintenance/daily";
-import { mcpHandler } from "../src/mcp/handler";
+import { core } from "../src/core";
 import { MAX_ACTIVE_QUEUES_PER_WORKSPACE } from "../src/queues/constants";
 import { claimableDeliveriesStatement } from "../src/queues/queries";
 import { findSubscriptionById, NO_EXPIRY } from "../src/subscriptions/queries";
 import {
+  appDb,
   createQueue,
   createSource,
   createSubscription,
@@ -130,7 +131,7 @@ async function errorOf(res: Response): Promise<{ status: number; code: string; m
 // connectionId null is a connection without a row (a legacy connection), which is assigned to no bot.
 async function rpc(user: UserRow, connectionId: string | null, method: string, params: unknown): Promise<unknown> {
   const ctx = Object.assign(createExecutionContext(), {
-    props: { userId: user.id, authMode: "password", ...(connectionId === null ? {} : { connectionId }) },
+    props: { userId: user.id, authMode: "password", authorizedAt: clock.now(), ...(connectionId === null ? {} : { connectionId }) },
     auth: { token: "t", audience: `${ORIGIN}/mcp`, scope: ["mcp"], clientId: "test-client" },
   }) as unknown as OAuthResourceContext<unknown>;
   const request = new Request(`${ORIGIN}/mcp`, {
@@ -138,7 +139,7 @@ async function rpc(user: UserRow, connectionId: string | null, method: string, p
     headers: { Accept: MCP_ACCEPT, "Content-Type": "application/json" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
   });
-  const res = await mcpHandler.fetch(request, env, ctx);
+  const res = await core.mcpHandler.fetch(request, env, ctx);
   expect(res.status).toBe(200);
   const body = (await res.json()) as { result?: unknown; error?: unknown };
   expect(body.error).toBeUndefined();
@@ -200,7 +201,7 @@ describe("POST /api/v1/subscriptions/queues", () => {
       connection: null,
       bot: null,
     });
-    expect(await findSubscriptionById(db, body.id)).toMatchObject({
+    expect(await findSubscriptionById(appDb, body.id)).toMatchObject({
       userId: alice.id,
       workspaceId: (await personalWorkspaceOf(alice)).id,
       kind: "queue",
@@ -321,7 +322,7 @@ describe("deleting a polling queue", () => {
       code: "not_found",
       message: "配信先が見つかりません",
     });
-    expect((await findSubscriptionById(db, theirs.id))?.unsubscribedAt).toBeNull();
+    expect((await findSubscriptionById(appDb, theirs.id))?.unsubscribedAt).toBeNull();
   });
 });
 

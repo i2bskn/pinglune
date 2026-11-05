@@ -1,4 +1,4 @@
-import { describeError } from "../auth/middleware";
+import { describeError } from "@i2bskn/workers-app-core";
 
 // R2 deletes up to 1,000 keys per call.
 const R2_DELETE_BATCH = 1000;

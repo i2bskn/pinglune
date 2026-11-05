@@ -3,7 +3,8 @@
 
 import { Hono, type Context } from "hono";
 import type { ScreeningSettings, UpdateScreeningApiKeyRequest } from "../api/types";
-import { apiError, requireUser } from "../auth/middleware";
+import { apiError } from "@i2bskn/workers-app-core";
+import { requireUser } from "../core";
 import type { AppEnv } from "../env";
 import { deleteApiKey, normalizeApiKey, verifyAndSaveApiKey } from "../screening/api-key";
 import { findWorkspaceById } from "../workspaces/queries";
@@ -22,7 +23,7 @@ export function screeningApiKeyError(c: Context<AppEnv>, code: "invalid_api_key"
     : apiError(c, 503, "screening_unavailable", screeningUnavailableMessage);
 }
 
-const apiKeyBody = jsonBody<UpdateScreeningApiKeyRequest, { apiKey: unknown }>((body, c) => {
+const apiKeyBody = jsonBody<UpdateScreeningApiKeyRequest, { apiKey: unknown }, AppEnv>((body, c) => {
   const unknown = unknownField(body, ["api_key"]);
   if (unknown !== null) return apiError(c, 400, "unknown_field", `未知の項目があります: ${unknown}`);
   return { ok: true, value: { apiKey: body.api_key } };

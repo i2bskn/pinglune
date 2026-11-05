@@ -3,7 +3,7 @@
 
 import { and, desc, eq, inArray, lt, type SQL } from "drizzle-orm";
 import type { Delivery, DeliverySummary } from "../api/types";
-import type { Db } from "../db/client";
+import type { Db } from "@i2bskn/workers-app-core";
 import { deliveries, mcpConnections, subscriptions, type DeliveryRow } from "../db/schema";
 import { DELIVERABLE_EVENT_SQL } from "../screening/state";
 

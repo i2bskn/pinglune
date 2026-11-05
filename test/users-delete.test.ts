@@ -1,7 +1,6 @@
 import { env } from "cloudflare:workers";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { deleteUser } from "../src/auth/users";
 import { users, workspaces, type SubscriptionRow, type UserRow, type WorkspaceRow } from "../src/db/schema";
 import { NO_EXPIRY } from "../src/subscriptions/queries";
 import {
@@ -61,7 +60,6 @@ async function errorCode(res: Response): Promise<string> {
 let admin: UserRow;
 let member: UserRow;
 let adminCookies: SessionCookies;
-let memberCookies: SessionCookies;
 
 beforeEach(async () => {
   await resetDb();
@@ -69,7 +67,7 @@ beforeEach(async () => {
   admin = await createUser({ email: "admin@example.com", role: "admin", createdAt: T0 });
   member = await createUser({ email: "member@example.com", role: "member", createdAt: T0 });
   adminCookies = await login(admin.email);
-  memberCookies = await login(member.email);
+  await login(member.email);
 });
 
 afterEach(async () => {
@@ -228,31 +226,6 @@ describe("DELETE /api/v1/users/:id", () => {
     expect(await countSessions(admin.id)).toBe(1);
   });
 
-  it("signs the deleted user out", async () => {
-    expect((await send("/api/v1/me", { cookies: memberCookies })).status).toBe(200);
-    expect((await deleteRequest(member.id, adminCookies)).status).toBe(204);
-    expect((await send("/api/v1/me", { cookies: memberCookies })).status).toBe(401);
-  });
-
-  it("rejects the requester themselves, an unknown user, members and anonymous requests", async () => {
-    const self = await deleteRequest(admin.id, adminCookies);
-    expect(self.status).toBe(400);
-    expect(await errorCode(self)).toBe("cannot_delete_self");
-
-    const unknown = await deleteRequest(crypto.randomUUID(), adminCookies);
-    expect(unknown.status).toBe(404);
-    expect(await errorCode(unknown)).toBe("not_found");
-
-    const byMember = await deleteRequest(admin.id, memberCookies);
-    expect(byMember.status).toBe(403);
-    expect(await errorCode(byMember)).toBe("forbidden");
-
-    expect((await deleteRequest(member.id)).status).toBe(401);
-
-    expect(await readUser(admin.id)).toBeDefined();
-    expect(await readUser(member.id)).toBeDefined();
-  });
-
   it("lets an admin delete another admin when there are two", async () => {
     const second = await createUser({ email: "second@example.com", role: "admin", createdAt: T0 });
     const workspace = await personalWorkspaceOf(second);
@@ -262,23 +235,9 @@ describe("DELETE /api/v1/users/:id", () => {
   });
 });
 
-describe("deleteUser", () => {
-  it("returns ok and deletes the personal workspace", async () => {
-    const workspace = await personalWorkspaceOf(member);
-    expect(await deleteUser(db, member.id)).toEqual({ ok: true, workspaceId: workspace.id });
-    expect(await countRows("workspaces", [workspace.id])).toBe(0);
-  });
-
-  it("refuses to delete the last admin and deletes nothing", async () => {
-    const workspace = await personalWorkspaceOf(admin);
-    expect(await deleteUser(db, admin.id)).toEqual({ ok: false, error: "last_admin" });
-    expect(await readUser(admin.id)).toMatchObject({ role: "admin" });
-    expect(await countSessions(admin.id)).toBe(1);
-    expect(await countRows("workspaces", [workspace.id])).toBe(1);
-  });
-});
-
-describe("deleteUser under a race", () => {
+// The guard of the batch (src/core.ts userDeleteStatements), through DELETE /api/v1/users/:id. dbChangingBefore runs
+// the change right before the first statement of the hook.
+describe("DELETE /api/v1/users/:id under a race", () => {
   it("deletes nothing when the requester stops being an admin after the check", async () => {
     const target = await createUser({ email: "target@example.com", role: "admin", createdAt: T0 });
     await login(target.email);
@@ -288,7 +247,13 @@ describe("deleteUser under a race", () => {
       env.DB.prepare("UPDATE users SET role = 'member' WHERE id = ?").bind(admin.id).run(),
     );
 
-    expect(await deleteUser(raced, target.id)).toEqual({ ok: false, error: "last_admin" });
+    const res = await send(`/api/v1/users/${target.id}`, {
+      method: "DELETE",
+      cookies: adminCookies,
+      env: { DB: raced.$client },
+    });
+    expect(res.status).toBe(409);
+    expect(await errorCode(res)).toBe("last_admin");
 
     expect(await readUser(target.id)).toMatchObject({ role: "admin" });
     expect(await countSessions(target.id)).toBe(1);
@@ -310,7 +275,13 @@ describe("deleteUser under a race", () => {
       ]),
     );
 
-    expect(await deleteUser(raced, member.id)).toEqual({ ok: false, error: "not_found" });
+    const res = await send(`/api/v1/users/${member.id}`, {
+      method: "DELETE",
+      cookies: adminCookies,
+      env: { DB: raced.$client },
+    });
+    expect(res.status).toBe(404);
+    expect(await errorCode(res)).toBe("not_found");
     expect(await countRows("workspaces", [workspace.id])).toBe(0);
   });
 });

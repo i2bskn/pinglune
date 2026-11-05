@@ -6,7 +6,7 @@
 // with the secret before the subscription expires, which repairs it; webhook destinations have to be registered
 // again.
 
-import { base64UrlDecode, base64UrlEncode } from "../auth/tokens";
+import { base64UrlEncode } from "@i2bskn/workers-app-core";
 
 const SECRET_PREFIX = "whsec_";
 const MIN_SECRET_BYTES = 24;
@@ -19,6 +19,19 @@ const VERSION = "v1";
 const IV_BYTES = 12;
 
 const encoder = new TextEncoder();
+
+// The bytes of base64url text (without padding), or null. @i2bskn/workers-app-core exports only the encoder.
+function base64UrlDecode(text: string): Uint8Array<ArrayBuffer> | null {
+  if (!/^[A-Za-z0-9_-]*$/.test(text) || text.length % 4 === 1) return null;
+  try {
+    const binary = atob(text.replace(/-/g, "+").replace(/_/g, "/"));
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  } catch {
+    return null;
+  }
+}
 
 // The bytes of a whsec_<standard base64> secret (with or without padding) of 24 to 64 bytes, or null.
 export function parseWebhookSecret(value: unknown): Uint8Array<ArrayBuffer> | null {

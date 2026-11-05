@@ -3,11 +3,11 @@ import { createExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { EventList, ManagedEventDetail, ScreeningSettings, Source } from "../src/api/types";
-import { createDb } from "../src/db/client";
+import { clock, createDb } from "@i2bskn/workers-app-core";
 import type { SourceRow, SubscriptionRow, UserRow, WorkspaceRow } from "../src/db/schema";
 import { acceptEvent } from "../src/intake/service";
 import type { IntakeInput } from "../src/intake/validation";
-import { mcpHandler } from "../src/mcp/handler";
+import { core } from "../src/core";
 import { claimQueueDeliveries } from "../src/queues/queries";
 import { decryptApiKey, encryptApiKey } from "../src/screening/api-key";
 import {
@@ -500,7 +500,7 @@ type ToolResult = { isError?: boolean; content: { type: string; text: string }[]
 
 async function callTool(connectionId: string, name: string, args: Record<string, unknown>): Promise<ToolResult> {
   const ctx = Object.assign(createExecutionContext(), {
-    props: { userId: owner.id, authMode: "password", connectionId },
+    props: { userId: owner.id, authMode: "password", authorizedAt: clock.now(), connectionId },
     auth: { token: "t", audience: `${ORIGIN}/mcp`, scope: ["mcp"], clientId: "test-client" },
   }) as unknown as OAuthResourceContext<unknown>;
   const request = new Request(`${ORIGIN}/mcp`, {
@@ -508,7 +508,7 @@ async function callTool(connectionId: string, name: string, args: Record<string,
     headers: { Accept: "application/json, text/event-stream", "Content-Type": "application/json" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
   });
-  const res = await mcpHandler.fetch(request, env, ctx);
+  const res = await core.mcpHandler.fetch(request, env, ctx);
   expect(res.status).toBe(200);
   return ((await res.json()) as { result: ToolResult }).result;
 }

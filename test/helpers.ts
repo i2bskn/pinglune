@@ -1,14 +1,20 @@
-import { createExecutionContext } from "cloudflare:test";
+import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { eq } from "drizzle-orm";
-import { hashPassword } from "../src/auth/password";
-import { createDb, type Db } from "../src/db/client";
+import { drizzle } from "drizzle-orm/d1";
+import { createDb } from "@i2bskn/workers-app-core";
+import {
+  createTestHelpers,
+  TEST_JWT_SECRET,
+  type RequestOptions as CoreRequestOptions,
+  type SessionCookies as CoreSessionCookies,
+} from "@i2bskn/workers-app-core/testing";
+import * as schema from "../src/db/schema";
 import {
   apiKeys,
   emailAddresses,
   sources,
   subscriptions,
-  users,
   workspaces,
   type SourceRow,
   type SubscriptionRow,
@@ -33,30 +39,56 @@ import { NO_EXPIRY } from "../src/subscriptions/queries";
 import { encryptSecret, subscriptionSecretKey } from "../src/subscriptions/secret";
 import { insertPersonalWorkspaceStatement } from "../src/workspaces/queries";
 
+// From the test helpers of @i2bskn/workers-app-core. TEST_JWT_SECRET is the JWT_SECRET of vitest.config.ts, which the
+// subscription secrets are encrypted with.
+export {
+  D1_MAX_BOUND_VALUES,
+  PASSWORD,
+  TEST_JWT_SECRET,
+  type LargeBind,
+  type SetCookie,
+} from "@i2bskn/workers-app-core/testing";
+
 export const ORIGIN = "https://pinglune.test";
 export const OIDC_ORIGIN = "https://wiki.example.com";
-export const PASSWORD = "correct horse battery";
 
-export const db = createDb(env.DB);
+// Login, users and requests through the Worker entry point (OAuthProvider), like production.
+const helpers = createTestHelpers({
+  worker,
+  env,
+  createExecutionContext,
+  waitOnExecutionContext,
+  brandId: "pinglune",
+  origin: ORIGIN,
+});
+
+export const { send, setCookies, sessionCookies, login, d1With, countTable, dbChangingBefore, d1RecordingLargeBinds } =
+  helpers;
+
+export type RequestOptions = CoreRequestOptions<Cloudflare.Env>;
+export type SessionCookies = CoreSessionCookies<"pinglune">;
+
+// With the schema of pinglune, for db.query.* in the tests.
+export const db = drizzle(env.DB, { schema });
+// Without a schema, like the Db of the app: for the src functions that take a Db.
+export const appDb = createDb(env.DB);
 
 export async function resetDb(): Promise<void> {
-  await env.DB.batch([
-    // Children first.
-    env.DB.prepare("DELETE FROM deliveries"),
-    env.DB.prepare("DELETE FROM event_data"),
-    env.DB.prepare("DELETE FROM events"),
-    env.DB.prepare("DELETE FROM conversation_participants"),
-    env.DB.prepare("DELETE FROM conversations"),
-    env.DB.prepare("DELETE FROM mcp_connections"),
-    env.DB.prepare("DELETE FROM bot_sources"),
-    env.DB.prepare("DELETE FROM bots"),
-    env.DB.prepare("DELETE FROM api_keys"),
-    env.DB.prepare("DELETE FROM email_addresses"),
-    env.DB.prepare("DELETE FROM sources"),
-    env.DB.prepare("DELETE FROM subscriptions"),
-    env.DB.prepare("DELETE FROM sessions"),
-    env.DB.prepare("DELETE FROM workspaces"),
-    env.DB.prepare("DELETE FROM users"),
+  // Children first; then the package deletes sessions and users.
+  await helpers.resetDb([
+    "deliveries",
+    "event_data",
+    "events",
+    "conversation_participants",
+    "conversations",
+    "mcp_connections",
+    "bot_sources",
+    "bots",
+    "api_keys",
+    "email_addresses",
+    "sources",
+    "subscriptions",
+    "workspaces",
   ]);
 }
 
@@ -93,108 +125,17 @@ export const oidcEnv: Partial<Bindings> = {
   ALLOWED_EMAILS: OIDC_ALLOWED_EMAILS,
 };
 
-export type RequestOptions = {
-  method?: string;
-  cookies?: Record<string, string>;
-  headers?: Record<string, string>;
-  form?: Record<string, string>;
-  json?: unknown;
-  // Sent as is, without a Content-Type.
-  body?: BodyInit;
-  env?: Partial<Bindings>;
-  // Passed to the Worker as is, without the per-request copy. Overrides env.
-  sharedEnv?: Cloudflare.Env;
-  // Origin header for non-GET requests. Defaults to the request origin; null omits it.
-  origin?: string | null;
-};
-
-export async function send(url: string, options: RequestOptions = {}): Promise<Response> {
-  const fullUrl = new URL(url, ORIGIN);
-  const method =
-    options.method ?? (options.form || options.json !== undefined || options.body !== undefined ? "POST" : "GET");
-  const headers = new Headers(options.headers);
-  const origin = options.origin === undefined ? fullUrl.origin : options.origin;
-  if (method !== "GET" && method !== "HEAD" && origin !== null) {
-    headers.set("Origin", origin);
-  }
-  if (options.cookies) {
-    headers.set(
-      "Cookie",
-      Object.entries(options.cookies)
-        .map(([k, v]) => `${k}=${v}`)
-        .join("; "),
-    );
-  }
-  let body: BodyInit | undefined;
-  if (options.form) {
-    body = new URLSearchParams(options.form);
-    headers.set("Content-Type", "application/x-www-form-urlencoded");
-  } else if (options.json !== undefined) {
-    body = typeof options.json === "string" ? options.json : JSON.stringify(options.json);
-    headers.set("Content-Type", "application/json");
-  } else if (options.body !== undefined) {
-    body = options.body;
-  }
-  const request = new Request(fullUrl, { method, headers, body, redirect: "manual" });
-  // Through the Worker entry point (OAuthProvider), like production.
-  return worker.fetch(request, options.sharedEnv ?? { ...env, ...options.env }, createExecutionContext());
-}
-
-export type SetCookie = { value: string; maxAge: number | null; raw: string };
-
-export function setCookies(res: Response): Record<string, SetCookie> {
-  const result: Record<string, SetCookie> = {};
-  for (const raw of res.headers.getSetCookie()) {
-    const [pair = "", ...attributes] = raw.split(";").map((s) => s.trim());
-    const index = pair.indexOf("=");
-    const maxAge = attributes.find((a) => a.toLowerCase().startsWith("max-age="));
-    result[pair.slice(0, index)] = {
-      value: pair.slice(index + 1),
-      maxAge: maxAge ? Number(maxAge.split("=")[1]) : null,
-      raw,
-    };
-  }
-  return result;
-}
-
-export type SessionCookies = { "__Host-pinglune_at": string; "__Host-pinglune_rt": string };
-
-export function sessionCookies(res: Response): SessionCookies {
-  const cookies = setCookies(res);
-  const at = cookies["__Host-pinglune_at"]?.value;
-  const rt = cookies["__Host-pinglune_rt"]?.value;
-  if (!at || !rt) throw new Error(`session cookies are missing: ${res.headers.getSetCookie().join(" | ")}`);
-  return { "__Host-pinglune_at": at, "__Host-pinglune_rt": rt };
-}
-
-export async function createUser(params: {
+// A user with their personal workspace, created in one batch like the userCreatedStatements hook of src/core.ts.
+export function createUser(params: {
   email: string;
   role?: "admin" | "member";
   password?: string | null;
   createdAt?: number;
 }): Promise<UserRow> {
-  const now = params.createdAt ?? Date.now();
-  const password = params.password === undefined ? PASSWORD : params.password;
-  const [user] = await db
-    .insert(users)
-    .values({
-      id: crypto.randomUUID(),
-      email: params.email,
-      role: params.role ?? "member",
-      passwordHash: password === null ? null : await hashPassword(password),
-      createdAt: now,
-      updatedAt: now,
-    })
-    .returning();
-  if (!user) throw new Error("failed to create user");
-  await insertPersonalWorkspaceStatement(env.DB, user.id, now).run();
-  return user;
-}
-
-export async function login(email: string, password = PASSWORD): Promise<SessionCookies> {
-  const res = await send("/auth/login", { form: { email, password, next: "/" } });
-  if (res.status !== 303) throw new Error(`login failed: ${res.status}`);
-  return sessionCookies(res);
+  return helpers.createUser({
+    ...params,
+    userCreatedStatements: (d1, id, now) => [insertPersonalWorkspaceStatement(d1, id, now)],
+  });
 }
 
 export async function countWorkspaces(): Promise<number> {
@@ -209,51 +150,6 @@ export async function countPersonalWorkspaces(userId: string): Promise<number> {
     .bind(userId)
     .first<{ count: number }>();
   return row?.count ?? 0;
-}
-
-// A Db whose D1 binding runs before() once, right before the first statement matching pattern runs (alone
-// or in a batch), as if another request changed the data between the checks of a service and its write.
-export function dbChangingBefore(pattern: RegExp, before: () => Promise<unknown>): Db {
-  const real = env.DB;
-  const wrapped = new WeakMap<object, D1PreparedStatement>();
-  let done = false;
-  async function runBefore() {
-    if (done) return;
-    done = true;
-    await before();
-  }
-  const d1 = new Proxy(real, {
-    get(target, prop) {
-      if (prop === "prepare") {
-        return (query: string) => {
-          const statement = target.prepare(query);
-          if (!pattern.test(query)) return statement;
-          return {
-            bind: (...values: unknown[]) => {
-              const bound = statement.bind(...values);
-              const wrapper = {
-                all: async () => (await runBefore(), bound.all()),
-                raw: async () => (await runBefore(), bound.raw()),
-                run: async () => (await runBefore(), bound.run()),
-                first: async () => (await runBefore(), bound.first()),
-              };
-              wrapped.set(wrapper, bound);
-              return wrapper;
-            },
-          };
-        };
-      }
-      if (prop === "batch") {
-        return async (statements: object[]) => {
-          if (statements.some((statement) => wrapped.has(statement))) await runBefore();
-          return target.batch(statements.map((statement) => wrapped.get(statement) ?? (statement as D1PreparedStatement)));
-        };
-      }
-      const value: unknown = Reflect.get(target, prop, target);
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
-  return createDb(d1);
 }
 
 // Inserts open conversations of the user's personal workspace directly, started by the bot (or on the screen with
@@ -339,59 +235,6 @@ export async function createEmailAddress(
   return localPart;
 }
 
-export async function countTable(table: string): Promise<number> {
-  const row = await env.DB.prepare(`SELECT COUNT(*) AS count FROM ${table}`).first<{ count: number }>();
-  return row?.count ?? 0;
-}
-
-// A D1 binding with some methods replaced, e.g. batch.
-export function d1With(overrides: Partial<Record<keyof D1Database, unknown>>): D1Database {
-  return new Proxy(env.DB, {
-    get(target, prop) {
-      if (prop in overrides) return overrides[prop as keyof D1Database];
-      const value: unknown = Reflect.get(target, prop, target);
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
-}
-
-// The most values that D1 accepts in one statement.
-export const D1_MAX_BOUND_VALUES = 100;
-
-export type LargeBind = { sql: string; count: number };
-
-// A D1 binding that records the statements bound with more than D1_MAX_BOUND_VALUES values, which the local D1 may
-// accept but D1 does not. Nothing is thrown, since some callers (acceptEvent) swallow errors: the tests check that
-// large is empty. prepare returns the real statement with only bind replaced, and bind returns the real bound
-// statement, so that batch and the statements run without bind work as they are.
-export function d1RecordingLargeBinds(): { d1: D1Database; large: LargeBind[] } {
-  const large: LargeBind[] = [];
-  const d1 = new Proxy(env.DB, {
-    get(target, prop) {
-      if (prop === "prepare") {
-        return (query: string) => {
-          const statement = target.prepare(query);
-          return new Proxy(statement, {
-            get(statementTarget, statementProp) {
-              if (statementProp === "bind") {
-                return (...values: unknown[]) => {
-                  if (values.length > D1_MAX_BOUND_VALUES) large.push({ sql: query, count: values.length });
-                  return statementTarget.bind(...values);
-                };
-              }
-              const value: unknown = Reflect.get(statementTarget, statementProp, statementTarget);
-              return typeof value === "function" ? value.bind(statementTarget) : value;
-            },
-          });
-        };
-      }
-      const value: unknown = Reflect.get(target, prop, target);
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
-  return { d1, large };
-}
-
 // An R2 binding with some methods replaced, e.g. put.
 export function bucketWith(overrides: Partial<Record<keyof R2Bucket, unknown>>): R2Bucket {
   return new Proxy(env.EVENT_DATA, {
@@ -424,9 +267,6 @@ export function fakeQueue(): FakeQueue {
   };
   return queue as unknown as FakeQueue;
 }
-
-// The JWT_SECRET of vitest.config.ts, which the subscription secrets are encrypted with.
-export const TEST_JWT_SECRET = "test-secret-test-secret-test-secret-0123";
 
 let subscriptionSequence = 0;
 

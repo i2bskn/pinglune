@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BotList } from "../src/api/types";
 import { MAX_BOTS_PER_WORKSPACE, workspaceBotsByIds } from "../src/bots/queries";
-import { createDb } from "../src/db/client";
+import { createDb } from "@i2bskn/workers-app-core";
 import type { SourceRow, SubscriptionRow, UserRow, WorkspaceRow } from "../src/db/schema";
 import { acceptEvent, type IntakeSource } from "../src/intake/service";
 import {

@@ -1,11 +1,12 @@
 import type { OAuthResourceContext } from "@cloudflare/workers-oauth-provider";
 import { createExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { clock } from "@i2bskn/workers-app-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SourceRow, UserRow } from "../src/db/schema";
 import { acceptEvent } from "../src/intake/service";
 import type { IntakeInput } from "../src/intake/validation";
-import { mcpHandler } from "../src/mcp/handler";
+import { core } from "../src/core";
 import { isReadableText } from "../src/mcp/text";
 import {
   bucketWith,
@@ -123,7 +124,7 @@ async function rpc(
 ): Promise<unknown> {
   const connectionId = caller.connectionId === undefined ? connections[user.id] : caller.connectionId;
   const ctx = Object.assign(createExecutionContext(), {
-    props: { userId: user.id, authMode: "password", ...(connectionId == null ? {} : { connectionId }) },
+    props: { userId: user.id, authMode: "password", authorizedAt: clock.now(), ...(connectionId == null ? {} : { connectionId }) },
     auth: { token: "t", audience: `${ORIGIN}/mcp`, scope: ["mcp"], clientId: caller.clientId ?? TEST_CLIENT },
   }) as unknown as OAuthResourceContext<unknown>;
   const request = new Request(`${ORIGIN}/mcp`, {
@@ -131,7 +132,7 @@ async function rpc(
     headers: { Accept: MCP_ACCEPT, "Content-Type": "application/json" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
   });
-  const res = await mcpHandler.fetch(request, sharedEnv, ctx);
+  const res = await core.mcpHandler.fetch(request, sharedEnv, ctx);
   expect(res.status).toBe(200);
   const body = (await res.json()) as { result?: unknown; error?: unknown };
   expect(body.error).toBeUndefined();

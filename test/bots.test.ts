@@ -2,10 +2,11 @@ import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Bot, BotList } from "../src/api/types";
 import { MAX_BOTS_PER_WORKSPACE, resolveBotDeliveries } from "../src/bots/queries";
-import { clock } from "../src/clock";
+import { clock } from "@i2bskn/workers-app-core";
 import type { BotRow, SourceRow, SubscriptionRow, UserRow } from "../src/db/schema";
 import { newBotId, newMcpConnectionId } from "../src/ids";
 import {
+  appDb,
   countTable,
   createQueue,
   createSource,
@@ -317,7 +318,7 @@ describe("the state and the destination of a bot", () => {
     const workspaceId = (await personalWorkspaceOf(alice)).id;
     const rows = await Promise.all([dot, grok, muse, lonely].map((bot) => botRow(bot.id)));
 
-    const resolved = await resolveBotDeliveries(db, workspaceId, rows, now);
+    const resolved = await resolveBotDeliveries(appDb, workspaceId, rows, now);
     expect(resolved.get(dot.id)?.id).toBe(newer.id);
     expect(resolved.get(grok.id)?.id).toBe(hook.id);
     expect(resolved.get(muse.id)?.id).toBe(queue.id);
@@ -326,14 +327,14 @@ describe("the state and the destination of a bot", () => {
     // The newest ends: the older one is used. Ended destinations and deleted bots have none.
     await env.DB.prepare("UPDATE subscriptions SET unsubscribed_at = ? WHERE id IN (?, ?)").bind(now, newer.id, queue.id).run();
     await env.DB.prepare("UPDATE bots SET deleted_at = ? WHERE id = ?").bind(now, grok.id).run();
-    const again = await resolveBotDeliveries(db, workspaceId, await Promise.all(rows.map((r) => botRow(r.id))), now);
+    const again = await resolveBotDeliveries(appDb, workspaceId, await Promise.all(rows.map((r) => botRow(r.id))), now);
     expect(again.get(dot.id)?.id).toBe(older.id);
     expect(again.get(grok.id)).toBeNull();
     expect(again.get(muse.id)).toBeNull();
 
     // Without an active connection there is no destination.
     await env.DB.prepare("UPDATE mcp_connections SET revoked_at = ?, revoke_reason = 'user' WHERE id = ?").bind(now, connection).run();
-    expect((await resolveBotDeliveries(db, workspaceId, [await botRow(dot.id)], now)).get(dot.id)).toBeNull();
+    expect((await resolveBotDeliveries(appDb, workspaceId, [await botRow(dot.id)], now)).get(dot.id)).toBeNull();
   });
 
   it("gives a shared callback to the bot whose connection subscribed last", async () => {

@@ -2,7 +2,7 @@
 // the management screen, checked with TypeSafe and stored encrypted, like the Bearer keys of webhook destinations
 // (src/subscriptions/secret.ts). The key is never returned, logged or put in an error message.
 
-import { describeError } from "../auth/middleware";
+import { describeError } from "@i2bskn/workers-app-core";
 import { decryptSecret, encryptSecret, subscriptionSecretKey } from "../subscriptions/secret";
 import { TYPESAFE_API_ORIGIN, TYPESAFE_TIMEOUT_MS } from "./jev";
 

@@ -8,9 +8,7 @@
 // total); the number of tries is counted in D1. Every state change is conditional on the delivery being pending,
 // so that a delivery processed twice at the same time is never overwritten.
 
-import { describeError } from "../auth/middleware";
-import { clock } from "../clock";
-import { createDb, type Db } from "../db/client";
+import { clock, createDb, type Db, describeError } from "@i2bskn/workers-app-core";
 import type { DeliveryRow, SubscriptionRow } from "../db/schema";
 import { loadConfig, type Bindings } from "../env";
 import { findWorkspaceEvent, findWorkspaceEventScope } from "../events/queries";

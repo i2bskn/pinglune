@@ -11,7 +11,7 @@ import {
   TYPE_MAX_LENGTH,
   TYPE_PATTERN,
 } from "../intake/validation";
-import { SOURCE_NAME_MAX_LENGTH } from "../routes/sources";
+import { SOURCE_NAME_MAX_LENGTH } from "../sources/names";
 
 export const MAX_FILTER_TYPES = 20;
 export const MAX_FILTER_SOURCES = 20;

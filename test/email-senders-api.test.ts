@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Source, SourceList } from "../src/api/types";
-import { clock } from "../src/clock";
+import { clock } from "@i2bskn/workers-app-core";
 import type { SourceRow, UserRow, WorkspaceRow } from "../src/db/schema";
 import {
   createSource,

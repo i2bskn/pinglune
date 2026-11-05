@@ -5,14 +5,15 @@ import { env } from "cloudflare:workers";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { canonicalJson } from "../src/canonical-json";
-import { clock } from "../src/clock";
+import { clock } from "@i2bskn/workers-app-core";
 import { subscriptions, type SubscriptionRow, type UserRow } from "../src/db/schema";
 import { newMcpConnectionId } from "../src/ids";
 import { acceptEvent } from "../src/intake/service";
-import { mcpHandler } from "../src/mcp/handler";
+import { core } from "../src/core";
 import { endSubscription, NO_EXPIRY } from "../src/subscriptions/queries";
 import { decryptSecret, subscriptionSecretKey } from "../src/subscriptions/secret";
 import {
+  appDb,
   countTable,
   createQueue,
   createSource,
@@ -107,7 +108,7 @@ async function call(
   connectionId?: string,
 ): Promise<RpcBody> {
   const ctx = Object.assign(createExecutionContext(), {
-    props: { userId: user.id, authMode: "password", ...(connectionId === undefined ? {} : { connectionId }) },
+    props: { userId: user.id, authMode: "password", authorizedAt: clock.now(), ...(connectionId === undefined ? {} : { connectionId }) },
     auth: { token: "t", audience: `${ORIGIN}/mcp`, scope: ["mcp"] },
   }) as unknown as OAuthResourceContext<unknown>;
   const request = new Request(`${ORIGIN}/mcp`, {
@@ -115,7 +116,7 @@ async function call(
     headers: { Accept: MCP_ACCEPT, "Content-Type": "application/json" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, ...(params === undefined ? {} : { params }) }),
   });
-  const res = await mcpHandler.fetch(request, sharedEnv, ctx);
+  const res = await core.mcpHandler.fetch(request, sharedEnv, ctx);
   expect(res.status).toBe(200);
   return (await res.json()) as RpcBody;
 }
@@ -742,9 +743,9 @@ describe("events/unsubscribe", () => {
 
   it("ends a row by ID only for its user", async () => {
     const { id } = await subscribe(alice);
-    await endSubscription(db, id, bob.id, T0);
+    await endSubscription(appDb, id, bob.id, T0);
     expect((await readSubscription(id))?.unsubscribedAt).toBeNull();
-    await endSubscription(db, id, alice.id, T0);
+    await endSubscription(appDb, id, alice.id, T0);
     expect((await readSubscription(id))?.unsubscribedAt).toBe(T0);
   });
 
@@ -900,7 +901,7 @@ describe("the MCP connection of a subscription", () => {
 
   async function subscribeAs(user: UserRow, connectionId: string, params: Record<string, unknown>): Promise<SubscribeResult> {
     const ctx = Object.assign(createExecutionContext(), {
-      props: { userId: user.id, authMode: "password", connectionId },
+      props: { userId: user.id, authMode: "password", authorizedAt: clock.now(), connectionId },
       auth: { token: "t", audience: `${ORIGIN}/mcp`, scope: ["mcp"] },
     }) as unknown as OAuthResourceContext<unknown>;
     const request = new Request(`${ORIGIN}/mcp`, {
@@ -908,7 +909,7 @@ describe("the MCP connection of a subscription", () => {
       headers: { Accept: MCP_ACCEPT, "Content-Type": "application/json" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "events/subscribe", params }),
     });
-    const res = await mcpHandler.fetch(request, env, ctx);
+    const res = await core.mcpHandler.fetch(request, env, ctx);
     expect(res.status).toBe(200);
     const body = (await res.json()) as RpcBody;
     expect(body.error).toBeUndefined();

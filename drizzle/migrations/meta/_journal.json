@@ -92,6 +92,13 @@
       "when": 1793815135678,
       "tag": "0012_email_senders",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1793888201497,
+      "tag": "0013_mcp_revoked_at",
+      "breakpoints": true
     }
   ]
 }

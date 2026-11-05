@@ -2,7 +2,7 @@
 // conversation_id) of a conversation.
 
 import { and, desc, eq, gt, inArray, lt, sql } from "drizzle-orm";
-import type { Db } from "../db/client";
+import type { Db } from "@i2bskn/workers-app-core";
 import {
   conversationParticipants,
   conversations,

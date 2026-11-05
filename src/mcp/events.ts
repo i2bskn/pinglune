@@ -3,10 +3,8 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { describeError } from "../auth/middleware";
+import { clock, type Db, describeError } from "@i2bskn/workers-app-core";
 import { canonicalJson } from "../canonical-json";
-import { clock } from "../clock";
-import type { Db } from "../db/client";
 import type { McpConnectionRow, SubscriptionRow, UserRow } from "../db/schema";
 import { eventFilterShape } from "../events/filter";
 import { base64Url, sha256Hex } from "../ids";

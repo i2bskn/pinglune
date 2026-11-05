@@ -3,7 +3,7 @@
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { canonicalJson } from "../canonical-json";
 import { chunks } from "../db/chunks";
-import type { Db } from "../db/client";
+import type { Db } from "@i2bskn/workers-app-core";
 import {
   botSources,
   bots,

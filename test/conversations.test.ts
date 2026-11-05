@@ -13,14 +13,14 @@ import type {
   PostedConversationMessage,
   SourceList,
 } from "../src/api/types";
-import { clock } from "../src/clock";
+import { clock } from "@i2bskn/workers-app-core";
 import { CONVERSATION_SOURCE_NAME } from "../src/conversations/queries";
 import { messageLabels, messageSummary } from "../src/conversations/service";
 import type { BotRow, SubscriptionRow, UserRow } from "../src/db/schema";
 import { handleEmail } from "../src/intake/email";
 import { newBotId, newMcpConnectionId, newParticipantId } from "../src/ids";
 import { validateIntakeInput } from "../src/intake/validation";
-import { mcpHandler } from "../src/mcp/handler";
+import { core } from "../src/core";
 import {
   bucketWith,
   countTable,
@@ -227,7 +227,7 @@ async function rpc(
 ): Promise<unknown> {
   const connectionId = user.id === alice.id && clientId !== undefined ? connections[clientId] : undefined;
   const ctx = Object.assign(createExecutionContext(), {
-    props: { userId: user.id, authMode: "password", ...(connectionId === undefined ? {} : { connectionId }) },
+    props: { userId: user.id, authMode: "password", authorizedAt: clock.now(), ...(connectionId === undefined ? {} : { connectionId }) },
     auth: { token: "t", audience: `${ORIGIN}/mcp`, scope: ["mcp"], clientId },
   }) as unknown as OAuthResourceContext<unknown>;
   const request = new Request(`${ORIGIN}/mcp`, {
@@ -236,7 +236,7 @@ async function rpc(
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
   });
   // The deliveries go to the fake queue only.
-  const res = await mcpHandler.fetch(request, { ...env, DELIVERY_QUEUE: queue, ...envOverrides }, ctx);
+  const res = await core.mcpHandler.fetch(request, { ...env, DELIVERY_QUEUE: queue, ...envOverrides }, ctx);
   expect(res.status).toBe(200);
   const body = (await res.json()) as { result?: unknown; error?: unknown };
   expect(body.error).toBeUndefined();
@@ -939,7 +939,7 @@ describe("the participants of conversations", () => {
 
     // The token of the old connection is rejected.
     const ctx = Object.assign(createExecutionContext(), {
-      props: { userId: alice.id, authMode: "password", connectionId: old },
+      props: { userId: alice.id, authMode: "password", authorizedAt: clock.now(), connectionId: old },
       auth: { token: "t", audience: `${ORIGIN}/mcp`, scope: ["mcp"], clientId: MUSE },
     }) as unknown as OAuthResourceContext<unknown>;
     const request = new Request(`${ORIGIN}/mcp`, {
@@ -947,7 +947,7 @@ describe("the participants of conversations", () => {
       headers: { Accept: MCP_ACCEPT, "Content-Type": "application/json" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
     });
-    expect((await mcpHandler.fetch(request, { ...env, DELIVERY_QUEUE: queue }, ctx)).status).toBe(401);
+    expect((await core.mcpHandler.fetch(request, { ...env, DELIVERY_QUEUE: queue }, ctx)).status).toBe(401);
   });
 
   it("does not deliver to a bot whose connection or subscription is gone, nor to a deleted bot", async () => {

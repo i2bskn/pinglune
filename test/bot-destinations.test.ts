@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Bot, BotDetail, DeliveryList, SubscriptionList } from "../src/api/types";
-import { clock } from "../src/clock";
+import { clock } from "@i2bskn/workers-app-core";
 import type { SourceRow, SubscriptionRow, UserRow } from "../src/db/schema";
 import { subscriptionDeliveriesStatement } from "../src/deliveries/queries";
 import { newMcpConnectionId } from "../src/ids";

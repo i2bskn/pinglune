@@ -12,9 +12,8 @@
 
 import PostalMime from "postal-mime";
 import type { Address, Attachment, Email } from "postal-mime";
-import { describeError } from "../auth/middleware";
+import { clock, describeError } from "@i2bskn/workers-app-core";
 import { canonicalJson } from "../canonical-json";
-import { clock } from "../clock";
 import { parseEmailDomain, type Bindings } from "../env";
 import { EMAIL_LOCAL_PART_PATTERN, sha256Hex } from "../ids";
 import {

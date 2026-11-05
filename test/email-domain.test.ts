@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { loadConfig, parseEmailDomain } from "../src/env";
+import { loadConfig, parseEmailDomain, type Bindings } from "../src/env";
 
 describe("parseEmailDomain", () => {
   it.each([undefined, "", "   "])("turns the email intake off for %j", (value) => {
@@ -39,7 +39,8 @@ describe("parseEmailDomain", () => {
   });
 
   it("does not stop loadConfig when invalid", () => {
-    const result = loadConfig({ ...env, EMAIL_DOMAIN: "not a domain" });
+    const withDomain: Bindings = { ...env, EMAIL_DOMAIN: "not a domain" };
+    const result = loadConfig(withDomain);
     expect(result.ok).toBe(true);
   });
 });

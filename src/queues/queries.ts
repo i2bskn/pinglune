@@ -7,7 +7,7 @@
 
 import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 import type { EventSummary } from "../api/types";
-import type { Db } from "../db/client";
+import type { Db } from "@i2bskn/workers-app-core";
 import { subscriptions, type SubscriptionRow } from "../db/schema";
 import { failPendingDelivery } from "../deliveries/queries";
 import { findWorkspaceEventsByIds } from "../events/queries";

@@ -1,6 +1,7 @@
 /** @jsxImportSource hono/jsx */
 import { html } from "hono/html";
 import type { Child } from "hono/jsx";
+import type { PageMarkup } from "@i2bskn/workers-app-core";
 import {
   BRAND_LOGO_DARK,
   BRAND_LOGO_HEIGHT,
@@ -10,9 +11,9 @@ import {
   BRAND_TAGLINE,
 } from "../brand";
 
-// The screens served by the Worker (login, setup, consent). They are styled by /server-pages.css, a static
-// asset (client/public), because the SPA's stylesheet has a hashed name.
-export function Layout(props: { title: string; children?: Child }) {
+// The screens served by the Worker (login, setup, consent; brand.layout in src/core.ts). They are styled by
+// /server-pages.css, a static asset (client/public), because the SPA's stylesheet has a hashed name.
+export function Layout(props: { title: string; children: Child }): PageMarkup {
   return html`<!DOCTYPE html>${(
     <html lang="ja">
       <head>

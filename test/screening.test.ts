@@ -1,7 +1,7 @@
 import { createExecutionContext, createMessageBatch, getQueueResult, type QueueResult } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { clock } from "../src/clock";
+import { clock } from "@i2bskn/workers-app-core";
 import type { SourceRow, UserRow, WorkspaceRow } from "../src/db/schema";
 import { enqueuePendingDeliveries } from "../src/deliveries/enqueue";
 import type { Bindings } from "../src/env";

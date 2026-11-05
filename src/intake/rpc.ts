@@ -2,10 +2,8 @@
 // props { source_id: "src_..." }. Only DB, EVENT_DATA and DELIVERY_QUEUE are used; loadConfig is not.
 
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { describeError } from "../auth/middleware";
+import { clock, createDb, describeError } from "@i2bskn/workers-app-core";
 import type { IngestConversationResponse } from "../api/types";
-import { clock } from "../clock";
-import { createDb } from "../db/client";
 import type { Bindings } from "../env";
 import { SOURCE_ID_PATTERN } from "../ids";
 import { parseConversationInput, startSourceConversation } from "./conversation";

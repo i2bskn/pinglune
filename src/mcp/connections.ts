@@ -6,8 +6,7 @@
 
 import type { GrantSummary, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { and, eq, isNull } from "drizzle-orm";
-import { describeError } from "../auth/middleware";
-import type { Db } from "../db/client";
+import { type Db, describeError } from "@i2bskn/workers-app-core";
 import { mcpConnections, type McpConnectionRow } from "../db/schema";
 
 // KV lists grants up to about 60 seconds late, so a connection made within this time is not called expired when its

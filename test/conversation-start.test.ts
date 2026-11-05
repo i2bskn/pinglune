@@ -3,10 +3,10 @@ import { createExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Bot, BotList, ConversationDetail, ConversationList } from "../src/api/types";
-import { clock } from "../src/clock";
+import { clock } from "@i2bskn/workers-app-core";
 import type { SubscriptionRow, UserRow } from "../src/db/schema";
 import { newBotId, newMcpConnectionId } from "../src/ids";
-import { mcpHandler } from "../src/mcp/handler";
+import { core } from "../src/core";
 import {
   createQueue,
   createSubscription,
@@ -95,7 +95,7 @@ async function connect(clientId: string, clientName: string, botId: string | nul
 async function rpc(clientId: string, method: string, params: unknown): Promise<unknown> {
   const connectionId = connections[clientId];
   const ctx = Object.assign(createExecutionContext(), {
-    props: { userId: alice.id, authMode: "password", ...(connectionId === undefined ? {} : { connectionId }) },
+    props: { userId: alice.id, authMode: "password", authorizedAt: clock.now(), ...(connectionId === undefined ? {} : { connectionId }) },
     auth: { token: "t", audience: `${ORIGIN}/mcp`, scope: ["mcp"], clientId },
   }) as unknown as OAuthResourceContext<unknown>;
   const request = new Request(`${ORIGIN}/mcp`, {
@@ -103,7 +103,7 @@ async function rpc(clientId: string, method: string, params: unknown): Promise<u
     headers: { Accept: MCP_ACCEPT, "Content-Type": "application/json" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
   });
-  const res = await mcpHandler.fetch(request, { ...env, DELIVERY_QUEUE: queue }, ctx);
+  const res = await core.mcpHandler.fetch(request, { ...env, DELIVERY_QUEUE: queue }, ctx);
   expect(res.status).toBe(200);
   const body = (await res.json()) as { result?: unknown; error?: unknown };
   expect(body.error).toBeUndefined();

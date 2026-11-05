@@ -1,0 +1,1 @@
+ALTER TABLE `users` ADD `mcp_revoked_at` integer;

@@ -687,6 +687,7 @@ describe("/ingest paths", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const res = await send(URL_PATH, { json: BASE, headers: auth(), env: { JWT_SECRET: "short" } });
     expect(res.status).toBe(500);
+    expect(res.headers.get("Cache-Control")).toBe("no-store");
     expect((await errorOf(res)).code).toBe("internal_error");
   });
 });

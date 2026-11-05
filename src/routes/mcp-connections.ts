@@ -7,11 +7,9 @@ import type {
   McpConnectionList,
   RevokeMcpConnectionRequest,
 } from "../api/types";
-import { apiError, requireUser } from "../auth/middleware";
-import { isUniqueViolation } from "../auth/users";
+import { apiError, clientName, clock, type Db, isUniqueViolation } from "@i2bskn/workers-app-core";
+import { requireUser } from "../core";
 import { findActiveWorkspaceBot, workspaceBotsByIds } from "../bots/queries";
-import { clock } from "../clock";
-import type { Db } from "../db/client";
 import type { BotRow, McpConnectionRow } from "../db/schema";
 import type { AppEnv } from "../env";
 import { BOT_ID_PATTERN, MCP_CONNECTION_ID_PATTERN, newMcpConnectionId } from "../ids";
@@ -30,7 +28,6 @@ import {
   type Replacement,
   type RevokedRow,
 } from "../mcp/connections";
-import { clientName } from "../mcp/grants";
 import { jsonBody } from "./api";
 import { unknownField } from "./sources";
 import { requirePersonalWorkspace } from "./workspace";
@@ -60,7 +57,7 @@ function parseTarget(body: Record<string, unknown>): Target | "invalid" | "not_f
 
 type AssignInput = { target: Target | null; botId: string | null };
 
-const assignBody = jsonBody<AssignMcpConnectionRequest, AssignInput>((body, c) => {
+const assignBody = jsonBody<AssignMcpConnectionRequest, AssignInput, AppEnv>((body, c) => {
   const unknown = unknownField(body, ["connection_id", "grant_id", "bot_id"]);
   if (unknown !== null) return apiError(c, 400, "invalid_request", `未知の項目があります: ${unknown}`);
   const target = parseTarget(body);
@@ -76,7 +73,7 @@ const assignBody = jsonBody<AssignMcpConnectionRequest, AssignInput>((body, c) =
   return { ok: true, value: { target, botId } };
 });
 
-const revokeBody = jsonBody<RevokeMcpConnectionRequest, { target: Target | null }>((body, c) => {
+const revokeBody = jsonBody<RevokeMcpConnectionRequest, { target: Target | null }, AppEnv>((body, c) => {
   const unknown = unknownField(body, ["connection_id", "grant_id"]);
   if (unknown !== null) return apiError(c, 400, "invalid_request", `未知の項目があります: ${unknown}`);
   const target = parseTarget(body);

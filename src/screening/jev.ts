@@ -1,7 +1,7 @@
 // The calls to Jev of TypeSafe (POST /v1/systemone), which scores whether a text tries to instruct an AI that reads it.
 // Called with fetch directly, without an SDK.
 
-import { describeError } from "../auth/middleware";
+import { describeError } from "@i2bskn/workers-app-core";
 
 export const TYPESAFE_API_ORIGIN = "https://api.typesafe.ai";
 export const TYPESAFE_TIMEOUT_MS = 10_000;

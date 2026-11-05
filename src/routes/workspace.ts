@@ -1,6 +1,6 @@
 import type { MiddlewareHandler } from "hono";
 import type { AppEnv } from "../env";
-import { apiError } from "../auth/middleware";
+import { apiError } from "@i2bskn/workers-app-core";
 import { findPersonalWorkspaceByUserId } from "../workspaces/queries";
 
 // After requireUser. Sets the signed-in user's personal workspace, the only one the management API works on,

@@ -7,7 +7,7 @@
 // Each run scans one page of R2 (up to 1,000 objects) and saves where it stopped, so that the Free plan's
 // per-invocation limits hold. With many objects a full pass takes days (100,000 objects: about 100 days).
 
-import { describeError } from "../auth/middleware";
+import { describeError } from "@i2bskn/workers-app-core";
 import { enqueuePendingDeliveries, enqueueScreening, type DeliveryMessage } from "../deliveries/enqueue";
 import { findScreenedEventsWithUnsentDeliveries, stalePendingDeliveries } from "../deliveries/queries";
 import { DATA_REF_PATTERN, EVENT_ID_PATTERN } from "../ids";

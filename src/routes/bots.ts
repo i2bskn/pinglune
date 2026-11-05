@@ -9,9 +9,8 @@ import type {
   CreateBotRequest,
   UpdateBotRequest,
 } from "../api/types";
-import { apiError, requireUser } from "../auth/middleware";
-import { isUniqueViolation } from "../auth/users";
-import { isJsonObject } from "../auth/validate";
+import { apiError, clock, type Db, isJsonObject, isUniqueViolation } from "@i2bskn/workers-app-core";
+import { requireUser } from "../core";
 import {
   activeConnectionsByBot,
   countActiveBots,
@@ -23,8 +22,6 @@ import {
   resolveBotDeliveries,
   type BotSourceSummary,
 } from "../bots/queries";
-import { clock } from "../clock";
-import type { Db } from "../db/client";
 import type { BotRow, McpConnectionRow, SubscriptionRow } from "../db/schema";
 import { canonicalJson } from "../canonical-json";
 import { callbackHost } from "../deliveries/queries";
@@ -179,7 +176,7 @@ type CreateInput = {
   sourceIds: string[];
 };
 
-const createBotBody = jsonBody<CreateBotRequest, CreateInput>((body, c) => {
+const createBotBody = jsonBody<CreateBotRequest, CreateInput, AppEnv>((body, c) => {
   const unknown = unknownField(body, BOT_FIELDS);
   if (unknown !== null) return apiError(c, 400, "unknown_field", `未知の項目があります: ${unknown}`);
   const name = normalizeDisplayName(body.name);
@@ -226,7 +223,7 @@ type UpdateInput = {
   sourceIds?: string[];
 };
 
-const updateBotBody = jsonBody<UpdateBotRequest, UpdateInput>((body, c) => {
+const updateBotBody = jsonBody<UpdateBotRequest, UpdateInput, AppEnv>((body, c) => {
   const unknown = unknownField(body, BOT_FIELDS);
   if (unknown !== null) return apiError(c, 400, "unknown_field", `未知の項目があります: ${unknown}`);
   if (!BOT_FIELDS.some((field) => field in body)) {

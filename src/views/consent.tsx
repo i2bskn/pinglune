@@ -1,12 +1,13 @@
 /** @jsxImportSource hono/jsx */
-import type { ConsentDescription } from "@cloudflare/workers-oauth-provider";
+import type { ConsentRenderProps } from "@i2bskn/workers-app-core";
 import { Layout } from "./layout";
 
+// The consent page of pinglune's own /authorize (src/routes/authorize.tsx), which lets the user choose a bot.
 // Every string in details may come from the client. JSX escapes them.
 // Bot names come from the user. bots are the user's bots, by name; selectedBotId is preselected; sharedBotNames are the
 // bots that the same app is connected as, when there are two or more.
 export function ConsentPage(props: {
-  details: ConsentDescription;
+  details: ConsentRenderProps["details"];
   handle: string;
   email: string;
   bots: { id: string; name: string }[];

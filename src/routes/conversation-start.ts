@@ -2,10 +2,10 @@
 // (POST /api/v1/sources/:id/conversation-start): the same fields, ranges and messages.
 
 import type { ConversationStartSettings } from "../api/types";
-import { apiError } from "../auth/middleware";
+import { apiError } from "@i2bskn/workers-app-core";
 import { MAX_AI_MESSAGES_LIMIT } from "../conversations/service";
-import { jsonBody } from "./api";
-import { unknownField } from "./sources";
+import type { AppEnv } from "../env";
+import { jsonBody, unknownField } from "./api";
 
 const CONVERSATION_START_FIELDS = ["enabled", "daily_limit", "max_ai_messages"];
 // The ranges of the conversation start settings (start_daily_limit, start_max_ai_messages of bots and sources).
@@ -21,7 +21,7 @@ function isIntegerIn(value: unknown, min: number, max: number): value is number 
 }
 
 // All three fields are required.
-export const conversationStartBody = jsonBody<ConversationStartSettings, ConversationStartInput>((body, c) => {
+export const conversationStartBody = jsonBody<ConversationStartSettings, ConversationStartInput, AppEnv>((body, c) => {
   const unknown = unknownField(body, CONVERSATION_START_FIELDS);
   if (unknown !== null) return apiError(c, 400, "unknown_field", `未知の項目があります: ${unknown}`);
   if (typeof body.enabled !== "boolean") {

@@ -6,9 +6,8 @@
 // subscriptions, and each one is created only while the conversation may still notify (open, or stopped by its limit
 // so that the last message is delivered).
 
-import { describeError } from "../auth/middleware";
+import { type Db, describeError } from "@i2bskn/workers-app-core";
 import { canonicalJson } from "../canonical-json";
-import type { Db } from "../db/client";
 import type { ConversationParticipantRow, ConversationRow, UserRow } from "../db/schema";
 import { enqueuePendingDeliveries, type DeliveryMessage } from "../deliveries/enqueue";
 import {

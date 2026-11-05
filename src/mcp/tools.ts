@@ -1,9 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { describeError } from "../auth/middleware";
-import { clock } from "../clock";
-import type { Db } from "../db/client";
+import { clock, type Db, describeError } from "@i2bskn/workers-app-core";
 import type { ConversationRow, McpConnectionRow, UserRow } from "../db/schema";
 import {
   findActiveWorkspaceBot,
@@ -53,7 +51,7 @@ import {
   QUEUE_MAX_CLAIMS,
 } from "../queues/constants";
 import { ackQueueDeliveries, claimQueueDeliveries, findActiveWorkspaceQueue } from "../queues/queries";
-import { normalizeDisplayName } from "../routes/sources";
+import { normalizeDisplayName } from "../sources/names";
 import { isDeliverableScreening } from "../screening/state";
 import { findPersonalWorkspaceByUserId } from "../workspaces/queries";
 import { iso, toMcpEvent, toMcpEventDetail } from "./event-payload";

@@ -1,9 +1,8 @@
 // The shared intake (spec 4.2-4.4): validate, store the data in R2, write the event to D1, deduplicate.
 
-import { describeError } from "../auth/middleware";
+import { createDb, type Db, describeError } from "@i2bskn/workers-app-core";
 import { canonicalJson } from "../canonical-json";
 import { activeBotsOfSource, resolveBotEventDestinations } from "../bots/queries";
-import { createDb, type Db } from "../db/client";
 import type { SubscriptionRow } from "../db/schema";
 import { enqueuePendingDeliveries, enqueueScreening, type DeliveryMessage } from "../deliveries/enqueue";
 import { insertDeliveryStatement } from "../deliveries/queries";

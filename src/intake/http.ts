@@ -3,8 +3,7 @@
 
 import { Hono, type Context } from "hono";
 import type { ApiError, IngestResponse } from "../api/types";
-import { describeError } from "../auth/middleware";
-import { clock } from "../clock";
+import { clock, describeError } from "@i2bskn/workers-app-core";
 import type { AppEnv } from "../env";
 import { authenticateApiKey } from "../sources/auth";
 import { parseConversationInput, startSourceConversation } from "./conversation";

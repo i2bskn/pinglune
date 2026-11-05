@@ -7,6 +7,7 @@ import { DELIVERY_ID_PATTERN } from "../src/ids";
 import { acceptEvent, type IntakeSource } from "../src/intake/service";
 import type { IntakeInput } from "../src/intake/validation";
 import {
+  appDb,
   countTable,
   createApiKey,
   createQueue,
@@ -490,7 +491,7 @@ describe("matchesFilter", () => {
       { types: ["job.finished"], sources: ["app"], labels: { project: "b" } },
     ];
     for (const filter of filters) {
-      const listed = await listWorkspaceEvents(db, workspace.id, { filter, limit: 100 });
+      const listed = await listWorkspaceEvents(appDb, workspace.id, { filter, limit: 100 });
       const expected = [...events.entries()]
         .filter(([, item]) => matchesFilter({ type: item.type, sourceName: item.source.name, labels: item.labels }, filter))
         .map(([id]) => id)

@@ -1,18 +1,14 @@
-import { getOAuthApi, type OAuthResourceContext } from "@cloudflare/workers-oauth-provider";
-import { createExecutionContext } from "cloudflare:test";
+import { getOAuthApi } from "@cloudflare/workers-oauth-provider";
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { safeNext } from "../src/auth/redirect";
-import { issueSession } from "../src/auth/sessions";
-import { base64UrlEncode, signAccessToken } from "../src/auth/tokens";
+import { base64UrlEncode, clock, safeNext } from "@i2bskn/workers-app-core";
+import app from "../src/app";
+import { core } from "../src/core";
 import type { UserRow } from "../src/db/schema";
 import type { Bindings } from "../src/env";
-import { mcpHandler } from "../src/mcp/handler";
-import { buildOAuthProviderOptions } from "../src/mcp/provider";
 import {
   createSubscription,
   createUser,
-  db,
   login,
   OIDC_ORIGIN,
   oidcEnv,
@@ -167,15 +163,8 @@ async function expectMcpOk(res: Response): Promise<void> {
   expect(body.result?.serverInfo?.name).toBe("pinglune");
 }
 
-async function oidcSessionCookies(user: UserRow): Promise<Cookies> {
-  const now = Date.now();
-  const session = await issueSession(db, user.id, "oidc", now);
-  const at = await signAccessToken({ sub: user.id, sid: session.sessionId }, env.JWT_SECRET ?? "", now);
-  return { "__Host-pinglune_at": at, "__Host-pinglune_rt": session.refreshToken };
-}
-
 function oauthApi(origin: string, overrides: Partial<Bindings> = {}) {
-  return getOAuthApi(buildOAuthProviderOptions(origin), { ...env, ...overrides });
+  return getOAuthApi(core.buildOAuthProviderOptions(origin, app), { ...env, ...overrides });
 }
 
 let admin: UserRow;
@@ -193,37 +182,6 @@ beforeEach(async () => {
 
 afterEach(() => {
   vi.restoreAllMocks();
-});
-
-describe("discovery", () => {
-  it("answers /mcp without a token with 401 and a challenge", async () => {
-    const res = await send("/mcp", { json: { jsonrpc: "2.0", id: 1, method: "tools/list" } });
-    expect(res.status).toBe(401);
-    const challenge = res.headers.get("WWW-Authenticate") ?? "";
-    expect(challenge).toContain(`resource_metadata="${ORIGIN}/.well-known/oauth-protected-resource/mcp"`);
-  });
-
-  it("publishes the protected resource metadata", async () => {
-    const res = await send("/.well-known/oauth-protected-resource/mcp");
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as Record<string, unknown>;
-    expect(body.resource).toBe(`${ORIGIN}/mcp`);
-    expect(body.authorization_servers).toEqual([ORIGIN]);
-    expect(body.scopes_supported).toEqual(["mcp"]);
-  });
-
-  it("publishes the authorization server metadata", async () => {
-    const res = await send("/.well-known/oauth-authorization-server");
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as Record<string, unknown>;
-    expect(body.issuer).toBe(ORIGIN);
-    expect(body.authorization_endpoint).toBe(`${ORIGIN}/authorize`);
-    expect(body.token_endpoint).toBe(`${ORIGIN}/oauth/token`);
-    expect(body.registration_endpoint).toBe(`${ORIGIN}/oauth/register`);
-    expect(body.scopes_supported).toEqual(["mcp"]);
-    expect(body.protected_resources).toEqual([`${ORIGIN}/mcp`]);
-    expect(body.resource).toBeUndefined();
-  });
 });
 
 describe("GET /authorize", () => {
@@ -336,127 +294,6 @@ describe("MCP", () => {
   it("initializes with a token from the OAuth flow", async () => {
     const { access_token } = await authorizeClient(memberCookies);
     await expectMcpOk(await mcpInitialize(access_token));
-  });
-
-  it("returns 401 once the user is deleted", async () => {
-    const { access_token } = await authorizeClient(memberCookies);
-    await expectMcpOk(await mcpInitialize(access_token));
-    await env.DB.batch([
-      env.DB.prepare("DELETE FROM mcp_connections WHERE user_id = ?").bind(member.id),
-      env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(member.id),
-      env.DB.prepare("DELETE FROM workspaces WHERE owner_user_id = ?").bind(member.id),
-      env.DB.prepare("DELETE FROM users WHERE id = ?").bind(member.id),
-    ]);
-    const res = await mcpInitialize(access_token);
-    expect(res.status).toBe(401);
-    expect(await res.text()).toBe("");
-    expect(res.headers.get("WWW-Authenticate")).toBe(
-      `Bearer error="invalid_token", resource_metadata="${ORIGIN}/.well-known/oauth-protected-resource/mcp"`,
-    );
-  });
-
-  it("answers GET and DELETE with 405", async () => {
-    const { access_token } = await authorizeClient(memberCookies);
-    for (const method of ["GET", "DELETE"]) {
-      const res = await send("/mcp", {
-        method,
-        headers: { Authorization: `Bearer ${access_token}`, Accept: MCP_ACCEPT },
-      });
-      expect(res.status).toBe(405);
-      expect(res.headers.get("Allow")).toBe("POST");
-    }
-  });
-
-  it("answers a token without the mcp scope with 403", async () => {
-    // Clients cannot get such a token from this server (consent always grants mcp), so the
-    // handler is called directly with the context OAuthProvider would pass.
-    const ctx = Object.assign(createExecutionContext(), {
-      props: { userId: member.id, authMode: "password" },
-      auth: { token: "t", audience: `${ORIGIN}/mcp`, scope: [] },
-    }) as unknown as OAuthResourceContext<unknown>;
-    const request = new Request(`${ORIGIN}/mcp`, {
-      method: "POST",
-      headers: { Accept: MCP_ACCEPT, "Content-Type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
-    });
-    const res = await mcpHandler.fetch(request, env, ctx);
-    expect(res.status).toBe(403);
-    expect(res.headers.get("WWW-Authenticate")).toContain('error="insufficient_scope"');
-  });
-});
-
-describe("revoking sessions", () => {
-  async function expectRevoked(token: string, userId: string) {
-    expect((await mcpInitialize(token)).status).toBe(401);
-    expect((await oauthApi(ORIGIN).listUserGrants(userId)).items).toEqual([]);
-  }
-
-  it("revokes MCP grants with POST /api/v1/users/:id/revoke-sessions", async () => {
-    const { access_token } = await authorizeClient(memberCookies);
-    await expectMcpOk(await mcpInitialize(access_token));
-    const res = await send(`/api/v1/users/${member.id}/revoke-sessions`, { method: "POST", cookies: adminCookies });
-    expect(res.status).toBe(204);
-    await expectRevoked(access_token, member.id);
-  });
-
-  it("revokes MCP grants when an admin resets the password", async () => {
-    const { access_token } = await authorizeClient(memberCookies);
-    const res = await send(`/api/v1/users/${member.id}/password`, {
-      cookies: adminCookies,
-      json: { password: "a brand new password" },
-    });
-    expect(res.status).toBe(204);
-    await expectRevoked(access_token, member.id);
-  });
-
-  it("revokes MCP grants when the user changes the password", async () => {
-    const { access_token } = await authorizeClient(memberCookies);
-    const res = await send("/api/v1/me/password", {
-      cookies: memberCookies,
-      json: { current_password: PASSWORD, new_password: "a brand new password" },
-    });
-    expect(res.status).toBe(204);
-    await expectRevoked(access_token, member.id);
-  });
-
-  it("revokes MCP grants when an admin deletes the user", async () => {
-    const { access_token } = await authorizeClient(memberCookies);
-    expect((await oauthApi(ORIGIN).listUserGrants(member.id)).items).toHaveLength(1);
-    const res = await send(`/api/v1/users/${member.id}`, { method: "DELETE", cookies: adminCookies });
-    expect(res.status).toBe(204);
-    await expectRevoked(access_token, member.id);
-  });
-
-  it("keeps MCP grants when the web session logs out", async () => {
-    const { access_token } = await authorizeClient(memberCookies);
-    expect((await send("/auth/logout", { method: "POST", cookies: memberCookies })).status).toBe(200);
-    await expectMcpOk(await mcpInitialize(access_token));
-  });
-});
-
-describe("grant lifetime", () => {
-  it("is 30 days in password mode", async () => {
-    const before = Math.floor(Date.now() / 1000);
-    const token = await authorizeClient(memberCookies);
-    const after = Math.floor(Date.now() / 1000);
-    expect(token.refresh_token).toBeDefined();
-    const { items } = await oauthApi(ORIGIN).listUserGrants(member.id);
-    expect(items).toHaveLength(1);
-    const expiresAt = items[0]?.expiresAt ?? 0;
-    expect(expiresAt).toBeGreaterThanOrEqual(before + 2_592_000);
-    expect(expiresAt).toBeLessThanOrEqual(after + 2_592_000);
-  });
-
-  it("is 24 hours in oidc mode", async () => {
-    const cookies = await oidcSessionCookies(member);
-    const before = Math.floor(Date.now() / 1000);
-    await authorizeClient(cookies, { origin: OIDC_ORIGIN, env: oidcEnv });
-    const after = Math.floor(Date.now() / 1000);
-    const { items } = await oauthApi(OIDC_ORIGIN, oidcEnv).listUserGrants(member.id);
-    expect(items).toHaveLength(1);
-    const expiresAt = items[0]?.expiresAt ?? 0;
-    expect(expiresAt).toBeGreaterThanOrEqual(before + 86_400);
-    expect(expiresAt).toBeLessThanOrEqual(after + 86_400);
   });
 });
 
@@ -574,7 +411,7 @@ describe("bots and MCP connections", () => {
       userId: member.id,
       metadata: {},
       scope: ["mcp"],
-      props: { userId: member.id, authMode: "password" },
+      props: { userId: member.id, authMode: "password", authorizedAt: clock.now() },
     });
     const code = new URL(redirectTo).searchParams.get("code") ?? "";
     const res = await send(`${origin}/oauth/token`, {

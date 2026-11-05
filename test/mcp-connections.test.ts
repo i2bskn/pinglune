@@ -2,7 +2,7 @@ import type { GrantSummary, OAuthHelpers } from "@cloudflare/workers-oauth-provi
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { McpConnection, McpConnectionList } from "../src/api/types";
-import { clock } from "../src/clock";
+import { clock } from "@i2bskn/workers-app-core";
 import type { UserRow } from "../src/db/schema";
 import { newBotId, newMcpConnectionId } from "../src/ids";
 import { MCP_CONNECTION_LISTING_GRACE_MS } from "../src/mcp/connections";

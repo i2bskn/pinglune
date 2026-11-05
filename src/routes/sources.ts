@@ -11,9 +11,8 @@ import type {
   UpdateSourceRequest,
   UpdateSourceScreeningRequest,
 } from "../api/types";
-import { apiError, requireUser } from "../auth/middleware";
-import { isUniqueViolation } from "../auth/users";
-import { clock } from "../clock";
+import { apiError, clock, isUniqueViolation } from "@i2bskn/workers-app-core";
+import { requireUser } from "../core";
 import { apiKeys, emailAddresses, sources, type WorkspaceRow } from "../db/schema";
 import {
   countActiveEmailAddresses,
@@ -34,7 +33,6 @@ import {
   SOURCE_ID_PATTERN,
 } from "../ids";
 import { MAX_ALLOWED_SENDERS, normalizeAllowedSender } from "../intake/email-sender";
-import { codePointLength } from "../intake/validation";
 import {
   countActiveApiKeys,
   countWorkspaceSources,
@@ -46,16 +44,18 @@ import {
   toApiSource,
 } from "../sources/queries";
 import { normalizeApiKey, verifyAndSaveApiKey } from "../screening/api-key";
-import { jsonBody } from "./api";
+import { jsonBody, unknownField } from "./api";
 import { conversationStartBody } from "./conversation-start";
 import { invalidApiKeyMessage, screeningApiKeyError } from "./screening";
+import { normalizeDisplayName, SOURCE_NAME_MAX_LENGTH } from "../sources/names";
 import { requirePersonalWorkspace } from "./workspace";
+
+// The rule of display names (src/sources/names.ts) and unknownField (./api), also used by the other routes.
+export { normalizeDisplayName, SOURCE_NAME_MAX_LENGTH, unknownField };
 
 export const MAX_SOURCES_PER_WORKSPACE = 100;
 const MAX_ACTIVE_KEYS_PER_SOURCE = 10;
 const MAX_ACTIVE_EMAIL_ADDRESSES_PER_SOURCE = 10;
-export const SOURCE_NAME_MAX_LENGTH = 64;
-const CONTROL = /[\u0000-\u001F\u007F-\u009F]/;
 
 const sourceNotFound = "送信元が見つかりません";
 const keyNotFound = "APIキーが見つかりません";
@@ -72,24 +72,9 @@ function emailDomainOf(env: Bindings): string | null {
   return result.domain;
 }
 
-// The trimmed name, or null if invalid: 1 to 64 characters without control characters. Also the rule of the
-// names of webhook destinations (src/routes/subscriptions.ts).
-export function normalizeDisplayName(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const name = value.trim();
-  const length = codePointLength(name);
-  if (length < 1 || length > SOURCE_NAME_MAX_LENGTH || CONTROL.test(name)) return null;
-  return name;
-}
-
 export const invalidNameMessage = "名前は制御文字を含まない 1〜64 文字にしてください";
 
-export function unknownField(body: Record<string, unknown>, allowed: string[]): string | null {
-  for (const key of Object.keys(body)) if (!allowed.includes(key)) return key;
-  return null;
-}
-
-const createSourceBody = jsonBody<CreateSourceRequest, { name: string }>((body, c) => {
+const createSourceBody = jsonBody<CreateSourceRequest, { name: string }, AppEnv>((body, c) => {
   const unknown = unknownField(body, ["name"]);
   if (unknown !== null) return apiError(c, 400, "unknown_field", `未知の項目があります: ${unknown}`);
   const name = normalizeDisplayName(body.name);
@@ -108,7 +93,7 @@ const conversationStartEnabledMessage =
 const apiKeyRequiredMessage = "判定を有効にするには TypeSafe の API キーを入力してください";
 const apiKeyAlreadySetMessage = "API キーは設定済みです。変更は API キーの「変更」から行ってください";
 
-const sourceScreeningBody = jsonBody<UpdateSourceScreeningRequest, { enabled: boolean; apiKey?: unknown }>(
+const sourceScreeningBody = jsonBody<UpdateSourceScreeningRequest, { enabled: boolean; apiKey?: unknown }, AppEnv>(
   (body, c) => {
     const unknown = unknownField(body, ["enabled", "api_key"]);
     if (unknown !== null) return apiError(c, 400, "unknown_field", `未知の項目があります: ${unknown}`);
@@ -120,7 +105,7 @@ const sourceScreeningBody = jsonBody<UpdateSourceScreeningRequest, { enabled: bo
   },
 );
 
-const emailSenderVerificationBody = jsonBody<UpdateSourceEmailSenderVerificationRequest, { enabled: boolean }>(
+const emailSenderVerificationBody = jsonBody<UpdateSourceEmailSenderVerificationRequest, { enabled: boolean }, AppEnv>(
   (body, c) => {
     const unknown = unknownField(body, ["enabled"]);
     if (unknown !== null) return apiError(c, 400, "unknown_field", `未知の項目があります: ${unknown}`);
@@ -133,7 +118,7 @@ const emailSenderVerificationBody = jsonBody<UpdateSourceEmailSenderVerification
 
 // The senders normalized, without duplicates, in the order given. The limit counts the elements given, duplicates
 // included. The position in the message is that of the element (1-based), of the first invalid one.
-const emailSendersBody = jsonBody<UpdateSourceEmailSendersRequest, { senders: string[] }>((body, c) => {
+const emailSendersBody = jsonBody<UpdateSourceEmailSendersRequest, { senders: string[] }, AppEnv>((body, c) => {
   const unknown = unknownField(body, ["senders"]);
   if (unknown !== null) return apiError(c, 400, "unknown_field", `未知の項目があります: ${unknown}`);
   const input: unknown = body.senders;
@@ -154,7 +139,7 @@ const emailSendersBody = jsonBody<UpdateSourceEmailSendersRequest, { senders: st
   return { ok: true, value: { senders } };
 });
 
-const updateSourceBody = jsonBody<UpdateSourceRequest, { name?: string; enabled?: boolean }>((body, c) => {
+const updateSourceBody = jsonBody<UpdateSourceRequest, { name?: string; enabled?: boolean }, AppEnv>((body, c) => {
   const unknown = unknownField(body, ["name", "enabled"]);
   if (unknown !== null) return apiError(c, 400, "unknown_field", `未知の項目があります: ${unknown}`);
   if (!("name" in body) && !("enabled" in body)) {

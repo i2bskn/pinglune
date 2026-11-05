@@ -4,7 +4,7 @@
 // (src/conversations/start.ts).
 
 import type { IngestConversationResponse } from "../api/types";
-import { findUserById } from "../auth/users";
+import { findUserById } from "@i2bskn/workers-app-core";
 import { findWorkspaceConversation, listConversationParticipants } from "../conversations/queries";
 import {
   duplicateMessage,
@@ -16,7 +16,7 @@ import {
 } from "../conversations/service";
 import { startConversation } from "../conversations/start";
 import type { ConversationRow } from "../db/schema";
-import { normalizeDisplayName } from "../routes/sources";
+import { normalizeDisplayName } from "../sources/names";
 import { findSourceById } from "../sources/queries";
 import { findWorkspaceById } from "../workspaces/queries";
 import { codePointLength, IDEMPOTENCY_KEY_PATTERN, intakeError, type IntakeError } from "./validation";

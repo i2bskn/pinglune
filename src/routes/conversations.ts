@@ -12,10 +12,9 @@ import type {
   PostConversationMessageRequest,
   PostedConversationMessage,
 } from "../api/types";
-import { apiError, requireUser } from "../auth/middleware";
-import { isJsonObject } from "../auth/validate";
+import { apiError, clock, type Db, isJsonObject } from "@i2bskn/workers-app-core";
+import { requireUser } from "../core";
 import { activeConnectionsByBot, resolveBotDeliveries, workspaceBotsByIds } from "../bots/queries";
-import { clock } from "../clock";
 import {
   CONVERSATION_PAGE_SIZE,
   findWorkspaceConversation,
@@ -42,7 +41,6 @@ import {
   type MessageDeps,
   type ValidText,
 } from "../conversations/service";
-import type { Db } from "../db/client";
 import type { ConversationParticipantRow, ConversationRow, SubscriptionRow } from "../db/schema";
 import { callbackHost } from "../deliveries/queries";
 import type { AppEnv } from "../env";
@@ -98,7 +96,7 @@ type CreateInput = {
   idempotencyKey: string;
 };
 
-const createConversationBody = jsonBody<CreateConversationRequest, CreateInput>((body, c) => {
+const createConversationBody = jsonBody<CreateConversationRequest, CreateInput, AppEnv>((body, c) => {
   const unknown = unknownField(body, ["title", "max_ai_messages", "participants", "message", "idempotency_key"]);
   if (unknown !== null) return apiError(c, 400, "unknown_field", `未知の項目があります: ${unknown}`);
   const title = normalizeDisplayName(body.title);
@@ -123,7 +121,7 @@ const createConversationBody = jsonBody<CreateConversationRequest, CreateInput>(
   return { ok: true, value: { title, maxAiMessages, botIds, text, idempotencyKey: key } };
 });
 
-const postMessageBody = jsonBody<PostConversationMessageRequest, { text: ValidText; idempotencyKey: string }>(
+const postMessageBody = jsonBody<PostConversationMessageRequest, { text: ValidText; idempotencyKey: string }, AppEnv>(
   (body, c) => {
     const unknown = unknownField(body, ["text", "idempotency_key"]);
     if (unknown !== null) return apiError(c, 400, "unknown_field", `未知の項目があります: ${unknown}`);

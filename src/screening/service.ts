@@ -7,8 +7,7 @@
 // sender, releases and redeliveries never screen again. Every change of the state is conditional on the event being
 // pending, so that two consumers of the same event at the same time write one result.
 
-import { describeError } from "../auth/middleware";
-import { clock } from "../clock";
+import { clock, describeError } from "@i2bskn/workers-app-core";
 import { enqueuePendingDeliveries, type DeliveryMessage } from "../deliveries/enqueue";
 import { decryptApiKey } from "./api-key";
 import { callJev, type JevResult, type JevState } from "./jev";

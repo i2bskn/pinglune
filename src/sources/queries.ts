@@ -1,6 +1,6 @@
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import type { ApiKey, Source } from "../api/types";
-import type { Db } from "../db/client";
+import type { Db } from "@i2bskn/workers-app-core";
 import { parseAllowedSenders } from "../intake/email-sender";
 import { apiKeys, sources, type ApiKeyRow, type SourceRow } from "../db/schema";
 

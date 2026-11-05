@@ -1,6 +1,6 @@
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import type { EmailAddress } from "../api/types";
-import type { Db } from "../db/client";
+import type { Db } from "@i2bskn/workers-app-core";
 import { emailAddresses, type EmailAddressRow } from "../db/schema";
 
 // domain is the parsed EMAIL_DOMAIN; null leaves the address out.

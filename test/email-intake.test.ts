@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import PostalMime from "postal-mime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { clock } from "../src/clock";
+import { clock } from "@i2bskn/workers-app-core";
 import type { SourceRow, UserRow } from "../src/db/schema";
 import type { Bindings } from "../src/env";
 import worker from "../src/index";

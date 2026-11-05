@@ -1,6 +1,6 @@
 // Puts the deliveries of an event into the delivery queue (src/deliveries/consumer.ts).
 
-import { describeError } from "../auth/middleware";
+import { describeError } from "@i2bskn/workers-app-core";
 import { findUnsentDeliveryIds } from "./queries";
 
 // A delivery message carries the delivery ID only; the consumer reads the rest from D1. A screening message

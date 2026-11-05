@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, gte, inArray, isNull, lt, sql, type SQL } from "drizzle-orm";
 import type { EventData, EventDetail, EventScreening, EventSummary } from "../api/types";
-import type { Db } from "../db/client";
+import type { Db } from "@i2bskn/workers-app-core";
 import { botSources, eventData, events, sources, type EventDataRow } from "../db/schema";
 import { deliverableScreening, isRetryableScreeningError, parseScreeningStatus } from "../screening/state";
 import { isHtmlBodyData } from "./email-view";

@@ -29,7 +29,7 @@
     "not_found_handling": "single-page-application",
     // Paths handled by the Worker; everything else is served by the static assets without invoking it.
     // Patterns match the pathname only, and "/x/*" does not match "/x", so both are listed.
-    // Keep in sync with the routes in src/app.ts and isOAuthPath in src/index.ts: when adding a
+    // Keep in sync with the routes in src/app.ts and the OAuth paths in src/index.ts: when adding a
     // top-level path there, add it here as well.
     "run_worker_first": [
       "/api/*",

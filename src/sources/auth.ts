@@ -1,6 +1,5 @@
 import { eq } from "drizzle-orm";
-import { describeError } from "../auth/middleware";
-import type { Db } from "../db/client";
+import { type Db, describeError } from "@i2bskn/workers-app-core";
 import { apiKeys, type SourceRow } from "../db/schema";
 import { sha256Hex } from "../ids";
 import { findSourceById } from "./queries";
@@ -8,6 +7,14 @@ import { findSourceById } from "./queries";
 // pl_<keyId>_<secret>: keyId is 16 of [a-z0-9], secret is 32 bytes in base64url without padding.
 const API_KEY_PATTERN = /^pl_([a-z0-9]{16})_([A-Za-z0-9_-]{43})$/;
 const BEARER_PREFIX = "Bearer ";
+
+// Workers-specific API, declared here as in @cloudflare/workers-types so that the client tsconfig,
+// which also loads the DOM lib through AppType, accepts it (here and in src/mcp/events.ts).
+declare global {
+  interface SubtleCrypto {
+    timingSafeEqual(a: ArrayBuffer | ArrayBufferView, b: ArrayBuffer | ArrayBufferView): boolean;
+  }
+}
 
 export type ApiKeyAuthResult =
   | { ok: true; source: SourceRow }

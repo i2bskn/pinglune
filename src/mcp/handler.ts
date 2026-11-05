@@ -1,33 +1,36 @@
-import { insufficientScope, type OAuthResourceContext } from "@cloudflare/workers-oauth-provider";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import type { ServerCapabilities } from "@modelcontextprotocol/sdk/types.js";
-import { CfWorkerJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/cfworker";
-import { findUserById } from "../auth/users";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { Db, McpCheckResult, McpRequestContext } from "@i2bskn/workers-app-core";
 import { findActiveWorkspaceBot } from "../bots/queries";
-import { createDb, type Db } from "../db/client";
 import type { McpConnectionRow } from "../db/schema";
-import { loadConfig, type AuthMode, type Bindings } from "../env";
+import type { Bindings } from "../env";
 import { MCP_CONNECTION_ID_PATTERN } from "../ids";
 import { findUserConnection, findUserConnectionByGrant } from "./connections";
 import { appOriginHost, normalizeHost } from "../webhooks/destination";
 import { registerEventMethods } from "./events";
 import { registerTools } from "./tools";
 
-export const MCP_SCOPE = "mcp";
+// The MCP options of src/core.ts: the /mcp handler of @i2bskn/workers-app-core runs its checks (method, scope,
+// configuration, the base props, the user and users.mcp_revoked_at), then these.
+//
+// Only function declarations here, no constants that createCore reads: this module may be evaluated before
+// src/core.ts finishes loading (core.ts -> mcp/handler.ts -> mcp/tools.ts -> routes/sources.ts -> core.ts).
 
-// Stored in the grant by POST /authorize and passed to the handler as ctx.props. connectionId is the MCP connection
-// of the grant (src/mcp/connections.ts); grants made before connections were recorded have none.
-export type McpProps = { userId: string; authMode: AuthMode; connectionId?: string };
+// The app fields of the grant props, stored by POST /authorize next to the package's userId, authMode and
+// authorizedAt. connectionId is the MCP connection of the grant (src/mcp/connections.ts); grants made before
+// connections were recorded have none.
+export type PingluneMcpProps = { connectionId?: string };
 
-export function isMcpProps(value: unknown): value is McpProps {
-  if (typeof value !== "object" || value === null) return false;
-  const { userId, authMode, connectionId } = value as Record<string, unknown>;
-  return (
-    typeof userId === "string" &&
-    (authMode === "oidc" || authMode === "password") &&
-    (connectionId === undefined || (typeof connectionId === "string" && MCP_CONNECTION_ID_PATTERN.test(connectionId)))
-  );
+// The result of checkRequest, passed to register.
+export type McpExtra = { connection: McpConnectionRow | null; connectionBot: { id: string; name: string } | null };
+
+type Ctx = McpRequestContext<Bindings, PingluneMcpProps>;
+
+// connectionId is optional; when present it must be a connection ID. Anything else rejects the token with 401.
+export function parseProps(raw: Record<string, unknown>): PingluneMcpProps | null {
+  const { connectionId } = raw;
+  if (connectionId === undefined) return {};
+  if (typeof connectionId === "string" && MCP_CONNECTION_ID_PATTERN.test(connectionId)) return { connectionId };
+  return null;
 }
 
 type ConnectionResult = { ok: true; connection: McpConnectionRow | null } | { ok: false };
@@ -39,7 +42,7 @@ async function resolveConnection(
   db: Db,
   env: Bindings,
   userId: string,
-  props: McpProps,
+  props: PingluneMcpProps,
   token: string,
 ): Promise<ConnectionResult> {
   if (props.connectionId !== undefined) {
@@ -61,15 +64,38 @@ async function resolveConnection(
   return row.revokedAt !== null ? { ok: false } : { ok: true, connection: row };
 }
 
-// The same resource_metadata as the library's 401 for a missing token.
-function invalidToken(audience: string): Response {
-  const metadataUrl = `${new URL(audience).origin}/.well-known/oauth-protected-resource/mcp`;
-  return new Response(null, {
-    status: 401,
-    headers: {
-      "Cache-Control": "no-store",
-      "WWW-Authenticate": `Bearer error="invalid_token", resource_metadata="${metadataUrl}"`,
-    },
+// The connection of the request and its bot. A connection that is missing or revoked rejects the token with 401.
+export async function checkRequest({ db, env, user, props, auth, invalidToken }: Ctx): Promise<McpCheckResult<McpExtra>> {
+  const resolved = await resolveConnection(db, env, user.id, props, auth.token);
+  if (!resolved.ok) return invalidToken();
+  const connection = resolved.connection;
+  // The bot of the connection, when it is assigned to one that is not deleted.
+  const bot =
+    connection === null || connection.botId === null
+      ? undefined
+      : await findActiveWorkspaceBot(db, connection.workspaceId, connection.botId);
+  const connectionBot = bot === undefined ? null : { id: bot.id, name: bot.name };
+  return { ok: true, extra: { connection, connectionBot } };
+}
+
+// Registers the tools and the MCP Events methods on the server of this request.
+export function register(server: McpServer, { db, env, user, auth, request, config, extra }: Ctx & { extra: McpExtra }) {
+  registerTools(server, {
+    db,
+    d1: env.DB,
+    user,
+    bucket: env.EVENT_DATA,
+    clientId: auth.clientId ?? null,
+    connection: extra.connection,
+    connectionBot: extra.connectionBot,
+    queue: env.DELIVERY_QUEUE,
+  });
+  registerEventMethods(server, {
+    db,
+    user,
+    jwtSecret: config.jwtSecret,
+    selfHosts: selfHosts(request, env),
+    connection: extra.connection,
   });
 }
 
@@ -80,72 +106,3 @@ export function selfHosts(request: Request, env: Bindings): string[] {
   if (appHost !== null) hosts.push(appHost);
   return hosts;
 }
-
-// The SDK's ServerCapabilities type has no "events" (MCP Events is an extension); the value is sent as is.
-const capabilities = { events: {} } as ServerCapabilities;
-
-// Called by OAuthProvider for /mcp after the access token has been validated.
-export const mcpHandler = {
-  async fetch(request: Request, env: Bindings, ctx: ExecutionContext): Promise<Response> {
-    // Stateless: a GET would open an SSE stream that never carries anything, and there is no session to DELETE.
-    if (request.method === "GET" || request.method === "DELETE") {
-      return new Response(null, { status: 405, headers: { Allow: "POST" } });
-    }
-
-    const { auth, props } = ctx as OAuthResourceContext<unknown>;
-    if (!auth.scope.includes(MCP_SCOPE)) return insufficientScope(auth, [MCP_SCOPE]);
-
-    const result = loadConfig(env);
-    if (!result.ok) {
-      console.error("invalid configuration", { invalid: result.invalid });
-      return new Response(null, { status: 500 });
-    }
-    const config = result.config;
-    const db = createDb(env.DB);
-
-    // The user is read on every request so that role changes and deletions apply immediately.
-    // The grant is kept: a refreshed token also gets 401, and the client then authorizes again.
-    if (!isMcpProps(props) || props.authMode !== config.authMode) return invalidToken(auth.audience);
-    const user = await findUserById(db, props.userId);
-    if (!user) return invalidToken(auth.audience);
-    const resolved = await resolveConnection(db, env, user.id, props, auth.token);
-    if (!resolved.ok) return invalidToken(auth.audience);
-    const connection = resolved.connection;
-    // The bot of the connection, when it is assigned to one that is not deleted.
-    const bot =
-      connection === null || connection.botId === null
-        ? undefined
-        : await findActiveWorkspaceBot(db, connection.workspaceId, connection.botId);
-    const connectionBot = bot === undefined ? null : { id: bot.id, name: bot.name };
-
-    // A new server and transport per request (stateless).
-    const server = new McpServer(
-      { name: "pinglune", version: "0.0.0" },
-      // Avoids compiling Ajv on every request.
-      { jsonSchemaValidator: new CfWorkerJsonSchemaValidator(), capabilities },
-    );
-    registerTools(server, {
-      db,
-      d1: env.DB,
-      user,
-      bucket: env.EVENT_DATA,
-      clientId: auth.clientId ?? null,
-      connection,
-      connectionBot,
-      queue: env.DELIVERY_QUEUE,
-    });
-    registerEventMethods(server, {
-      db,
-      user,
-      jwtSecret: config.jwtSecret,
-      selfHosts: selfHosts(request, env),
-      connection,
-    });
-    const transport = new WebStandardStreamableHTTPServerTransport({
-      sessionIdGenerator: undefined,
-      enableJsonResponse: true,
-    });
-    await server.connect(transport);
-    return transport.handleRequest(request);
-  },
-};

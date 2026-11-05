@@ -9,12 +9,10 @@ import type {
   SubscriptionList,
   SubscriptionStatus,
 } from "../api/types";
-import { apiError, requireUser } from "../auth/middleware";
-import { isUniqueViolation } from "../auth/users";
+import { apiError, clock, type Db, isUniqueViolation } from "@i2bskn/workers-app-core";
+import { requireUser } from "../core";
 import { listWorkspaceBots, MAX_BOTS_PER_WORKSPACE } from "../bots/queries";
 import { canonicalJson } from "../canonical-json";
-import { clock } from "../clock";
-import type { Db } from "../db/client";
 import { mcpConnections, subscriptions, type McpConnectionRow, type SubscriptionRow } from "../db/schema";
 import type { AppEnv } from "../env";
 import { callbackHost } from "../deliveries/queries";
@@ -266,7 +264,7 @@ export async function destinationLimitResponse(
   return count >= MAX_ACTIVE_QUEUES_PER_WORKSPACE ? apiError(c, 409, "limit_exceeded", queueLimitMessage) : null;
 }
 
-const createWebhookDestinationBody = jsonBody<CreateWebhookDestinationRequest, WebhookDestinationInput>((body, c) => {
+const createWebhookDestinationBody = jsonBody<CreateWebhookDestinationRequest, WebhookDestinationInput, AppEnv>((body, c) => {
   const unknown = unknownField(body, ["name", "url", "token", ...FILTER_FIELDS]);
   if (unknown !== null) return apiError(c, 400, "unknown_field", `未知の項目があります: ${unknown}`);
   const name = normalizeDisplayName(body.name);
@@ -280,7 +278,7 @@ const createWebhookDestinationBody = jsonBody<CreateWebhookDestinationRequest, W
 
 type QueueInput = { name: string; filter: EventFilter };
 
-const createQueueBody = jsonBody<CreateQueueRequest, QueueInput>((body, c) => {
+const createQueueBody = jsonBody<CreateQueueRequest, QueueInput, AppEnv>((body, c) => {
   const unknown = unknownField(body, ["name", ...FILTER_FIELDS]);
   if (unknown !== null) return apiError(c, 400, "unknown_field", `未知の項目があります: ${unknown}`);
   const name = normalizeDisplayName(body.name);
