@@ -42,6 +42,8 @@ CookieにSecure属性と`__Host-`接頭辞を使っているので、`http://loc
 3. D1のマイグレーション（`drizzle/migrations`）を本番に適用します（マイグレーションだけなら `pnpm db:migrate:remote`）。
 4. `wrangler deploy` を実行します。新しいコードが動く前にテーブルができているよう、マイグレーションの後にしています。
 
+`CUSTOM_DOMAIN`（カンマ区切りのホスト名）が設定されていれば、4で `wrangler deploy --domains` に渡します。指定したホスト名がCustom Domainとして割り当てられ、workers.devは無効になります。設定がないとき、`wrangler deploy` はworkers.devを毎回有効にします。`wrangler.jsonc` に `workers_dev` もルートもない場合の既定の動きで、ダッシュボードで無効にしても戻ります。
+
 `LOCATION_HINT` を設定していない初回のデプロイでD1がまだないときは、3と4を入れ替えて `wrangler deploy` を先に実行します。D1・KV・R2・Queuesのキューを自動で作るのは `wrangler deploy` で、`wrangler d1 migrations apply` は既存のD1を探すだけだからです。テーブルができるまでの数秒間、Workerはテーブルのない状態で動きますが、まだ誰も使っていないので影響はありません。
 
 手元から `pnpm run deploy` を実行する場合、Cloudflareのアカウントが複数あると、wranglerがアカウントを選べずに失敗します。`CLOUDFLARE_ACCOUNT_ID` にデプロイ先のアカウントIDを指定してください。

@@ -15,6 +15,11 @@
 // creates the missing ones in that location first, and `wrangler deploy` then connects to them by name. The
 // location of an existing database or bucket cannot be changed, so existing ones are left as they are.
 //
+// When neither `workers_dev` nor routes are in the Wrangler configuration, `wrangler deploy` enables the workers.dev
+// subdomain on every deploy, even after it was disabled in the dashboard. When the CUSTOM_DOMAIN environment variable
+// (a Workers Builds build variable; comma-separated hostnames) is set, this script passes the hostnames to
+// `wrangler deploy --domains`, which attaches them as Custom Domains and, having routes, leaves workers.dev disabled.
+//
 // The bindings are read from the Wrangler configuration (top level only, not `env.*`), so this script does not
 // depend on the names used by this project.
 import { spawnSync } from "node:child_process";
@@ -60,6 +65,18 @@ function output(result) {
 const location = (process.env.LOCATION_HINT ?? "").trim().toLowerCase() || undefined;
 if (location !== undefined && !LOCATIONS.includes(location)) {
   console.error(`Invalid LOCATION_HINT "${process.env.LOCATION_HINT}": expected one of ${LOCATIONS.join(", ")}.`);
+  process.exit(1);
+}
+
+// Hostnames only: Custom Domains take no scheme, path, port or wildcard.
+const HOSTNAME = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+const domains = (process.env.CUSTOM_DOMAIN ?? "")
+  .split(",")
+  .map((domain) => domain.trim().toLowerCase())
+  .filter((domain) => domain !== "");
+const invalidDomain = domains.find((domain) => !HOSTNAME.test(domain));
+if (invalidDomain !== undefined) {
+  console.error(`Invalid CUSTOM_DOMAIN "${invalidDomain}": expected hostnames such as pinglune.example.com, separated by commas.`);
   process.exit(1);
 }
 
@@ -163,8 +180,13 @@ function migrate() {
 }
 
 function deploy() {
-  console.log("Deploying the Worker.");
-  run(["deploy"]);
+  if (domains.length === 0) {
+    console.log("Deploying the Worker. CUSTOM_DOMAIN is not set: the workers.dev subdomain stays enabled.");
+    run(["deploy"]);
+    return;
+  }
+  console.log(`Deploying the Worker to ${domains.join(", ")}. The workers.dev subdomain is disabled.`);
+  run(["deploy", ...domains.flatMap((domain) => ["--domains", domain])]);
 }
 
 const missing = migrated.filter((db) => !databaseExists.get(db.binding));
