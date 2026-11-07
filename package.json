@@ -18,7 +18,7 @@
   "dependencies": {
     "@cfworker/json-schema": "4.1.1",
     "@cloudflare/workers-oauth-provider": "1.2.3",
-    "@i2bskn/workers-app-core": "0.1.1",
+    "@i2bskn/workers-app-core": "0.1.2",
     "@modelcontextprotocol/sdk": "1.32.1",
     "drizzle-orm": "0.45.4",
     "hono": "4.13.16",

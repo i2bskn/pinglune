@@ -15,8 +15,8 @@ importers:
         specifier: 1.2.3
         version: 1.2.3
       '@i2bskn/workers-app-core':
-        specifier: 0.1.1
-        version: 0.1.1(@cfworker/json-schema@4.1.1)(@cloudflare/workers-oauth-provider@1.2.3)(@modelcontextprotocol/sdk@1.32.1(@cfworker/json-schema@4.1.1)(zod@4.6.7))(drizzle-orm@0.45.4(@cloudflare/workers-types@5.20261028.1))(hono@4.13.16)(openid-client@6.8.8)
+        specifier: 0.1.2
+        version: 0.1.2(@cfworker/json-schema@4.1.1)(@cloudflare/workers-oauth-provider@1.2.3)(@modelcontextprotocol/sdk@1.32.1(@cfworker/json-schema@4.1.1)(zod@4.6.7))(drizzle-orm@0.45.4(@cloudflare/workers-types@5.20261028.1))(hono@4.13.16)(openid-client@6.8.8)
       '@modelcontextprotocol/sdk':
         specifier: 1.32.1
         version: 1.32.1(@cfworker/json-schema@4.1.1)(zod@4.6.7)
@@ -600,8 +600,8 @@ packages:
     peerDependencies:
       hono: ^4 || ^5.0.0-0
 
-  '@i2bskn/workers-app-core@0.1.1':
-    resolution: {integrity: sha512-hPwnFFklJ1oP7WA5K9aVTgNkd/9kOez1hn8UoKOn+CP5x13+lIKkF7QnJ08QFAiM78dhvgXZ8r6v1GK6e7A7xQ==}
+  '@i2bskn/workers-app-core@0.1.2':
+    resolution: {integrity: sha512-pfvPSowcsKD90NKh63Voujm7x0PcH45J682owAfg3/tXQT9B9hjbTtdZEYabA8zoqKLRIpLk53ITlJkBahbGrw==}
     peerDependencies:
       '@cfworker/json-schema': ^4.1.1
       '@cloudflare/workers-oauth-provider': ^1.2.3
@@ -2229,7 +2229,7 @@ snapshots:
     dependencies:
       hono: 4.13.16
 
-  '@i2bskn/workers-app-core@0.1.1(@cfworker/json-schema@4.1.1)(@cloudflare/workers-oauth-provider@1.2.3)(@modelcontextprotocol/sdk@1.32.1(@cfworker/json-schema@4.1.1)(zod@4.6.7))(drizzle-orm@0.45.4(@cloudflare/workers-types@5.20261028.1))(hono@4.13.16)(openid-client@6.8.8)':
+  '@i2bskn/workers-app-core@0.1.2(@cfworker/json-schema@4.1.1)(@cloudflare/workers-oauth-provider@1.2.3)(@modelcontextprotocol/sdk@1.32.1(@cfworker/json-schema@4.1.1)(zod@4.6.7))(drizzle-orm@0.45.4(@cloudflare/workers-types@5.20261028.1))(hono@4.13.16)(openid-client@6.8.8)':
     dependencies:
       '@cfworker/json-schema': 4.1.1
       '@cloudflare/workers-oauth-provider': 1.2.3
