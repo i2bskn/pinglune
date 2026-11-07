@@ -14,12 +14,10 @@
   // Preview URLs would serve unmigrated code against the production D1 database.
   "preview_urls": false,
   "observability": { "enabled": true },
-  // The D1 database can end up far from the users: the Deploy to Cloudflare button creates it where its setup page
-  // says (Automatic by default), and without the LOCATION_HINT build variable (see scripts/deploy.mjs) `wrangler deploy`
-  // creates it near whoever runs it (for Workers Builds, the build environment). An API request makes several
-  // sequential D1 queries, so Smart Placement runs the Worker near the database instead of near the user.
-  // Static assets are still served from the nearest location, since they do not invoke the Worker.
-  "placement": { "mode": "smart" },
+  // No "placement": the Worker runs near the request, and the D1 database is created near the users (the location
+  // selectors of the Deploy to Cloudflare button, or the LOCATION_HINT build variable read by scripts/deploy.mjs).
+  // Smart Placement ("mode": "smart") is not used: on an instance whose D1 database is in APAC, it ran the requests
+  // from Japan in IAD (cf-placement: remote-IAD), so that every D1 query of an API request crossed the Pacific.
   // Builds the React client into dist/client before `wrangler deploy` and `wrangler dev`, so that
   // the Workers Builds build command can stay empty. `wrangler dev` rebuilds when client/ changes.
   "build": { "command": "pnpm run build:client", "watch_dir": "client" },
