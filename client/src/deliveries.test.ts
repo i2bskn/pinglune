@@ -92,6 +92,13 @@ describe("error labels", () => {
   it("describes a retry that could not be enqueued", () => {
     expect(errorLabel("retry_enqueue_failed")).toBe("再送を受け付けられませんでした");
   });
+
+  it("describes the failures of email deliveries", () => {
+    expect(errorLabel("email_delivery_not_configured")).toBe("メール配信が設定されていません");
+    expect(errorLabel("email_rejected")).toBe("メールの送信が拒否されました");
+    expect(errorLabel("email_failed")).toBe("メールを送れませんでした");
+    expect(errorLabel("invalid_destination")).toBe("宛先が正しくありません");
+  });
 });
 
 describe("the delivery history", () => {
@@ -121,6 +128,26 @@ describe("the delivery history", () => {
     // An ended webhook destination never comes back; an MCP Events subscription may be made again.
     expect(canRetry({ ...base, last_error: "subscription_inactive" })).toBe(false);
     expect(canRetry({ ...base, destination_kind: "mcp", last_error: "subscription_inactive" })).toBe(true);
+  });
+
+  it("offers a retry for failed email deliveries as for webhook destinations", () => {
+    const email: Delivery = {
+      ...base,
+      callback_host: null,
+      destination_kind: "email",
+      destination_name: "mail",
+      last_http_status: null,
+      last_error: "email_failed",
+    };
+    expect(canRetry(email)).toBe(true);
+    expect(canRetry({ ...email, last_error: "email_delivery_not_configured" })).toBe(true);
+    expect(canRetry({ ...email, last_error: "subscription_inactive" })).toBe(false);
+    expect(noRetryReason(email)).toBeNull();
+    expect(noRetryReason({ ...email, last_error: "subscription_inactive" })).toBe("配信先が終了しているため再送できません");
+    // No HTTP status for an email.
+    expect(lastResult(email)).toBe("メールを送れませんでした");
+    expect(lastResult({ ...email, status: "delivered", last_error: null })).toBe("成功");
+    expect(destinationLabel(email)).toBe("mail");
   });
 
   it("says why a failed delivery cannot be retried", () => {
@@ -166,6 +193,7 @@ describe("subscriptionBotLabel", () => {
     kind: "webhook",
     name: "grok",
     callback_host: "api.example.com",
+    email_to: null,
     arguments: {},
     status: "active",
     refresh_before: null,

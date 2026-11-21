@@ -68,6 +68,7 @@ describe("conversation labels", () => {
   it("names the destinations by kind", () => {
     expect(subscriptionLabel({ kind: "webhook", name: "Grok", callback_host: "x.example.com" })).toBe("Webhook: Grok");
     expect(subscriptionLabel({ kind: "queue", name: "Muse", callback_host: null })).toBe("キュー: Muse");
+    expect(subscriptionLabel({ kind: "email", name: "Mail", callback_host: null })).toBe("メール: Mail");
     expect(subscriptionLabel({ kind: "mcp", name: null, callback_host: "dot.example.com" })).toBe("MCP: dot.example.com");
   });
 

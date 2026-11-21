@@ -34,6 +34,13 @@ JWT_SECRET=
 # Keep it commented out here, so that the Deploy to Cloudflare button does not ask for it as a secret.
 # EMAIL_DOMAIN=example.com
 
+# Optional. The sender address of the email deliveries of bots (the "email" delivery kind), e.g.
+# pinglune@notify.example.com. Its domain must be onboarded to Cloudflare Email Sending (the send_email binding in
+# wrangler.jsonc). Do not use an address of the email intake. Unset, the email delivery kind is shown as not set up.
+# An invalid address is treated as unset and logged as a warning. Keep it commented out here, so that the Deploy to
+# Cloudflare button does not ask for it as a secret.
+# EMAIL_FROM=pinglune@notify.example.com
+
 # Optional. The score (greater than 0, at most 1) at or above which the screening of events for instructions to AIs
 # holds an event. Default 0.5; an invalid value is treated as 0.5. The TypeSafe API key is entered on the management
 # screen (the settings of a source), not here. Keep it commented out here, so that the Deploy to Cloudflare button

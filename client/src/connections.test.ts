@@ -12,6 +12,7 @@ function subscription(id: string, connectionId: string | null, kind: Subscriptio
     kind,
     name: null,
     callback_host: "connectors.example.com",
+    email_to: null,
     arguments: {},
     status: "active",
     refresh_before: 1,

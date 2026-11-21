@@ -3,14 +3,17 @@
 // A message is one delivery, or the screening of one event ({ kind: "screen" }, src/screening/service.ts). Each
 // delivery message is one delivery. The consumer reads the delivery, checks that the subscription is still active and
 // that its user still has access to the workspace, builds the envelope from D1 and sends a webhook: signed for MCP
-// Events subscriptions, with the Bearer key for webhook destinations. Sends
+// Events subscriptions, with the Bearer key for webhook destinations. Email destinations are sent an email instead
+// (src/deliveries/email.ts). Sends
 // that may succeed later are retried with a delay of 30 seconds doubling up to 5 times (about 15 minutes in
 // total); the number of tries is counted in D1. Every state change is conditional on the delivery being pending,
 // so that a delivery processed twice at the same time is never overwritten.
 
 import { clock, createDb, type Db, describeError } from "@i2bskn/workers-app-core";
+import type { EventDetail } from "../api/types";
 import type { DeliveryRow, SubscriptionRow } from "../db/schema";
-import { loadConfig, type Bindings } from "../env";
+import { emailAddressOf, isIntakeAddress } from "../email/address";
+import { emailDeliveryConfig, loadConfig, parseEmailDomain, type Bindings, type EmailDeliveryConfig } from "../env";
 import { findWorkspaceEvent, findWorkspaceEventScope } from "../events/queries";
 import { DELIVERY_ID_PATTERN, EVENT_ID_PATTERN } from "../ids";
 import {
@@ -25,6 +28,7 @@ import { findSubscriptionById } from "../subscriptions/queries";
 import { appOriginHost } from "../webhooks/destination";
 import { sendWebhook, type SendResult, type WebhookAuth } from "../webhooks/send";
 import { findPersonalWorkspaceByUserId } from "../workspaces/queries";
+import { deliveryEmail, sendDeliveryEmail } from "./email";
 import { deliveryEnvelope } from "./envelope";
 import { failPendingDelivery, findDeliveryById, MAX_ATTEMPTS, recordAttempt, type DeliveryStatus } from "./queries";
 
@@ -41,7 +45,17 @@ const DEAD_LETTER_RETRY_SECONDS = 60;
 
 const encoder = new TextEncoder();
 
-type ConsumerDeps = { d1: D1Database; db: Db; jwtSecret: string; selfHosts: string[]; screening: ScreeningDeps };
+type ConsumerDeps = {
+  d1: D1Database;
+  db: Db;
+  jwtSecret: string;
+  selfHosts: string[];
+  screening: ScreeningDeps;
+  // The sending of email deliveries; null when it is not set up (emailDeliveryConfig).
+  email: EmailDeliveryConfig | null;
+  // The domain of the email intake (EMAIL_DOMAIN), which email deliveries never send to; null when it is off.
+  intakeDomain: string | null;
+};
 
 // 30, 60, 120, 240, 480 seconds after the 1st to 5th try.
 function retryDelaySeconds(attempts: number): number {
@@ -106,11 +120,11 @@ async function bearerToken(jwtSecret: string, subscription: SubscriptionRow): Pr
 // constraint, so a row may hold any value.
 function kindOf(subscription: SubscriptionRow): SubscriptionRow["kind"] | null {
   const kind: string = subscription.kind;
-  return kind === "mcp" || kind === "webhook" || kind === "queue" ? kind : null;
+  return kind === "mcp" || kind === "webhook" || kind === "queue" || kind === "email" ? kind : null;
 }
 
 // The kinds that are sent as webhooks.
-type SentKind = Exclude<SubscriptionRow["kind"], "queue">;
+type SentKind = Exclude<SubscriptionRow["kind"], "queue" | "email">;
 
 // How the webhook is authenticated, or null if its secret cannot be decrypted. Only MCP Events subscriptions
 // rotate secrets, so only they also sign with the previous one.
@@ -136,6 +150,75 @@ function statusAfter(result: SendResult, attempts: number): DeliveryStatus {
   // The destination may become allowed when DNS changes, but it is not retried to stay on the safe side.
   if (result.reason === "blocked_destination") return "failed";
   return attempts >= MAX_ATTEMPTS ? "failed" : "pending";
+}
+
+// Records a try and settles the message: retried with the delay of the try while the delivery stays pending, acked
+// otherwise. Returns the status recorded, or null when another consumer recorded this try first (it decides what
+// happens next).
+async function settleAttempt(
+  d1: D1Database,
+  message: Message<unknown>,
+  delivery: DeliveryRow,
+  record: { status: DeliveryStatus; httpStatus: number | null; error: string | null; now: number },
+): Promise<DeliveryStatus | null> {
+  const updated = await recordAttempt(d1, delivery.id, delivery.attempts, record);
+  if (!updated) {
+    message.ack();
+    return null;
+  }
+  if (record.status === "pending") {
+    message.retry({ delaySeconds: retryDelaySeconds(delivery.attempts + 1) });
+  } else {
+    message.ack();
+  }
+  return record.status;
+}
+
+// The send of an email destination, after the checks of deliver. A send that Email Sending rejects is not retried;
+// any other failure is retried like a webhook.
+async function deliverEmail(
+  deps: ConsumerDeps,
+  message: Message<unknown>,
+  params: {
+    delivery: DeliveryRow;
+    subscription: SubscriptionRow;
+    event: EventDetail;
+    email: EmailDeliveryConfig;
+    to: string;
+    now: number;
+    fail: (reason: string) => Promise<void>;
+  },
+): Promise<void> {
+  const { delivery, now } = params;
+  const email = deliveryEmail(params.event, { from: params.email.from, to: params.to, maxBytes: MAX_PAYLOAD_BYTES });
+  if (email === null) {
+    await params.fail("payload_too_large");
+    return;
+  }
+  const result = await sendDeliveryEmail(params.email.send, email);
+  const attempts = delivery.attempts + 1;
+  if (result.ok) {
+    // Never the address or the text.
+    console.log("email delivered", { deliveryId: delivery.id, messageId: result.messageId });
+  } else {
+    console.warn("email delivery failed", {
+      deliveryId: delivery.id,
+      subscriptionId: params.subscription.id,
+      code: result.code,
+      attempts,
+    });
+  }
+  const status: DeliveryStatus = result.ok
+    ? "delivered"
+    : result.rejected || attempts >= MAX_ATTEMPTS
+      ? "failed"
+      : "pending";
+  await settleAttempt(deps.d1, message, delivery, {
+    status,
+    httpStatus: null,
+    error: result.ok ? null : result.rejected ? "email_rejected" : "email_failed",
+    now,
+  });
 }
 
 // Steps 2 to 8 of one message. Throws on unexpected errors (D1, for example); the caller retries.
@@ -178,10 +261,33 @@ async function deliver(deps: ConsumerDeps, message: Message<unknown>, id: string
     message.ack();
     return;
   }
+  // An email destination whose sending was turned off after it was made, or whose address is broken or now at the
+  // domain of the email intake (EMAIL_DOMAIN changed): retrying does not help, and the try is not counted.
+  let emailTarget: { email: EmailDeliveryConfig; to: string } | null = null;
+  if (kind === "email") {
+    if (deps.email === null) {
+      await fail("email_delivery_not_configured");
+      return;
+    }
+    const to = emailAddressOf(subscription.callbackUrl);
+    if (to === null || (deps.intakeDomain !== null && isIntakeAddress(to, deps.intakeDomain))) {
+      await fail("invalid_destination");
+      return;
+    }
+    emailTarget = { email: deps.email, to };
+  }
 
   const event = await findWorkspaceEvent(db, delivery.workspaceId, delivery.eventId);
   if (!event) {
     await fail("event_not_found");
+    return;
+  }
+
+  if (kind === "email") {
+    // Set above for every email destination that reaches here.
+    if (emailTarget !== null) {
+      await deliverEmail(deps, message, { delivery, subscription, event, ...emailTarget, now, fail });
+    }
     return;
   }
 
@@ -213,22 +319,12 @@ async function deliver(deps: ConsumerDeps, message: Message<unknown>, id: string
   );
 
   const attempts = delivery.attempts + 1;
-  const status = statusAfter(result, attempts);
-  const updated = await recordAttempt(d1, id, delivery.attempts, {
-    status,
+  const status = await settleAttempt(d1, message, delivery, {
+    status: statusAfter(result, attempts),
     httpStatus: result.status ?? null,
     error: result.ok ? null : result.reason,
     now,
   });
-  // Another consumer recorded this try first; it decides what happens next.
-  if (!updated) {
-    message.ack();
-    return;
-  }
-  if (status === "pending") {
-    message.retry({ delaySeconds: retryDelaySeconds(attempts) });
-    return;
-  }
   if (status === "failed") {
     // Never the whole URL or the body.
     console.warn("delivery failed", {
@@ -239,7 +335,6 @@ async function deliver(deps: ConsumerDeps, message: Message<unknown>, id: string
       attempts,
     });
   }
-  message.ack();
 }
 
 async function processDelivery(deps: ConsumerDeps, message: Message<unknown>): Promise<void> {
@@ -308,6 +403,7 @@ export async function handleQueue(batch: MessageBatch<unknown>, env: Bindings): 
     return;
   }
   const appHost = appOriginHost(env.APP_ORIGIN);
+  const intake = parseEmailDomain(env.EMAIL_DOMAIN);
   const deps: ConsumerDeps = {
     d1: env.DB,
     db: createDb(env.DB),
@@ -321,6 +417,9 @@ export async function handleQueue(batch: MessageBatch<unknown>, env: Bindings): 
       jwtSecret: config.config.jwtSecret,
       threshold: screeningThreshold(env.SCREENING_THRESHOLD),
     },
+    email: emailDeliveryConfig(env),
+    // An invalid EMAIL_DOMAIN turns the intake off, so no address is at it.
+    intakeDomain: intake.ok ? intake.domain : null,
   };
   // Concurrently: one send takes up to about 20 seconds.
   const process = batch.queue === DEAD_LETTER_QUEUE ? processDeadLetter : processDelivery;

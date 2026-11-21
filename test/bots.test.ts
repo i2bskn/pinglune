@@ -143,7 +143,7 @@ describe("POST /api/v1/bots", () => {
     ["an unknown field", { name: "x", delivery_kind: "mcp", extra: 1 }, "unknown_field"],
     ["an empty name", { name: " ", delivery_kind: "mcp" }, "invalid_request"],
     ["a name over 64 characters", { name: "a".repeat(65), delivery_kind: "mcp" }, "invalid_request"],
-    ["an unknown delivery kind", { name: "x", delivery_kind: "email" }, "invalid_request"],
+    ["an unknown delivery kind", { name: "x", delivery_kind: "sms" }, "invalid_request"],
     ["a destination for mcp", { name: "x", delivery_kind: "mcp", delivery_subscription_id: "sub_" + "0".repeat(32) }, "invalid_delivery"],
     ["no destination for webhook", { name: "x", delivery_kind: "webhook" }, "invalid_delivery"],
     ["a malformed destination", { name: "x", delivery_kind: "queue", delivery_subscription_id: "sub_x" }, "invalid_delivery"],

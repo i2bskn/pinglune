@@ -25,7 +25,8 @@ import {
 import type { BotRow, McpConnectionRow, SubscriptionRow } from "../db/schema";
 import { canonicalJson } from "../canonical-json";
 import { callbackHost } from "../deliveries/queries";
-import type { AppEnv } from "../env";
+import { emailAddressOf, isIntakeAddress, normalizeEmailAddress } from "../email/address";
+import { emailDeliveryConfig, parseEmailDomain, type AppEnv } from "../env";
 import type { EventFilter } from "../events/filter";
 import { BOT_ID_PATTERN, newBotId, newRandomSubscriptionId, SOURCE_ID_PATTERN, SUBSCRIPTION_ID_PATTERN } from "../ids";
 import { redirectHost } from "../mcp/connections";
@@ -46,6 +47,7 @@ import {
   FILTER_FIELDS,
   invalidFilterMessage,
   newDestinationRow,
+  type NewDestination,
   parseArguments,
   parseDestinationFilter,
   statusOf,
@@ -54,20 +56,27 @@ import { requirePersonalWorkspace } from "./workspace";
 
 type AppContext = Context<AppEnv>;
 
-const DELIVERY_KINDS: readonly BotDeliveryKind[] = ["mcp", "webhook", "queue"];
+const DELIVERY_KINDS: readonly BotDeliveryKind[] = ["mcp", "webhook", "queue", "email"];
 
 const botNotFound = "Bot が見つかりません";
-const invalidDeliveryKindMessage = "配信方式は mcp・webhook・queue のどれかにしてください";
+const invalidDeliveryKindMessage = "配信方式は mcp・webhook・queue・email のどれかにしてください";
 const invalidSourceIdsMessage = "受け取る送信元の指定が正しくありません";
 const sourceNotFound = "送信元が見つかりません";
-const BOT_FIELDS = ["name", "delivery_kind", "delivery_subscription_id", "webhook", "conditions", "source_ids"];
+const BOT_FIELDS = ["name", "delivery_kind", "delivery_subscription_id", "webhook", "email", "conditions", "source_ids"];
 const WEBHOOK_FIELDS = ["url", "token"];
+const EMAIL_FIELDS = ["to"];
 const invalidDeliveryMessage =
-  "配信先が見つからないか、終了しているか、配信方式と合いません。MCP Event では配信先を指定せず、Webhook とキューでは Bot に割り当てられていない有効な配信先を選ぶか、新しく作ってください";
+  "配信先が見つからないか、終了しているか、配信方式と合いません。MCP Event では配信先を指定せず、Webhook・キュー・メールでは Bot に割り当てられていない有効な配信先を選ぶか、新しく作ってください";
 const mcpConditionsMessage = "MCP Event の条件は AI 側で決まります";
-const mcpDestinationFieldsMessage = "MCP Event では webhook・conditions を指定できません";
+const mcpDestinationFieldsMessage = "MCP Event では webhook・email・conditions を指定できません";
 const webhookWithIdMessage = "webhook と delivery_subscription_id は同時に指定できません";
 const webhookKindMessage = "webhook は配信方式が Webhook のときだけ指定できます";
+const emailWithIdMessage = "email と delivery_subscription_id は同時に指定できません";
+const emailKindMessage = "email は配信方式がメールのときだけ指定できます";
+const webhookWithEmailMessage = "webhook と email は同時に指定できません";
+const invalidEmailMessage = "メールアドレスが正しくありません（表示名を付けず 1 件だけ）";
+const intakeEmailMessage = "Pinglune の受付アドレスには送れません";
+const emailNotConfiguredMessage = "メールでの配信は設定されていません。EMAIL_FROM を設定してください";
 const conditionsWithIdMessage = "conditions は新しく作る配信先にだけ指定できます";
 const destinationEndedMessage = "配信先が終了しています";
 const botChangedMessage = "Bot がほかの操作で変わりました。読み込み直してください";
@@ -151,6 +160,29 @@ function parseWebhookField(c: AppContext, value: unknown): WebhookTarget | Respo
   return { url: target.url, token: target.token };
 }
 
+// The email field: { to }, one bare address. An address at the domain of the email intake (or a subdomain) is refused:
+// the email would come back as an event. An invalid EMAIL_DOMAIN turns the intake off, so nothing is refused then.
+function parseEmailField(c: AppContext, value: unknown): string | Response {
+  if (!isJsonObject(value)) return apiError(c, 400, "invalid_request", "email の形式が正しくありません");
+  const unknown = unknownField(value, EMAIL_FIELDS);
+  if (unknown !== null) return apiError(c, 400, "unknown_field", `未知の項目があります: email.${unknown}`);
+  const to = typeof value.to === "string" ? normalizeEmailAddress(value.to) : null;
+  if (to === null) return apiError(c, 400, "invalid_email", invalidEmailMessage);
+  const intake = parseEmailDomain(c.env.EMAIL_DOMAIN);
+  if (intake.ok && intake.domain !== null && isIntakeAddress(to, intake.domain)) {
+    return apiError(c, 400, "invalid_email", intakeEmailMessage);
+  }
+  return to;
+}
+
+// The 409 of a request that makes a new email destination while email deliveries are not set up. An existing email
+// destination may still be chosen: its deliveries fail (email_delivery_not_configured) until they are.
+function emailNotConfiguredResponse(c: AppContext): Response | null {
+  return emailDeliveryConfig(c.env) === null
+    ? apiError(c, 409, "email_delivery_not_configured", emailNotConfiguredMessage)
+    : null;
+}
+
 // The conditions field: { types?, labels? }, checked as the registration of a destination checks them. {} is no
 // condition (every event).
 function parseConditionsField(c: AppContext, value: unknown): EventFilter | Response {
@@ -162,12 +194,12 @@ function parseConditionsField(c: AppContext, value: unknown): EventFilter | Resp
   return filter;
 }
 
-// The destination of a new bot: none (mcp), an existing destination, or a new webhook destination (webhook set) or
-// polling queue (webhook null) with its conditions.
+// The destination of a new bot: none (mcp), an existing destination, or a new webhook destination, polling queue or
+// email destination with its conditions.
 type CreateDestination =
   | { type: "none" }
   | { type: "existing"; id: string }
-  | { type: "new"; webhook: WebhookTarget | null; filter: EventFilter };
+  | { type: "new"; target: NewDestination; filter: EventFilter };
 
 type CreateInput = {
   name: string;
@@ -186,20 +218,26 @@ const createBotBody = jsonBody<CreateBotRequest, CreateInput, AppEnv>((body, c) 
   const sourceIds = "source_ids" in body ? parseSourceIds(body.source_ids) : [];
   if (sourceIds === null) return apiError(c, 400, "invalid_request", invalidSourceIdsMessage);
   const hasWebhook = "webhook" in body;
+  const hasEmail = "email" in body;
   const hasConditions = "conditions" in body;
   const id = body.delivery_subscription_id;
   const value = (destination: CreateDestination) =>
     ({ ok: true, value: { name, deliveryKind: kind, destination, sourceIds } }) as const;
 
   if (kind === "mcp") {
-    if (hasWebhook || hasConditions) return apiError(c, 400, "invalid_request", mcpDestinationFieldsMessage);
+    if (hasWebhook || hasEmail || hasConditions) {
+      return apiError(c, 400, "invalid_request", mcpDestinationFieldsMessage);
+    }
     if (id !== undefined && id !== null) return apiError(c, 400, "invalid_delivery", invalidDeliveryMessage);
     return value({ type: "none" });
   }
+  if (hasWebhook && hasEmail) return apiError(c, 400, "invalid_request", webhookWithEmailMessage);
   if (hasWebhook && kind !== "webhook") return apiError(c, 400, "invalid_request", webhookKindMessage);
+  if (hasEmail && kind !== "email") return apiError(c, 400, "invalid_request", emailKindMessage);
   // null is taken as left out: a new destination is made.
   if (id !== undefined && id !== null) {
     if (hasWebhook) return apiError(c, 400, "invalid_request", webhookWithIdMessage);
+    if (hasEmail) return apiError(c, 400, "invalid_request", emailWithIdMessage);
     if (hasConditions) return apiError(c, 400, "invalid_request", conditionsWithIdMessage);
     if (typeof id !== "string" || !SUBSCRIPTION_ID_PATTERN.test(id)) {
       return apiError(c, 400, "invalid_delivery", invalidDeliveryMessage);
@@ -207,11 +245,21 @@ const createBotBody = jsonBody<CreateBotRequest, CreateInput, AppEnv>((body, c) 
     return value({ type: "existing", id });
   }
   if (kind === "webhook" && !hasWebhook) return apiError(c, 400, "invalid_delivery", invalidDeliveryMessage);
-  const webhook = hasWebhook ? parseWebhookField(c, body.webhook) : null;
-  if (webhook instanceof Response) return webhook;
+  if (kind === "email" && !hasEmail) return apiError(c, 400, "invalid_delivery", invalidDeliveryMessage);
+  let target: NewDestination = { kind: "queue" };
+  if (hasWebhook) {
+    const webhook = parseWebhookField(c, body.webhook);
+    if (webhook instanceof Response) return webhook;
+    target = { kind: "webhook", url: webhook.url, token: webhook.token };
+  }
+  if (hasEmail) {
+    const to = parseEmailField(c, body.email);
+    if (to instanceof Response) return to;
+    target = { kind: "email", to };
+  }
   const filter = hasConditions ? parseConditionsField(c, body.conditions) : {};
   if (filter instanceof Response) return filter;
-  return value({ type: "new", webhook, filter });
+  return value({ type: "new", target, filter });
 });
 
 type UpdateInput = {
@@ -219,6 +267,8 @@ type UpdateInput = {
   deliveryKind?: BotDeliveryKind;
   deliverySubscriptionId?: string | null;
   webhook?: WebhookTarget;
+  // A normalized address (parseEmailField).
+  email?: string;
   conditions?: EventFilter;
   sourceIds?: string[];
 };
@@ -231,7 +281,7 @@ const updateBotBody = jsonBody<UpdateBotRequest, UpdateInput, AppEnv>((body, c) 
       c,
       400,
       "invalid_request",
-      "name・delivery_kind・delivery_subscription_id・webhook・conditions・source_ids のどれかを指定してください",
+      "name・delivery_kind・delivery_subscription_id・webhook・email・conditions・source_ids のどれかを指定してください",
     );
   }
   const value: UpdateInput = {};
@@ -251,8 +301,15 @@ const updateBotBody = jsonBody<UpdateBotRequest, UpdateInput, AppEnv>((body, c) 
   }
   if ("webhook" in body) {
     if ("delivery_subscription_id" in body) return apiError(c, 400, "invalid_request", webhookWithIdMessage);
+    if ("email" in body) return apiError(c, 400, "invalid_request", webhookWithEmailMessage);
     if (value.deliveryKind !== undefined && value.deliveryKind !== "webhook") {
       return apiError(c, 400, "invalid_request", webhookKindMessage);
+    }
+  }
+  if ("email" in body) {
+    if ("delivery_subscription_id" in body) return apiError(c, 400, "invalid_request", emailWithIdMessage);
+    if (value.deliveryKind !== undefined && value.deliveryKind !== "email") {
+      return apiError(c, 400, "invalid_request", emailKindMessage);
     }
   }
   if ("conditions" in body && value.deliveryKind === "mcp") {
@@ -270,6 +327,11 @@ const updateBotBody = jsonBody<UpdateBotRequest, UpdateInput, AppEnv>((body, c) 
     if (webhook instanceof Response) return webhook;
     value.webhook = webhook;
   }
+  if ("email" in body) {
+    const email = parseEmailField(c, body.email);
+    if (email instanceof Response) return email;
+    value.email = email;
+  }
   if ("conditions" in body) {
     const conditions = parseConditionsField(c, body.conditions);
     if (conditions instanceof Response) return conditions;
@@ -278,7 +340,7 @@ const updateBotBody = jsonBody<UpdateBotRequest, UpdateInput, AppEnv>((body, c) 
   return { ok: true, value };
 });
 
-// Whether the destination of a webhook or queue bot is an active subscription of that kind in the workspace.
+// Whether the destination of a webhook, queue or email bot is an active subscription of that kind in the workspace.
 async function validDestination(db: Db, workspaceId: string, kind: BotDeliveryKind, id: string | null): Promise<boolean> {
   if (kind === "mcp") return id === null;
   if (id === null) return false;
@@ -367,6 +429,7 @@ async function botDestination(db: Db, workspaceId: string, bot: BotRow, now: num
     kind: row.kind,
     name: row.name,
     callback_host: callbackHost(row.callbackUrl),
+    email_to: row.kind === "email" ? emailAddressOf(row.callbackUrl) : null,
     status: statusOf(row, now),
     arguments: parseArguments(row.arguments),
   };
@@ -375,12 +438,12 @@ async function botDestination(db: Db, workspaceId: string, bot: BotRow, now: num
 // The new destination of an update: what the bot will deliver to after it.
 // - keep: the destination does not change.
 // - existing: delivery_subscription_id, another destination that exists.
-// - new: a new webhook destination (webhook set) or polling queue (webhook null).
+// - new: a new webhook destination, polling queue or email destination.
 // - none: mcp.
 type DeliveryChange =
   | { type: "keep" }
-  | { type: "existing"; kind: "webhook" | "queue"; id: string }
-  | { type: "new"; kind: "webhook" | "queue"; webhook: WebhookTarget | null }
+  | { type: "existing"; kind: "webhook" | "queue" | "email"; id: string }
+  | { type: "new"; destination: NewDestination }
   | { type: "none" };
 
 // Decides the change of the destination of an update, or the error to answer.
@@ -390,7 +453,11 @@ async function deliveryChange(c: AppContext, bot: BotRow, input: UpdateInput): P
   const kind = input.deliveryKind ?? bot.deliveryKind;
   if (input.webhook !== undefined) {
     if (kind !== "webhook") return apiError(c, 400, "invalid_request", webhookKindMessage);
-    return { type: "new", kind: "webhook", webhook: input.webhook };
+    return { type: "new", destination: { kind: "webhook", url: input.webhook.url, token: input.webhook.token } };
+  }
+  if (input.email !== undefined) {
+    if (kind !== "email") return apiError(c, 400, "invalid_request", emailKindMessage);
+    return { type: "new", destination: { kind: "email", to: input.email } };
   }
   if (input.deliverySubscriptionId !== undefined) {
     const id = input.deliverySubscriptionId;
@@ -404,16 +471,18 @@ async function deliveryChange(c: AppContext, bot: BotRow, input: UpdateInput): P
   }
   if (kind === bot.deliveryKind) return { type: "keep" };
   if (kind === "mcp") return { type: "none" };
-  if (kind === "queue") return { type: "new", kind: "queue", webhook: null };
+  if (kind === "queue") return { type: "new", destination: { kind: "queue" } };
   return apiError(
     c,
     400,
     "invalid_request",
-    "配信方式を Webhook に変えるときは webhook か delivery_subscription_id を指定してください",
+    kind === "email"
+      ? "配信方式をメールに変えるときは email.to か delivery_subscription_id を指定してください"
+      : "配信方式を Webhook に変えるときは webhook か delivery_subscription_id を指定してください",
   );
 }
 
-// keep_destination: "true" keeps the bot's webhook destination or polling queue (it stays, not assigned to a bot),
+// keep_destination: "true" keeps the bot's webhook destination, polling queue or email destination (it stays, not assigned to a bot),
 // "false" or omitted ends it. Any other value, including "" and a repeated parameter, is 400. Other parameters are
 // ignored.
 type DeleteQuery = { keep_destination?: "true" | "false" };
@@ -436,7 +505,10 @@ const botsApi = new Hono<AppEnv>()
     const db = c.get("db");
     const workspaceId = c.get("workspace").id;
     const rows = await listWorkspaceBots(db, workspaceId, MAX_BOTS_PER_WORKSPACE);
-    const body: BotList = { bots: await botsToApi(db, workspaceId, rows, clock.now()) };
+    const body: BotList = {
+      bots: await botsToApi(db, workspaceId, rows, clock.now()),
+      email_delivery_available: emailDeliveryConfig(c.env) !== null,
+    };
     return c.json(body, 200);
   })
   .get("/:id", async (c) => {
@@ -450,7 +522,7 @@ const botsApi = new Hono<AppEnv>()
       botDestination(db, workspaceId, bot, now),
     ]);
     if (api === undefined) return apiError(c, 404, "not_found", botNotFound);
-    const body: BotDetail = { ...api, destination };
+    const body: BotDetail = { ...api, destination, email_delivery_available: emailDeliveryConfig(c.env) !== null };
     return c.json(body, 200);
   })
   .post("/", createBotBody, async (c) => {
@@ -458,16 +530,20 @@ const botsApi = new Hono<AppEnv>()
     const db = c.get("db");
     const workspaceId = c.get("workspace").id;
     const user = c.get("user");
+    const destination = input.destination;
+    if (destination.type === "new" && destination.target.kind === "email") {
+      const notConfigured = emailNotConfiguredResponse(c);
+      if (notConfigured !== null) return notConfigured;
+    }
     // A loose limit: concurrent requests may go slightly over it.
     if ((await countActiveBots(db, workspaceId)) >= MAX_BOTS_PER_WORKSPACE) {
       return apiError(c, 409, "limit_exceeded", `Bot は ${MAX_BOTS_PER_WORKSPACE} 個までです`);
     }
-    const destination = input.destination;
     if (destination.type === "existing" && !(await validDestination(db, workspaceId, input.deliveryKind, destination.id))) {
       return apiError(c, 400, "invalid_delivery", invalidDeliveryMessage);
     }
     if (destination.type === "new") {
-      const limited = await destinationLimitResponse(c, destination.webhook === null ? "queue" : "webhook");
+      const limited = await destinationLimitResponse(c, destination.target.kind);
       if (limited !== null) return limited;
     }
     if (!(await validSources(db, workspaceId, input.sourceIds))) {
@@ -485,7 +561,7 @@ const botsApi = new Hono<AppEnv>()
             workspaceId,
             name: input.name,
             filter: destination.filter,
-            webhook: destination.webhook,
+            destination: destination.target,
             jwtSecret: c.get("config").jwtSecret,
             now,
           })
@@ -547,13 +623,19 @@ const botsApi = new Hono<AppEnv>()
       }
     }
     if (change.type === "new") {
+      const newKind = change.destination.kind;
+      // Only a new email destination needs the setup; a name, the conditions or an existing destination do not.
+      if (newKind === "email") {
+        const notConfigured = emailNotConfiguredResponse(c);
+        if (notConfigured !== null) return notConfigured;
+      }
       // The destination that this update ends is not counted (when it is active and of the same kind).
       let endingActive = 0;
-      if (ending !== null && previous.kind === change.kind) {
+      if (ending !== null && previous.kind === newKind) {
         const row = await findWorkspaceDestination(db, workspaceId, ending);
-        if (row !== undefined && row.kind === change.kind && row.unsubscribedAt === null) endingActive = 1;
+        if (row !== undefined && row.kind === newKind && row.unsubscribedAt === null) endingActive = 1;
       }
-      const limited = await destinationLimitResponse(c, change.kind, endingActive);
+      const limited = await destinationLimitResponse(c, newKind, endingActive);
       if (limited !== null) return limited;
     }
     if (input.sourceIds !== undefined && !(await validSources(db, workspaceId, input.sourceIds))) {
@@ -570,7 +652,7 @@ const botsApi = new Hono<AppEnv>()
             workspaceId,
             name,
             filter: input.conditions ?? {},
-            webhook: change.webhook,
+            destination: change.destination,
             jwtSecret: c.get("config").jwtSecret,
             now,
           })
@@ -580,7 +662,9 @@ const botsApi = new Hono<AppEnv>()
         ? previous
         : change.type === "none"
           ? { kind: "mcp", subscriptionId: null }
-          : { kind: change.kind, subscriptionId: change.type === "new" ? (row as { id: string }).id : change.id };
+          : change.type === "new"
+            ? { kind: change.destination.kind, subscriptionId: (row as { id: string }).id }
+            : { kind: change.kind, subscriptionId: change.id };
     const before = liveBotGuard(bot.id, workspaceId, previous);
     const after = liveBotGuard(bot.id, workspaceId, next);
 
@@ -674,7 +758,7 @@ const botsApi = new Hono<AppEnv>()
     const d1 = c.env.DB;
     const previous: BotDelivery = { kind: bot.deliveryKind, subscriptionId: bot.deliverySubscriptionId };
     const before = liveBotGuard(bot.id, workspaceId, previous);
-    // The bot's own destination (a webhook destination or a polling queue) ends with it, first, while the bot is as it
+    // The bot's own destination (a webhook destination, a polling queue or an email destination) ends with it, first, while the bot is as it
     // was read, unless keep_destination keeps it (it stays, not assigned to a bot; what is already pending on it is
     // still delivered or polled). The connection stays, not assigned to a bot (an MCP Events subscription belongs to
     // the connection and is not ended). The linked sources go with the bot. Those two run only once the bot is deleted.

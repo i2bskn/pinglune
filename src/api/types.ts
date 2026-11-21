@@ -205,22 +205,25 @@ export type SubscriptionStatus = "active" | "expired" | "unsubscribed";
 
 // mcp: an MCP Events subscription (events/subscribe). webhook: a webhook destination registered on the screen,
 // sent with a Bearer key. queue: a polling queue registered on the screen, taken with the claim_events and
-// ack_events MCP tools.
-export type SubscriptionKind = "mcp" | "webhook" | "queue";
+// ack_events MCP tools. email: an email destination made with a bot, sent to one address with Email Sending.
+export type SubscriptionKind = "mcp" | "webhook" | "queue" | "email";
 
-// An MCP Events subscription, a webhook destination or a polling queue. Neither the secrets (or keys) nor the
+// An MCP Events subscription, a webhook destination, a polling queue or an email destination. Neither the secrets (or keys) nor the
 // whole callback URL is returned.
 export type Subscription = {
   id: string;
   kind: SubscriptionKind;
-  // The name of a webhook destination or a polling queue. null for mcp.
+  // The name of a webhook destination, a polling queue or an email destination. null for mcp.
   name: string | null;
-  // The host of the callback URL only. null for queue, which sends nothing.
+  // The host of the callback URL only. null for queue, which sends nothing, and for email.
   callback_host: string | null;
+  // email only: the address the events are sent to. null for the other kinds, and when the stored value is broken.
+  email_to: string | null;
   // The conditions that delivery uses (types, labels); null if the stored value is broken. sources, which an MCP
   // Events subscription may still carry, is left out: the sources of the events are those linked to the bot.
   arguments: Record<string, unknown> | null;
-  // Webhook destinations and polling queues are "active" or "unsubscribed" (deleted); they never expire.
+  // Webhook destinations, polling queues and email destinations are "active" or "unsubscribed" (deleted); they never
+  // expire.
   status: SubscriptionStatus;
   // mcp only: expires_at minus the grace of 1 hour, when the client should refresh the subscription. null for
   // webhook and queue.
@@ -266,7 +269,7 @@ export type Delivery = {
   id: string;
   event_id: string;
   subscription_id: string;
-  // null for queue, and when the subscription is not found.
+  // null for queue and email, and when the subscription is not found.
   callback_host: string | null;
   // The kind and the name of the subscription; both null when it is not found. For mcp, the name is the app of the
   // connection that subscribed (null for a connection made before connections were recorded).
@@ -278,7 +281,7 @@ export type Delivery = {
   attempts: number;
   // For queue: the time of the last claim.
   last_attempt_at: number | null;
-  // Always null for queue.
+  // Always null for queue and email.
   last_http_status: number | null;
   // The reason of the last failure, e.g. "http_5xx", "subscription_inactive" or, for queue, "not_acknowledged".
   last_error: string | null;
@@ -384,7 +387,7 @@ export type PostConversationMessageRequest = { text: string; idempotency_key: st
 
 export type PostedConversationMessage = { event_id: string; conversation: ConversationDetail };
 
-export type BotDeliveryKind = "mcp" | "webhook" | "queue";
+export type BotDeliveryKind = "mcp" | "webhook" | "queue" | "email";
 
 // ready: it has an MCP connection and a destination. no_connection takes precedence over no_delivery. Decided from D1
 // only: a connection whose grant has expired is still counted (the screen compares with the MCP connections).
@@ -395,7 +398,7 @@ export type Bot = {
   id: string;
   name: string;
   delivery_kind: BotDeliveryKind;
-  // The destination resolved now: the subscription of webhook and queue, or for mcp the newest active MCP Events
+  // The destination resolved now: the subscription of webhook, queue and email, or for mcp the newest active MCP Events
   // subscription of its connection. null when there is none (or it is not active).
   delivery: {
     subscription_id: string;
@@ -429,20 +432,24 @@ export type UpdateBotConversationStartRequest = BotConversationStart;
 // POST /api/v1/sources/:id/conversation-start. All three fields are required, as for a bot.
 export type UpdateSourceConversationStartRequest = ConversationStartSettings;
 
-export type BotList = { bots: Bot[] };
+// email_delivery_available: whether email deliveries are set up on this instance (the send_email binding and a valid
+// EMAIL_FROM). Without them, a new email destination cannot be made (email_delivery_not_configured).
+export type BotList = { bots: Bot[]; email_delivery_available: boolean };
 
 // A bot with the destination it refers to (delivery_subscription_id), as GET /api/v1/bots/:id returns it.
 // destination is returned even when it has ended (status "unsubscribed"); null for mcp. arguments are the conditions
-// that delivery uses, as in Subscription.
+// that delivery uses, as in Subscription. email_to is the address of an email destination (null for the other kinds).
 export type BotDetail = Bot & {
   destination: {
     subscription_id: string;
-    kind: "webhook" | "queue";
+    kind: "webhook" | "queue" | "email";
     name: string | null;
     callback_host: string | null;
+    email_to: string | null;
     status: SubscriptionStatus;
     arguments: Record<string, unknown> | null;
   } | null;
+  email_delivery_available: boolean;
 };
 
 // The conditions of a webhook destination or a polling queue made with a bot. {} (or no field) means every event.
@@ -451,9 +458,13 @@ export type DestinationConditions = { types?: string[]; labels?: Record<string, 
 // The webhook destination made with a bot: its URL and Bearer key, checked as POST /api/v1/subscriptions/webhooks.
 export type BotWebhookRequest = { url: string; token: string };
 
-// webhook / queue: a new destination named after the bot is made in the same batch, unless delivery_subscription_id
-// names an existing one. webhook needs exactly one of webhook and delivery_subscription_id; queue makes a new queue
-// without delivery_subscription_id. mcp takes none of webhook, conditions and delivery_subscription_id. conditions
+// The email destination made with a bot: one bare address (no display name), not at the domain of the email intake.
+export type BotEmailRequest = { to: string };
+
+// webhook / queue / email: a new destination named after the bot is made in the same batch, unless
+// delivery_subscription_id names an existing one. webhook needs exactly one of webhook and delivery_subscription_id,
+// and email exactly one of email and delivery_subscription_id; queue makes a new queue without
+// delivery_subscription_id. mcp takes none of webhook, email, conditions and delivery_subscription_id. conditions
 // apply to a new destination only.
 // source_ids: the sources (of programs, in the workspace) whose events the bot receives, up to 100. Default none.
 export type CreateBotRequest = {
@@ -461,21 +472,24 @@ export type CreateBotRequest = {
   delivery_kind: BotDeliveryKind;
   delivery_subscription_id?: string;
   webhook?: BotWebhookRequest;
+  email?: BotEmailRequest;
   conditions?: DestinationConditions;
   source_ids?: string[];
 };
 
 // At least one field. delivery_kind changes the destination: to delivery_subscription_id if given, to a new webhook
-// destination with webhook, to a new queue for queue without either, to none for mcp (null or no
-// delivery_subscription_id). webhook alone makes a new webhook destination for a webhook bot. conditions alone changes
-// the conditions of the current webhook / queue destination; with a new destination, they are its conditions.
-// A change of the destination ends the previous webhook / queue destination. source_ids replaces the linked sources;
+// destination with webhook, to a new email destination with email, to a new queue for queue without either, to none
+// for mcp (null or no delivery_subscription_id). webhook alone makes a new webhook destination for a webhook bot, and
+// email alone a new email destination for an email bot. conditions alone changes the conditions of the current
+// webhook / queue / email destination; with a new destination, they are its conditions.
+// A change of the destination ends the previous webhook / queue / email destination. source_ids replaces the linked sources;
 // left out, they stay.
 export type UpdateBotRequest = {
   name?: string;
   delivery_kind?: BotDeliveryKind;
   delivery_subscription_id?: string | null;
   webhook?: BotWebhookRequest;
+  email?: BotEmailRequest;
   conditions?: DestinationConditions;
   source_ids?: string[];
 };

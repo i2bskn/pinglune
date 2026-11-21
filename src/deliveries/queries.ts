@@ -122,8 +122,10 @@ export async function findScreenedEventsWithUnsentDeliveries(
   return results.map((row) => row.event_id);
 }
 
-// The host of a callback URL, or null if it is not a URL.
+// The host of a callback URL, or null if it is not a URL. null for an email destination ("mailto:"), whose
+// callback_url is not parsed as a URL (its host would be "").
 export function callbackHost(callbackUrl: string): string | null {
+  if (callbackUrl.startsWith("mailto:")) return null;
   try {
     return new URL(callbackUrl).hostname;
   } catch {

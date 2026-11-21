@@ -5,6 +5,7 @@ import { clock } from "@i2bskn/workers-app-core";
 import type { SourceRow, SubscriptionRow, UserRow } from "../src/db/schema";
 import { acceptEvent } from "../src/intake/service";
 import {
+  createEmailDestination,
   createQueue,
   createSource,
   createSubscription,
@@ -93,6 +94,7 @@ describe("GET /api/v1/subscriptions", () => {
       kind: "mcp",
       name: null,
       callback_host: "hooks.example.com",
+      email_to: null,
       arguments: { types: ["alert.observed"] },
       status: "active",
       refresh_before: active.expiresAt - HOUR,
@@ -410,6 +412,17 @@ describe("POST /api/v1/deliveries/:id/retry", () => {
     const queue = fakeQueue();
     const res = await retry(id, queue);
     expect(res.status).toBe(200);
+    expect(queue.messages).toEqual([{ delivery_id: id }]);
+  });
+
+  it("retries a delivery to an email destination, and lists it without a callback host", async () => {
+    const id = await failedDelivery(await createEmailDestination({ user: alice, name: "mail", to: "ai@example.com" }));
+    const queue = fakeQueue();
+    const res = await retry(id, queue);
+    expect(res.status).toBe(200);
+    expect((await res.json()) as DeliveryListItem).toEqual(
+      expect.objectContaining({ id, destination_kind: "email", destination_name: "mail", callback_host: null, status: "pending" }),
+    );
     expect(queue.messages).toEqual([{ delivery_id: id }]);
   });
 

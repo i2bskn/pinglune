@@ -5,6 +5,7 @@ import {
   DELIVERY_KINDS,
   DELIVERY_KIND_DESCRIPTIONS,
   DELIVERY_KIND_LABELS,
+  EMAIL_DELIVERY_UNAVAILABLE_MESSAGE,
   EMPTY_NEW_BOT_FORM,
   type NewBotForm,
   botPath,
@@ -24,8 +25,8 @@ import { UNKNOWN_RESULT_MESSAGE } from "./SourcesView";
 const CONDITIONS_NOTE =
   "条件を指定しないと、受け取る送信元のすべてのイベントが届きます。本文や添付は含まれないので、受け取る側は MCP の read_data で読みます。";
 
-// The creation of a bot with its destination. ?destination= names a webhook destination or a polling queue that no
-// bot uses, to make the bot with it; any other value is ignored.
+// The creation of a bot with its destination. ?destination= names a webhook destination, a polling queue or an email
+// destination that no bot uses, to make the bot with it; any other value is ignored.
 export function BotNewView({ client, path }: { client: ApiClient; path: string }) {
   const [state, reload] = useView(() => loadBotsView(client), "bot-new");
   useDocumentTitle(viewTitle(state, () => "Bot を作成"));
@@ -38,11 +39,12 @@ export function BotNewView({ client, path }: { client: ApiClient; path: string }
 }
 
 function initialForm(destination: Subscription | null): NewBotForm {
-  if (destination === null) return EMPTY_NEW_BOT_FORM;
+  // destinationFromQuery never returns an MCP Events subscription; the check keeps the kind a bot's.
+  if (destination === null || destination.kind === "mcp") return EMPTY_NEW_BOT_FORM;
   return {
     ...EMPTY_NEW_BOT_FORM,
     name: destination.name ?? "",
-    deliveryKind: destination.kind === "queue" ? "queue" : "webhook",
+    deliveryKind: destination.kind,
     destinationId: destination.id,
   };
 }
@@ -107,7 +109,7 @@ function BotNewForm({
       <header className="page-head">
         <h1>Bot を作成</h1>
         <p className="lead">
-          名前と受け取る送信元、配信方式を決めます。Webhook とキューの配信先は Bot と一緒に作られ、Bot の名前が付きます。
+          名前と受け取る送信元、配信方式を決めます。Webhook・キュー・メールの配信先は Bot と一緒に作られ、Bot の名前が付きます。
         </p>
       </header>
       <form className="folder-form" aria-label="Bot を作成" onSubmit={(event) => void onSubmit(event)}>
@@ -131,28 +133,35 @@ function BotNewForm({
         />
         <fieldset className="participant-fields" disabled={sending}>
           <legend>配信方式</legend>
-          {DELIVERY_KINDS.map((kind) => (
-            <label key={kind} className="choice">
-              <input
-                type="radio"
-                name="delivery_kind"
-                value={kind}
-                checked={form.deliveryKind === kind}
-                // An existing destination fixes the kind.
-                disabled={destination !== null && kind !== form.deliveryKind}
-                onChange={() => setForm({ ...form, deliveryKind: kind })}
-              />
-              <span>
-                <span className="choice-title">{DELIVERY_KIND_LABELS[kind]}</span>
-                <span className="choice-description">{DELIVERY_KIND_DESCRIPTIONS[kind]}</span>
-              </span>
-            </label>
-          ))}
+          {DELIVERY_KINDS.map((kind) => {
+            // A new email destination needs the instance's setup; an existing one (?destination=) does not.
+            const emailUnavailable = kind === "email" && destination === null && !data.emailDeliveryAvailable;
+            return (
+              <label key={kind} className="choice">
+                <input
+                  type="radio"
+                  name="delivery_kind"
+                  value={kind}
+                  checked={form.deliveryKind === kind}
+                  // An existing destination fixes the kind.
+                  disabled={(destination !== null && kind !== form.deliveryKind) || emailUnavailable}
+                  onChange={() => setForm({ ...form, deliveryKind: kind })}
+                />
+                <span>
+                  <span className="choice-title">{DELIVERY_KIND_LABELS[kind]}</span>
+                  <span className="choice-description">
+                    {emailUnavailable ? EMAIL_DELIVERY_UNAVAILABLE_MESSAGE : DELIVERY_KIND_DESCRIPTIONS[kind]}
+                  </span>
+                </span>
+              </label>
+            );
+          })}
         </fieldset>
         {destination !== null ? (
           <p className="hint">
             既存の配信先を使う: {destination.name ?? "（名前なし）"}
-            {destination.callback_host === null ? "" : `（${destination.callback_host}）`}。
+            {destination.callback_host === null ? "" : `（${destination.callback_host}）`}
+            {destination.email_to === null ? "" : `（${destination.email_to}）`}。
             <Link to="/bots/new">新しい配信先で作る</Link>
           </p>
         ) : (
@@ -173,7 +182,7 @@ function BotNewForm({
 }
 
 // The fields of the delivery kind chosen: nothing for MCP Event, the URL, the key and the conditions for Webhook, the
-// conditions for a queue.
+// conditions for a queue, the address and the conditions for an email destination.
 function DeliveryFields({
   form,
   onChange,
@@ -193,6 +202,7 @@ function DeliveryFields({
   return (
     <>
       {form.deliveryKind === "webhook" && <WebhookFields form={form} onChange={onChange} disabled={disabled} />}
+      {form.deliveryKind === "email" && <EmailFields form={form} onChange={onChange} disabled={disabled} />}
       <ConditionFields
         value={form.conditions}
         onChange={(conditions) => onChange({ ...form, conditions })}
@@ -242,5 +252,32 @@ export function WebhookFields<T extends { url: string; token: string }>({
         />
       </label>
     </>
+  );
+}
+
+// The address of a new email destination.
+export function EmailFields<T extends { emailTo: string }>({
+  form,
+  onChange,
+  disabled,
+}: {
+  form: T;
+  onChange: (next: T) => void;
+  disabled: boolean;
+}) {
+  return (
+    <label>
+      宛先のメールアドレス（表示名を付けず 1 件だけ）
+      <input
+        type="email"
+        value={form.emailTo}
+        onChange={(event) => onChange({ ...form, emailTo: event.target.value })}
+        autoComplete="off"
+        spellCheck={false}
+        required
+        maxLength={254}
+        disabled={disabled}
+      />
+    </label>
   );
 }

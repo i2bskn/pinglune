@@ -360,6 +360,47 @@ export async function createQueue(params: {
   return row;
 }
 
+let emailDestinationSequence = 0;
+
+// Inserts an email destination directly, as the creation of an email bot stores it. callbackUrl defaults to
+// "mailto:" + to; workspaceId to the user's personal workspace.
+export async function createEmailDestination(params: {
+  user: UserRow;
+  to?: string;
+  callbackUrl?: string;
+  name?: string;
+  workspaceId?: string;
+  arguments?: string;
+  unsubscribedAt?: number | null;
+  createdAt?: number;
+}): Promise<SubscriptionRow> {
+  emailDestinationSequence++;
+  const id = `sub_${emailDestinationSequence.toString(16).padStart(32, "e")}`;
+  const now = params.createdAt ?? Date.now();
+  const [row] = await db
+    .insert(subscriptions)
+    .values({
+      id,
+      userId: params.user.id,
+      workspaceId: params.workspaceId ?? (await personalWorkspaceOf(params.user)).id,
+      kind: "email",
+      name: params.name ?? "mail",
+      eventName: "pinglune.event",
+      arguments: params.arguments ?? "{}",
+      callbackUrl: params.callbackUrl ?? `mailto:${params.to ?? "ai@example.com"}`,
+      secret: "",
+      previousSecret: null,
+      secretRotatedAt: null,
+      expiresAt: NO_EXPIRY,
+      unsubscribedAt: params.unsubscribedAt ?? null,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning();
+  if (!row) throw new Error("failed to create email destination");
+  return row;
+}
+
 export type DeliveryRecord = {
   id: string;
   event_id: string;
@@ -386,7 +427,7 @@ let botSequence = 0;
 
 // Makes destinations receive the events of sources, as the user sets it up on the screen: a bot that delivers to
 // them, linked to the sources. The bot is created in the workspace of the first subscription, by the workspace's owner.
-// - webhook / queue: one subscription, the bot's delivery_subscription_id.
+// - webhook / queue / email: one subscription, the bot's delivery_subscription_id.
 // - mcp: one or more subscriptions; an active MCP connection is created for the bot and recorded on them.
 // With connect, an active MCP connection is created for a webhook or queue bot too, for its AI to call the tools.
 // Returns the IDs of the bot and of the connection (null for webhook and queue without connect).

@@ -23,15 +23,16 @@ import { selfHosts } from "../mcp/handler";
 import { MAX_ACTIVE_QUEUES_PER_WORKSPACE } from "../queues/constants";
 import { countActiveQueues, endQueue, listWorkspaceQueues } from "../queues/queries";
 import { encryptSecret, subscriptionSecretKey } from "../subscriptions/secret";
+import { emailAddressOf, emailCallbackUrl } from "../email/address";
 import {
-  countActiveWebhookDestinations,
-  endWebhookDestination,
+  countActiveSentDestinations,
+  endSentDestination,
   endWorkspaceMcpSubscription,
   findWorkspaceDestination,
   findWorkspaceMcpSubscription,
   findWorkspaceWebhookDestination,
   listWorkspaceMcpSubscriptions,
-  listWorkspaceWebhookDestinations,
+  listWorkspaceSentDestinations,
   NO_EXPIRY,
 } from "../subscriptions/queries";
 import { normalizeHost, parseCallbackUrl } from "../webhooks/destination";
@@ -40,13 +41,15 @@ import { invalidNameMessage, normalizeDisplayName, unknownField } from "./source
 import { requirePersonalWorkspace } from "./workspace";
 
 // No paging: a workspace has few subscriptions. Each kind is listed up to this many, so that MCP subscriptions
-// never push the webhook destinations or the polling queues out of the list.
+// never push the webhook destinations, the polling queues or the email destinations out of the list.
 const SUBSCRIPTION_LIST_LIMIT = 100;
 export const MAX_ACTIVE_WEBHOOK_DESTINATIONS_PER_WORKSPACE = 100;
+export const MAX_ACTIVE_EMAIL_DESTINATIONS_PER_WORKSPACE = 100;
 // The connections are read with IN lists of at most this many IDs, within the 100 bound variables of D1.
 const CONNECTION_ID_CHUNK = 90;
 
 export const webhookLimitMessage = `Webhook 配信先は ${MAX_ACTIVE_WEBHOOK_DESTINATIONS_PER_WORKSPACE} 件までです`;
+export const emailLimitMessage = `メールの配信先は ${MAX_ACTIVE_EMAIL_DESTINATIONS_PER_WORKSPACE} 件までです`;
 export const queueLimitMessage = `ポーリング用キューは ${MAX_ACTIVE_QUEUES_PER_WORKSPACE} 件までです`;
 // Printable ASCII without spaces, as HTTP header values allow without quoting.
 const TOKEN_PATTERN = /^[\x21-\x7E]{1,1024}$/;
@@ -60,8 +63,8 @@ const webhookFilter = z.strictObject({ types: eventFilterShape.types, labels: ev
 
 export function statusOf(row: SubscriptionRow, now: number): SubscriptionStatus {
   if (row.unsubscribedAt !== null) return "unsubscribed";
-  // Webhook destinations and polling queues do not expire.
-  if (row.kind === "webhook" || row.kind === "queue") return "active";
+  // Webhook destinations, polling queues and email destinations do not expire.
+  if (row.kind === "webhook" || row.kind === "queue" || row.kind === "email") return "active";
   return row.expiresAt <= now ? "expired" : "active";
 }
 
@@ -86,7 +89,7 @@ type SubscriptionBot = NonNullable<Subscription["bot"]>;
 // that are not deleted (a few, so they are all read: the subscriptions could be more than an IN list may hold).
 // - connection (mcp): the connection with the name of its bot while the connection is active and its bot is not
 //   deleted.
-// - bot: for webhook and queue the bot whose destination it is; for mcp the bot of its active connection when the
+// - bot: for webhook, queue and email the bot whose destination it is; for mcp the bot of its active connection when the
 //   bot's delivery kind is mcp.
 async function subscriptionsToApi(
   db: Db,
@@ -139,7 +142,8 @@ async function subscriptionsToApi(
 }
 
 // Neither the secrets (or keys), the whole callback URL nor the user is returned. Polling queues have no callback
-// URL: callback_host is null.
+// URL and email destinations have an address instead: callback_host is null. email_to is the address of an email
+// destination.
 function toApiSubscription(
   row: SubscriptionRow,
   now: number,
@@ -152,6 +156,7 @@ function toApiSubscription(
     kind: row.kind,
     name: row.name,
     callback_host: callbackHost(row.callbackUrl),
+    email_to: row.kind === "email" ? emailAddressOf(row.callbackUrl) : null,
     arguments: parseArguments(row.arguments),
     status: statusOf(row, now),
     refresh_before: isMcp ? row.expiresAt - EXPIRY_GRACE_MS : null,
@@ -205,8 +210,15 @@ export function parseDestinationFilter(given: Record<string, unknown>): EventFil
   return filter.success ? filter.data : null;
 }
 
-// The row of a new webhook destination (with webhook) or polling queue (without), as both the screen's own
-// registration and the creation of a bot store it. The key is encrypted with the ID as the additional authenticated
+// What a new destination sends to: a webhook (its URL and key), nothing (a polling queue), or an email address
+// (normalized by normalizeEmailAddress).
+export type NewDestination =
+  | { kind: "webhook"; url: URL; token: string }
+  | { kind: "queue" }
+  | { kind: "email"; to: string };
+
+// The row of a new webhook destination, polling queue or email destination, as both the screen's own registration
+// and the creation of a bot store it. The key of a webhook is encrypted with the ID as the additional authenticated
 // data.
 export async function newDestinationRow(params: {
   id: string;
@@ -214,28 +226,33 @@ export async function newDestinationRow(params: {
   workspaceId: string;
   name: string;
   filter: EventFilter;
-  webhook: { url: URL; token: string } | null;
+  destination: NewDestination;
   jwtSecret: string;
   now: number;
 }): Promise<SubscriptionRow> {
-  const { id, webhook, now } = params;
+  const { id, destination, now } = params;
   let secret = "";
-  if (webhook !== null) {
+  if (destination.kind === "webhook") {
     const key = await subscriptionSecretKey(params.jwtSecret);
     // Workers have no SharedArrayBuffer, so every view is backed by an ArrayBuffer.
-    const tokenBytes = new TextEncoder().encode(webhook.token) as Uint8Array<ArrayBuffer>;
+    const tokenBytes = new TextEncoder().encode(destination.token) as Uint8Array<ArrayBuffer>;
     secret = await encryptSecret(key, id, tokenBytes);
   }
   return {
     id,
     userId: params.userId,
     workspaceId: params.workspaceId,
-    kind: webhook === null ? "queue" : "webhook",
+    kind: destination.kind,
     name: params.name,
     eventName: EVENT_NAME,
     arguments: canonicalJson(params.filter),
-    // A polling queue sends nothing and has no key; the columns are NOT NULL.
-    callbackUrl: webhook === null ? "" : webhook.url.href,
+    // A polling queue sends nothing and has no key, and an email destination has no key; the columns are NOT NULL.
+    callbackUrl:
+      destination.kind === "webhook"
+        ? destination.url.href
+        : destination.kind === "email"
+          ? emailCallbackUrl(destination.to)
+          : "",
     secret,
     previousSecret: null,
     secretRotatedAt: null,
@@ -251,14 +268,18 @@ export async function newDestinationRow(params: {
 // over it. ending is the number of active destinations of this kind that the same request ends.
 export async function destinationLimitResponse(
   c: AppContext,
-  kind: "webhook" | "queue",
+  kind: "webhook" | "queue" | "email",
   ending = 0,
 ) {
   const db = c.get("db");
   const workspaceId = c.get("workspace").id;
   if (kind === "webhook") {
-    const count = (await countActiveWebhookDestinations(db, workspaceId)) - ending;
+    const count = (await countActiveSentDestinations(db, workspaceId, "webhook")) - ending;
     return count >= MAX_ACTIVE_WEBHOOK_DESTINATIONS_PER_WORKSPACE ? apiError(c, 409, "limit_exceeded", webhookLimitMessage) : null;
+  }
+  if (kind === "email") {
+    const count = (await countActiveSentDestinations(db, workspaceId, "email")) - ending;
+    return count >= MAX_ACTIVE_EMAIL_DESTINATIONS_PER_WORKSPACE ? apiError(c, 409, "limit_exceeded", emailLimitMessage) : null;
   }
   const count = (await countActiveQueues(db, workspaceId)) - ending;
   return count >= MAX_ACTIVE_QUEUES_PER_WORKSPACE ? apiError(c, 409, "limit_exceeded", queueLimitMessage) : null;
@@ -293,14 +314,21 @@ const subscriptionsApi = new Hono<AppEnv>()
   .get("/", async (c) => {
     const db = c.get("db");
     const workspaceId = c.get("workspace").id;
-    const [mcp, webhooks, queues] = await Promise.all([
+    const [mcp, webhooks, queues, emails] = await Promise.all([
       listWorkspaceMcpSubscriptions(db, workspaceId, SUBSCRIPTION_LIST_LIMIT),
-      listWorkspaceWebhookDestinations(db, workspaceId, SUBSCRIPTION_LIST_LIMIT),
+      listWorkspaceSentDestinations(db, workspaceId, "webhook", SUBSCRIPTION_LIST_LIMIT),
       listWorkspaceQueues(db, workspaceId, SUBSCRIPTION_LIST_LIMIT),
+      listWorkspaceSentDestinations(db, workspaceId, "email", SUBSCRIPTION_LIST_LIMIT),
     ]);
     const now = clock.now();
     const body: SubscriptionList = {
-      subscriptions: await subscriptionsToApi(db, c.get("user").id, workspaceId, [...mcp, ...webhooks, ...queues], now),
+      subscriptions: await subscriptionsToApi(
+        db,
+        c.get("user").id,
+        workspaceId,
+        [...mcp, ...webhooks, ...queues, ...emails],
+        now,
+      ),
     };
     return c.json(body, 200);
   })
@@ -321,7 +349,7 @@ const subscriptionsApi = new Hono<AppEnv>()
         workspaceId,
         name,
         filter,
-        webhook: { url, token },
+        destination: { kind: "webhook", url, token },
         jwtSecret: c.get("config").jwtSecret,
         now,
       });
@@ -360,7 +388,7 @@ const subscriptionsApi = new Hono<AppEnv>()
         workspaceId,
         name,
         filter,
-        webhook: null,
+        destination: { kind: "queue" },
         jwtSecret: c.get("config").jwtSecret,
         now,
       });
@@ -399,12 +427,14 @@ const subscriptionsApi = new Hono<AppEnv>()
       return c.json(body as Subscription, 200);
     }
     const destination = await findWorkspaceDestination(db, workspaceId, id);
-    if (!destination) return apiError(c, 404, "not_found", destinationNotFound);
+    // findWorkspaceDestination never matches mcp; the check narrows the kind.
+    if (!destination || destination.kind === "mcp") return apiError(c, 404, "not_found", destinationNotFound);
     if (destination.kind === "queue") {
       // The deliveries not taken yet would never be: they fail in the same batch.
       await endQueue(c.env.DB, workspaceId, id, now);
     } else {
-      await endWebhookDestination(c.env.DB, workspaceId, id, now);
+      // A pending delivery of a webhook or email destination fails as subscription_inactive when the consumer takes it.
+      await endSentDestination(c.env.DB, destination.kind, workspaceId, id, now);
     }
     const ended = await findWorkspaceDestination(db, workspaceId, id);
     if (!ended) return apiError(c, 404, "not_found", destinationNotFound);

@@ -64,7 +64,7 @@ function BotsContent({
         <div>
           <h1>Bot</h1>
           <p className="lead">
-            Bot は、イベントを受け取る AI です。受け取る送信元と配信方式（AI の購読・Webhook・キュー）を決め、AI から接続するときにどの Bot
+            Bot は、イベントを受け取る AI です。受け取る送信元と配信方式（AI の購読・Webhook・キュー・メール）を決め、AI から接続するときにどの Bot
             として接続するかを選びます。
           </p>
         </div>
@@ -138,7 +138,8 @@ function BotRow({ bot, expired }: { bot: Bot; expired: boolean }) {
   );
 }
 
-// A webhook destination or a polling queue that no bot uses: a bot can be made with it, or it can be deleted.
+// A webhook destination, a polling queue or an email destination that no bot uses: a bot can be made with it, or it
+// can be deleted.
 function UnassignedDestinationItem({
   client,
   destination,
@@ -152,12 +153,14 @@ function UnassignedDestinationItem({
   const [sending, setSending] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const name = destination.name ?? "（名前なし）";
-  const kind = destination.kind === "queue" ? "queue" : "webhook";
+  // unassignedBotDestinations never returns an MCP Events subscription.
+  const kind = destination.kind === "mcp" ? "webhook" : destination.kind;
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSending(true);
     setFailure(null);
+    // An email destination is deleted with the same request as a webhook destination (subscriptions/:id/delete).
     const result =
       kind === "queue" ? await deleteQueue(client, destination.id) : await deleteWebhookDestination(client, destination.id);
     switch (result.kind) {
@@ -198,6 +201,12 @@ function UnassignedDestinationItem({
             <dd>{destination.callback_host ?? "不明"}</dd>
           </div>
         )}
+        {kind === "email" && (
+          <div>
+            <dt>宛先</dt>
+            <dd>{destination.email_to ?? "不明"}</dd>
+          </div>
+        )}
         <div>
           <dt>条件</dt>
           <dd>{describeArguments(destination.arguments)}</dd>
@@ -228,7 +237,9 @@ function UnassignedDestinationItem({
           <p>
             {kind === "queue"
               ? `キュー「${name}」を削除します。まだ取得されていないイベントは届かなくなります。元に戻せません。`
-              : `Webhook 配信先「${name}」を削除します。送信待ちの配信も送られなくなります。元に戻せません。`}
+              : kind === "email"
+                ? `メールの配信先「${name}」を削除します。送信待ちの配信も送られなくなります。元に戻せません。`
+                : `Webhook 配信先「${name}」を削除します。送信待ちの配信も送られなくなります。元に戻せません。`}
           </p>
           <div className="folder-form-actions">
             <button type="submit" className="button-danger" disabled={sending}>
@@ -310,6 +321,7 @@ export function botDeliveryValue(bot: Bot): string {
     case "webhook":
       return `${delivery.name ?? "（名前なし）"}${delivery.callback_host === null ? "" : `（${delivery.callback_host}）`}${inactive}`;
     case "queue":
+    case "email":
       return `${delivery.name ?? "（名前なし）"}${inactive}`;
   }
 }

@@ -101,6 +101,8 @@ function flowDelivery(bot: Bot): FlowDelivery {
       return { ...base, primary: bot.connection.client_name, note: null, badge: null };
     case "webhook":
     case "queue":
+    case "email":
+      // The address of an email destination is not shown: Bot has none (only BotDetail).
       if (!active || bot.delivery === null) return { ...base, primary: "なし", note: null, badge: "配信先なし" };
       return {
         ...base,

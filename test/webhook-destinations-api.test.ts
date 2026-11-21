@@ -110,6 +110,7 @@ describe("POST /api/v1/subscriptions/webhooks", () => {
       kind: "webhook",
       name: "Grok Bot",
       callback_host: "api2.example.com",
+      email_to: null,
       arguments: { labels: { project: "a" }, types: ["alert.observed"] },
       status: "active",
       refresh_before: null,

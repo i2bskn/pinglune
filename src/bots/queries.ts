@@ -150,7 +150,7 @@ async function activeMcpSubscriptionsOfConnections(
 
 // The destination of each bot now, by bot ID; null when there is none:
 // - a deleted bot: null.
-// - webhook / queue: delivery_subscription_id, if it is active.
+// - webhook / queue / email: delivery_subscription_id, if it is active.
 // - mcp: the active MCP Events subscription of the bot's active connection updated last (an AI that was installed
 //   again may leave an old subscription behind until it expires).
 // connections may be passed when the caller has read them already.
@@ -246,7 +246,7 @@ function mcpDestinationKey(row: SubscriptionRow): string {
 
 // The destinations that the events of a linked source are delivered to, for these bots, without duplicates:
 // - a deleted bot: none.
-// - webhook / queue: delivery_subscription_id, if it is active and of the bot's kind. An MCP connection is not
+// - webhook / queue / email: delivery_subscription_id, if it is active and of the bot's kind. An MCP connection is not
 //   needed.
 // - mcp: every active MCP Events subscription of the bot's active connection (an AI may subscribe with different
 //   conditions), except that subscriptions with the same callback and the same types and labels (they differ in

@@ -42,13 +42,16 @@ export function aiMessagesLabel(conversation: Pick<Conversation, "ai_message_cou
   return `AI の発言 ${conversation.ai_message_count} / 上限 ${conversation.max_ai_messages}`;
 }
 
-// A destination to notify, as the select of the form shows it: "Webhook: name", "キュー: name" or "MCP: host".
+// A destination to notify, as the select of the form shows it: "Webhook: name", "キュー: name", "メール: name" or
+// "MCP: host".
 export function subscriptionLabel(subscription: Pick<Subscription, "kind" | "name" | "callback_host">): string {
   switch (subscription.kind) {
     case "webhook":
       return `Webhook: ${subscription.name ?? subscription.callback_host ?? "（名前なし）"}`;
     case "queue":
       return `キュー: ${subscription.name ?? "（名前なし）"}`;
+    case "email":
+      return `メール: ${subscription.name ?? "（名前なし）"}`;
     case "mcp":
       return `MCP: ${subscription.callback_host ?? "不明な宛先"}`;
   }

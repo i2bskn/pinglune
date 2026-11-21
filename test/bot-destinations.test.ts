@@ -600,7 +600,16 @@ describe("GET /api/v1/bots/:id", () => {
     expect(res.status).toBe(200);
     expect((await res.json()) as BotDetail).toEqual({
       ...bot,
-      destination: { subscription_id: queue, kind: "queue", name: "Muse", callback_host: null, status: "active", arguments: { types: ["a.b"] } },
+      destination: {
+        subscription_id: queue,
+        kind: "queue",
+        name: "Muse",
+        callback_host: null,
+        email_to: null,
+        status: "active",
+        arguments: { types: ["a.b"] },
+      },
+      email_delivery_available: false,
     });
     await env.DB.prepare("UPDATE subscriptions SET unsubscribed_at = ? WHERE id = ?").bind(now, queue).run();
     const ended = (await (await send(`/api/v1/bots/${bot.id}`, { cookies: aliceCookies })).json()) as BotDetail;

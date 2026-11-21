@@ -29,15 +29,22 @@ export const DELIVERY_KIND_LABELS: Record<BotDeliveryKind, string> = {
   mcp: "MCP Event",
   webhook: "Webhook",
   queue: "キュー",
+  email: "メール",
 };
 
 export const DELIVERY_KIND_DESCRIPTIONS: Record<BotDeliveryKind, string> = {
   mcp: "ChatGPT など、Pinglune に購読を作る AI。配信先は AI の接続から自動で決まります",
   webhook: "Bearer 認証の Webhook に送ります（チャットボットなど）。URL とキーをこの Bot に登録します",
   queue: "この Bot 用のポーリング用キューに入れます（外から呼び出せない AI など）。キューは Bot と一緒に作られます",
+  email:
+    "Bot 用のメールアドレスに送ります（専用のアドレスを持つ AI など）。本文と添付は含まれないので、MCP の read_data で読みます",
 };
 
-export const DELIVERY_KINDS: BotDeliveryKind[] = ["mcp", "webhook", "queue"];
+export const DELIVERY_KINDS: BotDeliveryKind[] = ["mcp", "webhook", "queue", "email"];
+
+// Shown when the instance has no email sending set up (email_delivery_available false).
+export const EMAIL_DELIVERY_UNAVAILABLE_MESSAGE =
+  "メールでの配信は設定されていません。管理者が EMAIL_FROM を設定すると使えます";
 
 // Shown for an mcp bot without a destination, and after a legacy connection is taken in.
 export const MCP_DELIVERY_PENDING_MESSAGE =
@@ -48,7 +55,7 @@ export type BotForm = { name: string; deliveryKind: BotDeliveryKind; deliverySub
 
 export const EMPTY_BOT_FORM: BotForm = { name: "", deliveryKind: "mcp", deliverySubscriptionId: "", sourceIds: [] };
 
-// The form for editing a bot. The destination of a webhook or queue bot is kept only while it is active (the API
+// The form for editing a bot. The destination of a webhook, queue or email bot is kept only while it is active (the API
 // returns it only then).
 export function botForm(bot: Bot): BotForm {
   return {
@@ -114,7 +121,7 @@ export function updateBotRequest(bot: Bot, form: BotForm, sourcesLoaded = true):
   return Object.keys(request).length === 0 ? null : { ok: true, value: request };
 }
 
-// The destinations a webhook or queue bot may use: the active subscriptions of that kind that no other bot uses.
+// The destinations a webhook, queue or email bot may use: the active subscriptions of that kind that no other bot uses.
 export function availableDestinations(
   subscriptions: Subscription[],
   bots: Bot[],
@@ -141,6 +148,8 @@ export function botDeliveryLabel(bot: Bot): string {
       return `Webhook: ${delivery.name ?? "（名前なし）"}${delivery.callback_host === null ? "" : `（${delivery.callback_host}）`}`;
     case "queue":
       return `キュー: ${delivery.name ?? "（名前なし）"}`;
+    case "email":
+      return `メール: ${delivery.name ?? "（名前なし）"}`;
   }
 }
 
@@ -186,15 +195,15 @@ export function botPath(id: string): string {
   return `/bots/${id}`;
 }
 
-// The webhook destinations and polling queues that no bot uses, active ones only: a bot can be made with them.
+// The webhook destinations, polling queues and email destinations that no bot uses, active ones only: a bot can be made with them.
 export function unassignedBotDestinations(subscriptions: Subscription[]): Subscription[] {
   return subscriptions.filter(
     (subscription) => subscription.kind !== "mcp" && subscription.status === "active" && subscription.bot === null,
   );
 }
 
-// The destination named by ?destination= of the creation screen, if it may be used: an active webhook destination or
-// polling queue that no bot uses. null otherwise (the query is then ignored).
+// The destination named by ?destination= of the creation screen, if it may be used: an active webhook destination,
+// polling queue or email destination that no bot uses. null otherwise (the query is then ignored).
 export function destinationFromQuery(params: URLSearchParams, subscriptions: Subscription[]): Subscription | null {
   const id = params.get("destination");
   if (id === null) return null;
@@ -232,14 +241,15 @@ export function conditionsFormOf(args: Record<string, unknown> | null): Conditio
   return { types: stringList(args.types).join(", "), labels: lines.join("\n") };
 }
 
-// The creation form of a bot. url and token are for webhook; the conditions for webhook and queue. destinationId is
-// an existing destination to use (from ?destination=), which fixes the delivery kind and leaves out url, token and the
-// conditions.
+// The creation form of a bot. url and token are for webhook, emailTo for email; the conditions for webhook, queue and
+// email. destinationId is an existing destination to use (from ?destination=), which fixes the delivery kind and
+// leaves out url, token, emailTo and the conditions.
 export type NewBotForm = {
   name: string;
   deliveryKind: BotDeliveryKind;
   url: string;
   token: string;
+  emailTo: string;
   conditions: ConditionsForm;
   sourceIds: string[];
   destinationId: string | null;
@@ -250,13 +260,15 @@ export const EMPTY_NEW_BOT_FORM: NewBotForm = {
   deliveryKind: "mcp",
   url: "",
   token: "",
+  emailTo: "",
   conditions: EMPTY_CONDITIONS_FORM,
   sourceIds: [],
   destinationId: null,
 };
 
 // The request of the creation form: an existing destination by ID, a new webhook destination with its URL and key, a
-// new polling queue, or none for MCP Event. The server checks the name, the URL and the key. sourcesLoaded is false
+// new polling queue, a new email destination with its address, or none for MCP Event. The server checks the name, the
+// URL, the key and the address. sourcesLoaded is false
 // when the sources could not be read: nothing is sent.
 export function newBotRequest(form: NewBotForm, sourcesLoaded = true): FormResult<CreateBotRequest> {
   if (!sourcesLoaded) return { ok: false, message: SOURCES_UNAVAILABLE_MESSAGE };
@@ -270,6 +282,7 @@ export function newBotRequest(form: NewBotForm, sourcesLoaded = true): FormResul
     if (!conditions.ok) return conditions;
     value = { name: form.name, delivery_kind: form.deliveryKind };
     if (form.deliveryKind === "webhook") value.webhook = { url: form.url, token: form.token };
+    if (form.deliveryKind === "email") value.email = { to: form.emailTo };
     if (Object.keys(conditions.value).length > 0) value.conditions = conditions.value;
   }
   if (form.sourceIds.length > 0) value.source_ids = form.sourceIds;
@@ -277,22 +290,30 @@ export function newBotRequest(form: NewBotForm, sourcesLoaded = true): FormResul
 }
 
 // The form that changes the delivery kind of a bot to a new destination: a new webhook destination (url, token), a
-// new polling queue, or MCP Event.
-export type DeliveryChangeForm = { kind: BotDeliveryKind; url: string; token: string; conditions: ConditionsForm };
+// new polling queue, a new email destination (emailTo), or MCP Event.
+export type DeliveryChangeForm = {
+  kind: BotDeliveryKind;
+  url: string;
+  token: string;
+  emailTo: string;
+  conditions: ConditionsForm;
+};
 
 // The kinds the form offers for a bot: a queue bot cannot get a new queue (the server keeps the current one), and an
-// MCP Event bot is MCP Event already. A webhook bot may get a new webhook destination.
+// MCP Event bot is MCP Event already. A webhook or email bot may get a new destination of its kind.
 export function deliveryChangeKinds(bot: Pick<Bot, "delivery_kind">): BotDeliveryKind[] {
-  return DELIVERY_KINDS.filter((kind) => kind === "webhook" || kind !== bot.delivery_kind);
+  return DELIVERY_KINDS.filter((kind) => kind === "webhook" || kind === "email" || kind !== bot.delivery_kind);
 }
 
-// The request of the form that changes the destination. The previous webhook destination or queue ends with it.
+// The request of the form that changes the destination. The previous webhook destination, queue or email destination
+// ends with it.
 export function deliveryChangeRequest(form: DeliveryChangeForm): FormResult<UpdateBotRequest> {
   if (form.kind === "mcp") return { ok: true, value: { delivery_kind: "mcp" } };
   const conditions = conditionsRequest(form.conditions);
   if (!conditions.ok) return conditions;
   const value: UpdateBotRequest = { delivery_kind: form.kind };
   if (form.kind === "webhook") value.webhook = { url: form.url, token: form.token };
+  if (form.kind === "email") value.email = { to: form.emailTo };
   if (Object.keys(conditions.value).length > 0) value.conditions = conditions.value;
   return { ok: true, value };
 }
@@ -302,9 +323,14 @@ export function deliveryChangeWarning(bot: BotDetail): string | null {
   const destination = bot.destination;
   if (destination === null || destination.status !== "active") return null;
   const name = destination.name ?? "（名前なし）";
-  return destination.kind === "queue"
-    ? `今のキュー「${name}」は終了します。まだ処理されていないイベント（取得済みで処理済みの連絡がないものを含む）は失敗になり、あとから ack_events で処理済みにはできません。`
-    : `今の Webhook 配信先「${name}」は終了します。まだ送っていない配信は送られません。`;
+  switch (destination.kind) {
+    case "queue":
+      return `今のキュー「${name}」は終了します。まだ処理されていないイベント（取得済みで処理済みの連絡がないものを含む）は失敗になり、あとから ack_events で処理済みにはできません。`;
+    case "webhook":
+      return `今の Webhook 配信先「${name}」は終了します。まだ送っていない配信は送られません。`;
+    case "email":
+      return `今のメールの配信先「${name}」は終了します。まだ送っていない配信は送られません。`;
+  }
 }
 
 export type SourceTab = "overview" | "intake" | "settings";

@@ -375,6 +375,8 @@ export async function loadConversationForm(client: ApiClient): Promise<Loaded<Co
 
 export type BotsData = {
   bots: Bot[];
+  // Whether a new email destination can be made (BotList.email_delivery_available).
+  emailDeliveryAvailable: boolean;
   // The MCP connections of the user. Empty with connectionsError set when they cannot be read (e.g. 503 where MCP is
   // not served).
   connections: McpConnection[];
@@ -410,6 +412,7 @@ export async function loadBotsView(client: ApiClient): Promise<Loaded<BotsData>>
     kind: "ready",
     data: {
       bots: bots.value.bots,
+      emailDeliveryAvailable: bots.value.email_delivery_available,
       connections: connections.kind === "ok" ? connections.value.connections : [],
       connectionsError: connections.kind === "ok" ? null : connections.message,
       subscriptions: subscriptions.value.subscriptions,

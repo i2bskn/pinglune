@@ -91,6 +91,11 @@
       { "queue": "pinglune-deliveries-dlq", "max_batch_size": 10, "max_batch_timeout": 5, "max_retries": 10 }
     ]
   },
+  // Email deliveries of bots (src/deliveries/email.ts), used only when the EMAIL_FROM variable is set. The domain of
+  // EMAIL_FROM must be onboarded to Cloudflare Email Sending. Sending to any address needs the Workers Paid plan; on
+  // the Free plan, only the destination addresses verified in the account can receive. No restriction is set here:
+  // an operator who wants to limit the recipients can add "allowed_destination_addresses".
+  "send_email": [{ "name": "SEND_EMAIL" }],
   // The daily maintenance (src/maintenance/daily.ts), at 18:00 UTC (03:00 in Japan).
   "triggers": { "crons": ["0 18 * * *"] }
 }

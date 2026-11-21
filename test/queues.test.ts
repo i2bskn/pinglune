@@ -192,6 +192,7 @@ describe("POST /api/v1/subscriptions/queues", () => {
       kind: "queue",
       name: "Muse",
       callback_host: null,
+      email_to: null,
       arguments: { labels: { project: "a" }, types: ["alert.observed"] },
       status: "active",
       refresh_before: null,

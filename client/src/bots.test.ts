@@ -19,6 +19,7 @@ const HOOK: Subscription = {
   kind: "webhook",
   name: "grok",
   callback_host: "api.example.com",
+  email_to: null,
   arguments: {},
   status: "active",
   refresh_before: null,
@@ -163,6 +164,15 @@ describe("bot choices and labels", () => {
   it("describes the destination of a bot", () => {
     expect(botDeliveryLabel(DOT)).toBe("MCP Event: なし");
     expect(botDeliveryLabel(GROK)).toBe("Webhook: grok（api.example.com）");
+    // The address is not shown: Bot has none.
+    expect(
+      botDeliveryLabel({
+        ...GROK,
+        delivery_kind: "email",
+        delivery: { subscription_id: HOOK.id, name: "mail", callback_host: null, status: "active" },
+      }),
+    ).toBe("メール: mail");
+    expect(botDeliveryLabel({ ...GROK, delivery_kind: "email", delivery: null })).toBe("メール: なし");
   });
 
   it("warns before replacing the connection of a bot", () => {

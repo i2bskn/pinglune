@@ -19,7 +19,7 @@ export const MAX_ALLOWED_SENDERS = 20;
 
 const LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 // Printable ASCII without the space and <>()[]",;:\@.
-const SIMPLE_LOCAL_PART = /^[\x21\x23-\x27\x2A\x2B\x2D-\x39\x3D\x3F\x41-\x5A\x5E-\x7E]+$/;
+export const SIMPLE_LOCAL_PART = /^[\x21\x23-\x27\x2A\x2B\x2D-\x39\x3D\x3F\x41-\x5A\x5E-\x7E]+$/;
 
 export type AuthResultsReason =
   | "ar_missing"

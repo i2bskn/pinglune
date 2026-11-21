@@ -4,6 +4,7 @@ import { type BotResult, deleteBot, updateBot, updateConversationStart } from ".
 import {
   DELIVERY_KIND_DESCRIPTIONS,
   DELIVERY_KIND_LABELS,
+  EMAIL_DELIVERY_UNAVAILABLE_MESSAGE,
   EMPTY_CONDITIONS_FORM,
   MCP_DELIVERY_PENDING_MESSAGE,
   type ConditionsForm,
@@ -26,7 +27,7 @@ import { formatDateTime } from "../format";
 import { Link } from "../Link";
 import { type ApiClient, type BotDetailData, type ViewState, loadBotDetail, loadDeliveries, useView } from "../load";
 import { navigate } from "../router";
-import { WebhookFields } from "./BotNewView";
+import { EmailFields, WebhookFields } from "./BotNewView";
 import { SourceFields } from "./BotsView";
 import { ViewStatus, useDocumentTitle, useFlashNotice, viewTitle } from "./common";
 import { ConditionFields, CopyableId } from "./DeliveriesView";
@@ -39,7 +40,7 @@ const QUEUE_GUIDE =
   "AI に、このキューの ID を claim_events に渡して定期的に（5 分おきなど）取得させ、処理したら ack_events を呼ばせてください。";
 const CONDITIONS_NOTE = "条件を指定しないと、受け取る送信元のすべてのイベントが届きます。";
 const DELETE_CONFIRMATION =
-  "Bot を削除します。Webhook / キューの配信先も終了し、これからのイベントは届かなくなります。MCP 接続は割り当てなしの接続として残ります。元に戻せません。";
+  "Bot を削除します。Webhook・キュー・メールの配信先も終了し、これからのイベントは届かなくなります。MCP 接続は割り当てなしの接続として残ります。元に戻せません。";
 
 // The confirmation when the destination is kept.
 function keepDestinationConfirmation(name: string): string {
@@ -416,6 +417,12 @@ function DeliverySection({ client, bot, onDone }: { client: ApiClient; bot: BotD
                 <dd>{destination.callback_host ?? "不明"}</dd>
               </div>
             )}
+            {destination.kind === "email" && (
+              <div>
+                <dt>宛先</dt>
+                <dd>{destination.email_to ?? "不明"}</dd>
+              </div>
+            )}
             {destination.kind === "queue" && !ended && (
               <div>
                 <dt>キュー ID</dt>
@@ -552,6 +559,7 @@ function DeliveryChangeEditForm({
     kind: kinds[0] ?? "webhook",
     url: "",
     token: "",
+    emailTo: "",
     conditions: EMPTY_CONDITIONS_FORM,
   });
   const [sending, setSending] = useState(false);
@@ -576,26 +584,34 @@ function DeliveryChangeEditForm({
     <form className="folder-form" aria-label="配信方式を変更" onSubmit={(event) => void onSubmit(event)}>
       <fieldset className="participant-fields" disabled={sending}>
         <legend>新しい配信方式</legend>
-        {kinds.map((kind) => (
-          <label key={kind} className="choice">
-            <input
-              type="radio"
-              name="new_delivery_kind"
-              value={kind}
-              checked={form.kind === kind}
-              onChange={() => setForm({ ...form, kind })}
-            />
-            <span>
-              <span className="choice-title">
-                {DELIVERY_KIND_LABELS[kind]}
-                {kind === bot.delivery_kind ? "（新しい配信先）" : ""}
+        {kinds.map((kind) => {
+          // A new email destination needs the instance's setup.
+          const emailUnavailable = kind === "email" && !bot.email_delivery_available;
+          return (
+            <label key={kind} className="choice">
+              <input
+                type="radio"
+                name="new_delivery_kind"
+                value={kind}
+                checked={form.kind === kind}
+                disabled={emailUnavailable}
+                onChange={() => setForm({ ...form, kind })}
+              />
+              <span>
+                <span className="choice-title">
+                  {DELIVERY_KIND_LABELS[kind]}
+                  {kind === bot.delivery_kind ? "（新しい配信先）" : ""}
+                </span>
+                <span className="choice-description">
+                  {emailUnavailable ? EMAIL_DELIVERY_UNAVAILABLE_MESSAGE : DELIVERY_KIND_DESCRIPTIONS[kind]}
+                </span>
               </span>
-              <span className="choice-description">{DELIVERY_KIND_DESCRIPTIONS[kind]}</span>
-            </span>
-          </label>
-        ))}
+            </label>
+          );
+        })}
       </fieldset>
       {form.kind === "webhook" && <WebhookFields form={form} onChange={setForm} disabled={sending} />}
+      {form.kind === "email" && <EmailFields form={form} onChange={setForm} disabled={sending} />}
       {form.kind !== "mcp" && (
         <ConditionFields
           value={form.conditions}

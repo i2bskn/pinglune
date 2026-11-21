@@ -216,7 +216,7 @@ export type EmailAddressRow = typeof emailAddresses.$inferSelect;
 export type EventRow = typeof events.$inferSelect;
 export type EventDataRow = typeof eventData.$inferSelect;
 
-// The destinations of pinglune.event deliveries, of three kinds:
+// The destinations of pinglune.event deliveries, of four kinds:
 // - mcp: MCP Events subscriptions (events/subscribe). The id is derived from the user, the callback URL, the event
 //   name and the arguments, so that the same subscription is an update. Signed with Standard Webhooks.
 // - webhook: webhook destinations registered on the management screen (src/routes/subscriptions.ts). The id is
@@ -224,6 +224,9 @@ export type EventDataRow = typeof eventData.$inferSelect;
 // - queue: polling queues registered on the management screen. Nothing is sent: an AI takes the deliveries with
 //   the claim_events and ack_events MCP tools (src/queues/). The id is random, callback_url and secret are empty,
 //   and expires_at is NO_EXPIRY.
+// - email: email destinations made with a bot (src/routes/bots.ts), sent with the send_email binding when EMAIL_FROM
+//   is set (src/deliveries/email.ts). callback_url is "mailto:" + the normalized address (src/email/address.ts), not
+//   parsed as a URL; secret is empty and expires_at is NO_EXPIRY.
 // Rows are ended with unsubscribed_at rather than deleted (deliveries refer to them), except when the user is
 // deleted. Active: unsubscribed_at IS NULL AND expires_at > now.
 export const subscriptions = sqliteTable(
@@ -239,21 +242,21 @@ export const subscriptions = sqliteTable(
     eventName: text("event_name").notNull(),
     // Checked by the application only: a CHECK constraint would rebuild the table. The default keeps the inserts
     // of the code before this column working while a deploy applies the migration first.
-    kind: text("kind", { enum: ["mcp", "webhook", "queue"] }).notNull().default("mcp"),
+    kind: text("kind", { enum: ["mcp", "webhook", "queue", "email"] }).notNull().default("mcp"),
     // The display name of a webhook destination or a polling queue (trimmed, 1 to 64 characters). NULL for mcp.
     name: text("name"),
     // Canonical JSON of the validated arguments. "{}" when there are none.
     arguments: text("arguments").notNull(),
-    // new URL(url).href. "" for queue, which sends nothing.
+    // new URL(url).href. "" for queue, which sends nothing. "mailto:" + the address for email.
     callbackUrl: text("callback_url").notNull(),
     // mcp: the signing secret; webhook: the Bearer key as UTF-8. Encrypted (src/subscriptions/secret.ts). "" for
-    // queue, which has no key.
+    // queue and email, which have no key.
     secret: text("secret").notNull(),
     // The secret before the last rotation, encrypted. Deliveries also sign with it for 1 hour after
     // secret_rotated_at, so that the receiver can switch keys.
     previousSecret: text("previous_secret"),
     secretRotatedAt: integer("secret_rotated_at"),
-    // mcp: refreshBefore + 1 hour of grace. webhook and queue: NO_EXPIRY.
+    // mcp: refreshBefore + 1 hour of grace. webhook, queue and email: NO_EXPIRY.
     expiresAt: integer("expires_at").notNull(),
     unsubscribedAt: integer("unsubscribed_at"),
     createdAt: integer("created_at").notNull(),
@@ -408,7 +411,11 @@ export type ConversationParticipantRow = typeof conversationParticipants.$inferS
 // connection it speaks with. Conversations take bots as participants. Deleted with deleted_at (participants refer to
 // it), except when the user is deleted.
 // - mcp: notified at the MCP Events subscription of its connection (subscriptions.connection_id).
-// - webhook / queue: notified at delivery_subscription_id, a webhook destination or a polling queue.
+// - webhook / queue / email: notified at delivery_subscription_id, a webhook destination, a polling queue or an email
+//   destination.
+// The table was rebuilt (0014) to add email to its CHECK constraints, which SQLite cannot alter. Other tables refer
+// to bots, so the rows went through a copy (__bots_backup) and the table kept its name: a new table renamed to bots
+// would leave the deferred foreign key violations of the drop counted, failing the migration.
 export const bots = sqliteTable(
   "bots",
   {
@@ -422,8 +429,8 @@ export const bots = sqliteTable(
       .references(() => users.id),
     // Trimmed, 1 to 64 characters (normalizeDisplayName). Unique among the bots of the workspace that are not deleted.
     name: text("name").notNull(),
-    deliveryKind: text("delivery_kind", { enum: ["mcp", "webhook", "queue"] }).notNull(),
-    // webhook / queue only. One destination is used by one bot.
+    deliveryKind: text("delivery_kind", { enum: ["mcp", "webhook", "queue", "email"] }).notNull(),
+    // webhook / queue / email only. One destination is used by one bot.
     deliverySubscriptionId: text("delivery_subscription_id").references(() => subscriptions.id),
     // Whether the AI of the bot may start conversations with other bots (start_conversation, MCP). 0 or 1. Off by
     // default. The ranges of the limits below are checked by the application, not by CHECK constraints.
@@ -444,10 +451,10 @@ export const bots = sqliteTable(
       .on(t.deliverySubscriptionId)
       .where(sql`${t.deletedAt} IS NULL AND ${t.deliverySubscriptionId} IS NOT NULL`),
     index("bots_workspace_id_idx").on(t.workspaceId),
-    check("bots_delivery_kind_check", sql`${t.deliveryKind} IN ('mcp', 'webhook', 'queue')`),
+    check("bots_delivery_kind_check", sql`${t.deliveryKind} IN ('mcp', 'webhook', 'queue', 'email')`),
     check(
       "bots_delivery_subscription_check",
-      sql`(${t.deliveryKind} = 'mcp' AND ${t.deliverySubscriptionId} IS NULL) OR (${t.deliveryKind} IN ('webhook', 'queue') AND ${t.deliverySubscriptionId} IS NOT NULL)`,
+      sql`(${t.deliveryKind} = 'mcp' AND ${t.deliverySubscriptionId} IS NULL) OR (${t.deliveryKind} IN ('webhook', 'queue', 'email') AND ${t.deliverySubscriptionId} IS NOT NULL)`,
     ),
   ],
 );

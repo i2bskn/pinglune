@@ -415,6 +415,7 @@ const DESTINATION: Subscription = {
   kind: "webhook",
   name: "Grok Bot",
   callback_host: "api2.example.com",
+  email_to: null,
   arguments: {},
   status: "active",
   refresh_before: null,

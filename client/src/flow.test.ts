@@ -182,8 +182,14 @@ describe("buildFlow", () => {
       ).toEqual({ id: "delivery:b1", kind: "queue", kindLabel: "キュー", primary: "muse", note: null, badge: null });
     });
 
-    it("is 配信先なし for a webhook or queue bot without an active destination", () => {
-      for (const kind of ["webhook", "queue"] as const) {
+    it("shows the name of an active email destination without its address", () => {
+      expect(
+        delivery({ delivery_kind: "email", delivery: { ...ACTIVE_HOOK, name: "mail", callback_host: null } }),
+      ).toEqual({ id: "delivery:b1", kind: "email", kindLabel: "メール", primary: "mail", note: null, badge: null });
+    });
+
+    it("is 配信先なし for a webhook, queue or email bot without an active destination", () => {
+      for (const kind of ["webhook", "queue", "email"] as const) {
         expect(delivery({ delivery_kind: kind, delivery: null })).toMatchObject({
           primary: "なし",
           note: null,

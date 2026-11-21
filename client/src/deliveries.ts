@@ -73,6 +73,10 @@ const ERROR_LABELS: Record<string, string> = {
   expired: "7 日間処理されなかった",
   conversation_stopped: "会話が停止された",
   retry_enqueue_failed: "再送を受け付けられませんでした",
+  email_delivery_not_configured: "メール配信が設定されていません",
+  email_rejected: "メールの送信が拒否されました",
+  email_failed: "メールを送れませんでした",
+  invalid_destination: "宛先が正しくありません",
 };
 
 export function errorLabel(error: string): string {
@@ -80,7 +84,7 @@ export function errorLabel(error: string): string {
 }
 
 // The outcome of the last try, e.g. "受信側でエラーが起きました（HTTP 503）". null before the first try. Polling
-// queues have no HTTP status, and are "処理済み" when acknowledged.
+// queues have no HTTP status, and are "処理済み" when acknowledged. Emails have no HTTP status either.
 export function lastResult(delivery: Delivery): string | null {
   if (isQueueDelivery(delivery)) {
     if (delivery.last_error !== null) return errorLabel(delivery.last_error);
@@ -92,12 +96,14 @@ export function lastResult(delivery: Delivery): string | null {
   return null;
 }
 
-// Whether the screen offers to send a delivery again: failed deliveries to webhook destinations and MCP Events
-// subscriptions. The server checks it again, along with whether the destination is still active.
+// Whether the screen offers to send a delivery again: failed deliveries to webhook destinations, email destinations
+// and MCP Events subscriptions. The server checks it again, along with whether the destination is still active.
 export function canRetry(delivery: Delivery): boolean {
   if (delivery.status !== "failed") return false;
-  // A webhook destination that had ended never comes back (an MCP Events subscription may be made again).
-  if (delivery.destination_kind === "webhook") return delivery.last_error !== "subscription_inactive";
+  // A webhook or email destination that had ended never comes back (an MCP Events subscription may be made again).
+  if (delivery.destination_kind === "webhook" || delivery.destination_kind === "email") {
+    return delivery.last_error !== "subscription_inactive";
+  }
   return delivery.destination_kind === "mcp";
 }
 
@@ -105,7 +111,9 @@ export function canRetry(delivery: Delivery): boolean {
 export function noRetryReason(delivery: Delivery): string | null {
   if (delivery.status !== "failed" || canRetry(delivery)) return null;
   if (delivery.destination_kind === "queue") return "キューの配信は再送できません";
-  if (delivery.destination_kind === "webhook") return "配信先が終了しているため再送できません";
+  if (delivery.destination_kind === "webhook" || delivery.destination_kind === "email") {
+    return "配信先が終了しているため再送できません";
+  }
   return "配信先が見つからないため再送できません";
 }
 

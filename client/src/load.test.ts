@@ -95,7 +95,7 @@ describe("loadBotsView", () => {
 
   it("loads the bots, the MCP connections, the subscriptions and the sources", async () => {
     const { client } = setup({
-      "/api/v1/bots": [json(200, { bots: [BOT] })],
+      "/api/v1/bots": [json(200, { bots: [BOT], email_delivery_available: true })],
       "/api/v1/mcp-connections": [json(200, { connections: [CONNECTION] })],
       "/api/v1/subscriptions": [json(200, { subscriptions: [] })],
       "/api/v1/sources": [json(200, { sources: [SOURCE] })],
@@ -104,6 +104,7 @@ describe("loadBotsView", () => {
       kind: "ready",
       data: {
         bots: [BOT],
+        emailDeliveryAvailable: true,
         connections: [CONNECTION],
         connectionsError: null,
         subscriptions: [],
@@ -115,7 +116,7 @@ describe("loadBotsView", () => {
 
   it("shows the bots without connections when they cannot be read", async () => {
     const { client } = setup({
-      "/api/v1/bots": [json(200, { bots: [BOT] })],
+      "/api/v1/bots": [json(200, { bots: [BOT], email_delivery_available: false })],
       "/api/v1/mcp-connections": [apiError(503, "この接続先では MCP 接続を確認できません")],
       "/api/v1/subscriptions": [json(200, { subscriptions: [] })],
       "/api/v1/sources": [json(200, { sources: [] })],
@@ -124,6 +125,7 @@ describe("loadBotsView", () => {
       kind: "ready",
       data: {
         bots: [BOT],
+        emailDeliveryAvailable: false,
         connections: [],
         connectionsError: "この接続先では MCP 接続を確認できません",
         subscriptions: [],
@@ -135,7 +137,7 @@ describe("loadBotsView", () => {
 
   it("shows the bots without sources when they cannot be read", async () => {
     const { client } = setup({
-      "/api/v1/bots": [json(200, { bots: [BOT] })],
+      "/api/v1/bots": [json(200, { bots: [BOT], email_delivery_available: false })],
       "/api/v1/mcp-connections": [json(200, { connections: [] })],
       "/api/v1/subscriptions": [json(200, { subscriptions: [] })],
       "/api/v1/sources": [apiError(500, "サーバーでエラーが発生しました")],
@@ -414,6 +416,7 @@ describe("loadDeliveriesView", () => {
     kind: "mcp",
     name: null,
     callback_host: "hooks.example.com",
+    email_to: null,
     arguments: {},
     status: "active",
     refresh_before: 1,
@@ -530,6 +533,7 @@ describe("conversations", () => {
     kind: "webhook",
     name: "dot",
     callback_host: "hooks.example.com",
+    email_to: null,
     arguments: {},
     status: "active",
     refresh_before: null,

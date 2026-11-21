@@ -92,9 +92,10 @@ const deliveriesApi = new Hono<AppEnv>()
     const body: DeliveryList = { deliveries: await withEvents(db, workspaceId, deliveries), next_cursor: nextCursor };
     return c.json(body, 200);
   })
-  // Sends a failed delivery to a webhook destination or an MCP Events subscription again, from the first try. Allowed
-  // whatever the bots link now and whether the conversation is stopped: the same delivery goes to the same
-  // destination again. The consumer still checks that the destination is active when it sends.
+  // Sends a failed delivery to a webhook destination, an email destination or an MCP Events subscription again, from
+  // the first try. Allowed whatever the bots link now and whether the conversation is stopped: the same delivery goes
+  // to the same destination again. The consumer still checks that the destination is active when it sends (and, for
+  // email, that the sending is set up).
   .post("/:id/retry", async (c) => {
     const id = c.req.param("id");
     if (!DELIVERY_ID_PATTERN.test(id)) return apiError(c, 404, "not_found", deliveryNotFound);

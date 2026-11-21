@@ -51,3 +51,15 @@ CookieにSecure属性と`__Host-`接頭辞を使っているので、`http://loc
 - 配信に使うQueuesのキュー（`pinglune-deliveries` と dead letter queueの `pinglune-deliveries-dlq`）は、存在しなければ `wrangler deploy` が自動で作ります。`wrangler deploy` が自動で作るのはproducerのバインディングがあるキューだけなので、コードでは使わない `DELIVERY_DLQ` をdead letter queueのproducerとして宣言しています。日次Cron（毎日18:00 UTC）も `wrangler.jsonc` の設定で登録されます。
 - Workers FreeプランでもQueuesを使えますが、1日1万オペレーションまでです。1件の配信でおよそ3オペレーション（書き込み・読み取り・削除）を使い、再送するとその分増えるので、1日あたりの配信はおよそ3,000件までが目安です。
 
+## メールでの配信
+
+配信方式「メール」のBotは、Cloudflare Email Service（Email Sending）でイベントをメールとして送ります。設定しなければ使えず、管理画面のメールの選択肢は「設定されていない」と表示されます。
+
+1. Cloudflareのダッシュボードで、差出人に使うドメインをEmail Sendingにオンボーディングします。
+2. Workerの「Variables and Secrets」に、そのドメインの差出人アドレスを `EMAIL_FROM` として設定します（例: `pinglune@notify.example.com`）。
+
+- `send_email` バインディング（`SEND_EMAIL`）は `wrangler.jsonc` で宣言しています。`EMAIL_FROM` がないときは使いません。
+- 任意の宛先へ送るにはWorkers Paidプランが必要です。Freeプランでは、アカウントで確認済みの宛先アドレスにだけ送れます。確認していない宛先への配信は `email_rejected` で失敗します。
+- 送信はインスタンスのCloudflareアカウントに課金されます。送ったメールは送信ドメインの評判にも影響します。配信先を作れるのはログインできるユーザーだけですが、宛先を絞りたい場合は `wrangler.jsonc` の `send_email` に `allowed_destination_addresses` を足してください。
+- `EMAIL_FROM` には、メールでの受付用に発行したアドレスを使わないでください。宛先のメールボックスから受付アドレスへ転送する設定もしないでください。受付のドメイン宛てへの配信は拒否しますが、転送や自動返信を経由したループは防げません。
+- `EMAIL_FROM` がメールアドレスとして正しくないときは、未設定と同じ扱いになります。管理画面では「設定されていない」と表示されるだけなので、原因はWorkerのログ（warn）で確かめてください。
