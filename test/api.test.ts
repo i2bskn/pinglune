@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { core } from "../src/core";
 import type { UserRow } from "../src/db/schema";
+import { loadConfig } from "../src/env";
 import { env } from "cloudflare:workers";
 import {
   appDb,
@@ -10,6 +11,7 @@ import {
   login,
   OIDC_ORIGIN,
   oidcEnv,
+  ORIGIN,
   PASSWORD,
   resetDb,
   send,
@@ -58,24 +60,65 @@ describe("admin user API", () => {
     // The personal workspace is rolled back with the user in the same batch.
     expect(await countWorkspaces()).toBe(2);
   });
+
+  it("POST /api/v1/users without a password invites the user, with a personal workspace", async () => {
+    const res = await send("/api/v1/users", {
+      cookies: adminCookies,
+      json: { email: "invited@example.com", role: "member" },
+    });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { id: string; status: string; invitation: { url: string; expires_at: number } | null };
+    expect(body.status).toBe("invited");
+    expect(body.invitation?.url.startsWith(`${ORIGIN}/auth/invite?token=`)).toBe(true);
+    expect(body.invitation?.expires_at).toBeGreaterThan(Date.now());
+    expect(await countPersonalWorkspaces(body.id)).toBe(1);
+    expect(await countWorkspaces()).toBe(3);
+  });
+
+  it("POST /api/v1/users/:id/invitation issues a new invitation link", async () => {
+    const created = await send("/api/v1/users", {
+      cookies: adminCookies,
+      json: { email: "invited@example.com", role: "member" },
+    });
+    expect(created.status).toBe(201);
+    const { id, invitation } = (await created.json()) as { id: string; invitation: { url: string } | null };
+
+    const res = await send(`/api/v1/users/${id}/invitation`, { method: "POST", cookies: adminCookies });
+    expect(res.status).toBe(200);
+    const reissued = (await res.json()) as { url: string; expires_at: number };
+    expect(reissued.url.startsWith(`${ORIGIN}/auth/invite?token=`)).toBe(true);
+    expect(reissued.url).not.toBe(invitation?.url);
+    expect(await countWorkspaces()).toBe(3);
+
+    // A user with a password has no invitation to replace.
+    const active = await send(`/api/v1/users/${member.id}/invitation`, { method: "POST", cookies: adminCookies });
+    expect(active.status).toBe(409);
+    expect(((await active.json()) as { error: { code: string } }).error.code).toBe("already_active");
+  });
 });
 
 describe("middleware order", () => {
   async function oidcCookiesFor(user: UserRow): Promise<SessionCookies> {
     const now = Date.now();
-    const session = await core.issueSession(appDb, user.id, "oidc", now);
+    const loaded = loadConfig({ ...env, ...oidcEnv });
+    if (!loaded.ok) throw new Error(`invalid oidc config: ${loaded.invalid.join(", ")}`);
+    const session = await core.issueSession(appDb, user.id, loaded.config, now);
     const at = await core.signAccessToken({ sub: user.id, sid: session.sessionId }, env.JWT_SECRET ?? "", now);
     return { "__Host-pinglune_at": at, "__Host-pinglune_rt": session.refreshToken };
   }
 
   it("returns 404 before 403 for a member calling a password-only admin API in oidc mode", async () => {
     const cookies = await oidcCookiesFor(member);
-    const res = await send(`${OIDC_ORIGIN}/api/v1/users`, {
+    // Still for password mode only (POST /api/v1/users is open to oidc mode too).
+    const res = await send(`${OIDC_ORIGIN}/api/v1/users/${admin.id}/password`, {
       env: oidcEnv,
       cookies,
-      json: { email: "x@example.com", password: NEW_PASSWORD, role: "member" },
+      json: { password: NEW_PASSWORD },
     });
     expect(res.status).toBe(404);
+    // An API of both modes answers the member 403.
+    const list = await send(`${OIDC_ORIGIN}/api/v1/users`, { env: oidcEnv, cookies });
+    expect(list.status).toBe(403);
   });
 
   it("returns 404 for password-only endpoints in oidc mode", async () => {

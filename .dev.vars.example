@@ -12,22 +12,39 @@ JWT_SECRET=
 # "password" (default) or "oidc"
 # AUTH_MODE=password
 
-# Required only when AUTH_MODE=oidc.
+# Required when AUTH_MODE=oidc. In password mode, when set, it enables multi-factor authentication with passkeys
+# and security keys (WebAuthn) and is used as the origin of invitation links.
 # APP_ORIGIN=https://pinglune.example.com
+
+# Required only when AUTH_MODE=oidc.
 # OIDC_ISSUER=https://idp.example.com
 # OIDC_CLIENT_ID=pinglune
 # OIDC_CLIENT_SECRET=dummy-secret
 
-# Effectively required when AUTH_MODE=oidc. Empty denies every login. "*" allows everyone (when the IdP
-# restricts who can sign in). Otherwise comma separated emails (exact match) or domains (exact match,
-# subdomains do not match).
-# ALLOWED_EMAILS=example.com,alice@example.org
+# For AUTH_MODE=oidc. While there are no users, the first login with this email becomes the first admin. Unset,
+# nobody can log in to an empty deployment. Later users are registered by an admin on the users screen.
+# INITIAL_ADMIN_EMAIL=admin@example.com
 
 # Optional for AUTH_MODE=oidc. Set to "false" only when the IdP does not send email_verified and every
 # login method of the IdP verifies emails (e.g. Cloudflare Access for SaaS with Google as the only login method).
 # Users are linked to existing accounts by email, so an unverified login method could take over an account.
 # When the claim is present it must still be true. Review this setting whenever OIDC_ISSUER changes.
 # OIDC_REQUIRE_EMAIL_VERIFIED=false
+
+# Optional for AUTH_MODE=password. Who must use multi-factor authentication: "optional" (default), "admins" or
+# "all". "admins" and "all" need APP_ORIGIN or PASSWORD_MFA_KEY.
+# PASSWORD_MFA_POLICY=optional
+
+# Optional for AUTH_MODE=password. The key that enables authenticator apps (TOTP). Generate one with
+# `openssl rand -base64 32`. Changing it makes existing TOTP secrets unreadable. In production, set it as a secret.
+# Keep it commented out here, so that the Deploy to Cloudflare button does not ask for it.
+# PASSWORD_MFA_KEY=
+
+# Optional. The lifetime of web sessions in hours, whole numbers from 1 to 9600. SESSION_MAX_AGE_HOURS counts from
+# the login (default 720 for password, 24 for oidc). SESSION_IDLE_TIMEOUT_HOURS counts from the last refresh
+# (default: none).
+# SESSION_MAX_AGE_HOURS=720
+# SESSION_IDLE_TIMEOUT_HOURS=
 
 # Optional. The domain of the email intake: the apex of a Cloudflare zone (e.g. example.com) whose
 # Email Routing catch-all rule sends mail to this Worker. Set it only when you use the email intake.

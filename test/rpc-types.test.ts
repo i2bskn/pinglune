@@ -5,6 +5,7 @@ import type {
   ApiKeyList,
   CreateSourceRequest,
   CreateUserRequest,
+  CreateUserResponse,
   CreatedApiKey,
   EventDetail,
   EventList,
@@ -27,14 +28,20 @@ describe("AppType", () => {
     const withoutName: CreateUserJson = { email: "a@example.com", password: "correct horse battery", role: "member" };
     // @ts-expect-error role must be admin or member
     const owner: CreateUserJson = { email: "a@example.com", password: "correct horse battery", role: "owner" };
+    // Without a password: an invitation in password mode, a registration in oidc mode.
+    const withoutPassword: CreateUserJson = { email: "a@example.com", role: "member" };
     void withoutName;
     void owner;
+    void withoutPassword;
   });
 
   it("types successful response bodies", () => {
     expectTypeOf<InferResponseType<typeof client.api.v1.me.$get, 200>>().toEqualTypeOf<User>();
     expectTypeOf<InferResponseType<typeof client.api.v1.users.$get, 200>>().toEqualTypeOf<UserList>();
-    expectTypeOf<InferResponseType<typeof client.api.v1.users.$post, 201>>().toEqualTypeOf<User>();
+    // hono flattens the intersection (User & { invitation }) into one object type, so compare with the same shape.
+    expectTypeOf<InferResponseType<typeof client.api.v1.users.$post, 201>>().toEqualTypeOf<{
+      [K in keyof CreateUserResponse]: CreateUserResponse[K];
+    }>();
   });
 
   it("types the deletion of a user", () => {

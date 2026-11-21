@@ -6,7 +6,8 @@ import { normalizeEmailAddress } from "./email/address";
 export { loadConfig, type AuthMode, type Config } from "@i2bskn/workers-app-core";
 
 // Login, sessions, user management and MCP OAuth come from @i2bskn/workers-app-core (src/core.ts), with their bindings
-// (DB, OAUTH_KV, OAUTH_PROVIDER, AUTH_MODE, JWT_SECRET, APP_ORIGIN, OIDC_*, ALLOWED_EMAILS).
+// (DB, OAUTH_KV, OAUTH_PROVIDER, AUTH_MODE, JWT_SECRET, APP_ORIGIN, OIDC_*, INITIAL_ADMIN_EMAIL, PASSWORD_MFA_*,
+// SESSION_*).
 export type Bindings = CoreBindings & {
   // The bodies and attachments of received events.
   EVENT_DATA: R2Bucket;

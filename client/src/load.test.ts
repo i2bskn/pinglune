@@ -252,6 +252,7 @@ describe("loadUsersView", () => {
     role: "admin",
     created_at: 1,
     last_login_at: null,
+    status: "active",
   };
 
   it("shows the users and the auth mode", async () => {

@@ -22,9 +22,11 @@ export function DeliveriesView() {
   return null;
 }
 
-// An ID to copy (the ID of a queue for claim_events, the ID of a source), selectable as a whole, with a button that
-// copies it.
-export function CopyableId({ id }: { id: string }) {
+const COPY_FAILED_MESSAGE = "コピーできませんでした。ID を選択してコピーしてください";
+
+// A value to copy (the ID of a queue for claim_events, the ID of a source, an invitation link), selectable as a whole,
+// with a button that copies it. failedMessage replaces the message shown when the clipboard cannot be used.
+export function CopyableId({ id, failedMessage = COPY_FAILED_MESSAGE }: { id: string; failedMessage?: string }) {
   const [copied, setCopied] = useState<string | null>(null);
 
   async function copy() {
@@ -34,7 +36,7 @@ export function CopyableId({ id }: { id: string }) {
       await navigator.clipboard.writeText(id);
       setCopied("コピーしました");
     } catch {
-      setCopied("コピーできませんでした。ID を選択してコピーしてください");
+      setCopied(failedMessage);
     }
   }
 

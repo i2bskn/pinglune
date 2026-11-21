@@ -11,9 +11,9 @@ import {
 } from "drizzle-orm/sqlite-core";
 import { users } from "@i2bskn/workers-app-core/schema";
 
-// The tables of login and sessions, from @i2bskn/workers-app-core. Re-exported so that drizzle-kit includes them, and
-// imported for the references below (a re-export creates no local binding).
-export { users, sessions, type UserRow, type SessionRow } from "@i2bskn/workers-app-core/schema";
+// The tables of login, sessions, invitations and MFA, from @i2bskn/workers-app-core. Re-exported so that drizzle-kit
+// includes them, and users is imported for the references below (a re-export creates no local binding).
+export * from "@i2bskn/workers-app-core/schema";
 
 // Every user has one personal workspace, created in the same batch as the user. "shared" is allowed by
 // the CHECK constraints only, for future shared workspaces; nothing creates one yet.
@@ -486,7 +486,7 @@ export const mcpConnections = sqliteTable(
     updatedAt: integer("updated_at").notNull(),
     revokedAt: integer("revoked_at"),
     // user: disconnected on the screen. replaced: a newer connection of the same bot or the same app took its place.
-    // sessions_revoked: a password change or the revocation of every session.
+    // sessions_revoked: a password change, the revocation of every session or an admin's reset of the MFA.
     revokeReason: text("revoke_reason", { enum: ["user", "replaced", "sessions_revoked"] }),
   },
   (t) => [

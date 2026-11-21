@@ -1288,6 +1288,23 @@ code {
   background: var(--surface);
 }
 
+/* An invitation link that was just issued (the users screen). The URL scrolls sideways inside its box. */
+.invitation .copyable-id {
+  margin: 0 0 0.75rem;
+}
+
+/* The same panel while the list is not shown (loading, or failed to load): placed like the top of .main. */
+.invitation-standalone {
+  width: 100%;
+  max-width: calc(64rem + 2.5rem);
+  margin: 0 auto;
+  padding: 2rem 1.25rem 0;
+}
+
+.invitation-standalone .invitation {
+  margin-bottom: 0;
+}
+
 /* ---------- Deliveries ---------- */
 
 .subscription,

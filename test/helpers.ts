@@ -74,8 +74,13 @@ export const db = drizzle(env.DB, { schema });
 export const appDb = createDb(env.DB);
 
 export async function resetDb(): Promise<void> {
-  // Children first; then the package deletes sessions and users.
+  // Children first; then the package deletes sessions, user_invitations and users. The MFA tables of the package are
+  // listed here (children first) rather than left to ON DELETE CASCADE.
   await helpers.resetDb([
+    "mfa_pending",
+    "mfa_recovery_codes",
+    "mfa_credentials",
+    "mfa_accounts",
     "deliveries",
     "event_data",
     "events",
@@ -112,17 +117,15 @@ export async function listEventDataKeys(prefix?: string): Promise<string[]> {
   }
 }
 
-// The default allowlist of the OIDC tests: a domain (not "*"), so that the domain match is exercised end to
-// end. Every email that the tests sign in with through OIDC is in this domain.
-export const OIDC_ALLOWED_EMAILS = "example.com";
-
+// The OIDC mode of the tests. While there are no users, the first sign-in of INITIAL_ADMIN_EMAIL creates the first
+// admin; other users are registered by an admin before they sign in.
 export const oidcEnv: Partial<Bindings> = {
   AUTH_MODE: "oidc",
   APP_ORIGIN: OIDC_ORIGIN,
   OIDC_ISSUER: "https://idp.example.com",
   OIDC_CLIENT_ID: "pinglune-client",
   OIDC_CLIENT_SECRET: "client-secret",
-  ALLOWED_EMAILS: OIDC_ALLOWED_EMAILS,
+  INITIAL_ADMIN_EMAIL: "alice@example.com",
 };
 
 // A user with their personal workspace, created in one batch like the userCreatedStatements hook of src/core.ts.

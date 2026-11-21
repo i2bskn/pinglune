@@ -79,8 +79,8 @@ const hooks: CoreHooks<Bindings, DeleteData> = {
   // the grants. On a password change by the user (self_change), webhook destinations stay: their keys belong to the
   // receivers, not to the user's login, so a routine password change does not stop them silently. Email destinations
   // are treated the same way. Polling queues stay too: they are read through MCP, which needs a new authorization
-  // anyway. An admin's reset or revocation may answer a compromise, and an attacker's destination never expires, so
-  // the webhook and email destinations end too.
+  // anyway. An admin's password reset (admin_reset), revocation (revoke_sessions) or MFA reset (admin_mfa_reset) may
+  // answer a compromise, and an attacker's destination never expires, so the webhook and email destinations end too.
   credentialsRevokedStatements: ({ db, userId, now, reason }) => [
     endUserSubscriptionsQuery(db, userId, now, { includeWebhooks: reason !== "self_change" }),
     revokeUserConnectionsQuery(db, userId, now),

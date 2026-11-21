@@ -21,6 +21,8 @@ pnpm dev
 
 ログイン・ユーザー管理・MCPのOAuthには[`@i2bskn/workers-app-core`](https://github.com/i2bskn/workers-app-core)を使っています（`src/core.ts`）。
 
+このパッケージはマイグレーションを持たず、テーブルは `src/db/schema.ts` で再エクスポートしてアプリ側で生成します。パッケージを上げたら `pnpm db:generate` でテーブルの差分を確かめてください。
+
 `pnpm dev`はWeb画面（`client/`）をビルドしてから`wrangler dev`を起動します。`client/`のファイルを変えると自動で再ビルドされます。HMRは無いので、ブラウザを再読み込みしてください。
 
 CookieにSecure属性と`__Host-`接頭辞を使っているので、`http://localhost`ではSafariでログインできません。ChromeかFirefoxを使ってください。

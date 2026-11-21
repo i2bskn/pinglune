@@ -17,8 +17,8 @@ import {
 } from "./helpers";
 
 // The OIDC login of @i2bskn/workers-app-core, as wired into pinglune: the personal workspace of the
-// userCreatedStatements hook (src/core.ts) on the just-in-time creation, and the host of src/app.ts. The package tests
-// cover the rest.
+// userCreatedStatements hook (src/core.ts) when the first admin is created by INITIAL_ADMIN_EMAIL and when an admin
+// registers a user, and the host of src/app.ts. The package tests cover the rest.
 
 const ISSUER = oidcEnv.OIDC_ISSUER ?? "";
 const CLIENT_ID = oidcEnv.OIDC_CLIENT_ID ?? "";
@@ -150,29 +150,47 @@ describe("OIDC flow with a mocked IdP", () => {
     return callback(`code=abc&state=${location.searchParams.get("state")}`, oidcCookie, env);
   }
 
-  it("returns 403 and creates nothing when ALLOWED_EMAILS is empty", async () => {
+  it("returns 403 and creates nothing without INITIAL_ADMIN_EMAIL while there are no users", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const res = await loginWith({ ...oidcEnv, ALLOWED_EMAILS: "" });
+    const res = await loginWith({ ...oidcEnv, INITIAL_ADMIN_EMAIL: undefined });
     expect(res.status).toBe(403);
     expect(await res.text()).toContain("このアカウントではログインできません");
     expect(await db.query.users.findMany()).toHaveLength(0);
     expect(await countWorkspaces()).toBe(0);
-    expect(warn).toHaveBeenCalledWith("oidc login rejected", { reason: "allowlist_empty" });
+    expect(warn).toHaveBeenCalledWith("oidc login rejected", { reason: "initial_admin_not_configured" });
   });
 
-  it.each([["*"], ["*,example.com"]])("signs in any email with ALLOWED_EMAILS=%j", async (allowedEmails) => {
-    idTokenClaims = { ...idTokenClaims, email: "alice@outside.test" };
-    const res = await loginWith({ ...oidcEnv, ALLOWED_EMAILS: allowedEmails });
-    expect(res.status).toBe(303);
-    expect(res.headers.get("Location")).toBe("/wiki");
-    const user = await db.query.users.findFirst({ where: eq(users.oidcSubject, "sub-1") });
-    expect(user?.email).toBe("alice@outside.test");
-    expect(await countPersonalWorkspaces(user?.id ?? "")).toBe(1);
-    expect(await countWorkspaces()).toBe(1);
-  });
-
-  it("creates the first user as admin and later users as members (JIT)", async () => {
+  it("returns 403 for an email that is not registered and creates no user or workspace", async () => {
+    // The first admin exists, so INITIAL_ADMIN_EMAIL is ignored from here on.
     expect((await loginWith(oidcEnv)).status).toBe(303);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    idTokenClaims = { ...idTokenClaims, sub: "sub-2", email: "mallory@example.com", name: "Mallory" };
+    const res = await loginWith(oidcEnv);
+    expect(res.status).toBe(403);
+    expect(await res.text()).toContain("このアカウントではログインできません");
+    expect((await db.query.users.findMany()).map((user) => user.email)).toEqual(["alice@example.com"]);
+    expect(await countWorkspaces()).toBe(1);
+    expect(warn).toHaveBeenCalledWith("oidc login rejected", { reason: "not_invited" });
+  });
+
+  it("creates the first admin by INITIAL_ADMIN_EMAIL and links a registered user on their first sign-in", async () => {
+    const first = await loginWith(oidcEnv);
+    expect(first.status).toBe(303);
+    const adminCookies = sessionCookies(first);
+
+    // An admin registers the second user, without a password. The personal workspace is made here.
+    const registered = await send(`${OIDC_ORIGIN}/api/v1/users`, {
+      env: oidcEnv,
+      cookies: adminCookies,
+      json: { email: "bob@example.com", role: "member" },
+    });
+    expect(registered.status).toBe(201);
+    const bob = (await registered.json()) as { id: string; status: string; invitation: unknown };
+    expect(bob).toMatchObject({ status: "invited", invitation: null });
+    expect(await countPersonalWorkspaces(bob.id)).toBe(1);
+    expect(await countWorkspaces()).toBe(2);
+    expect((await db.query.users.findFirst({ where: eq(users.id, bob.id) }))?.oidcSubject).toBeNull();
+
     idTokenClaims = { ...idTokenClaims, sub: "sub-2", email: "bob@example.com", name: "Bob" };
     expect((await loginWith(oidcEnv)).status).toBe(303);
     const all = await db.query.users.findMany();
@@ -180,6 +198,8 @@ describe("OIDC flow with a mocked IdP", () => {
       ["sub-1", "admin"],
       ["sub-2", "member"],
     ]);
+    expect(all.find((user) => user.oidcSubject === "sub-2")?.id).toBe(bob.id);
+    // The sign-in adds no workspace.
     for (const user of all) expect(await countPersonalWorkspaces(user.id)).toBe(1);
     expect(await countWorkspaces()).toBe(2);
   });

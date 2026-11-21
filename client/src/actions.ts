@@ -7,10 +7,12 @@ import type {
   CreateConversationRequest,
   CreateQueueRequest,
   CreateUserRequest,
+  CreateUserResponse,
   CreateWebhookDestinationRequest,
   CreatedApiKey,
   DeliveryListItem,
   EmailAddress,
+  Invitation,
   ManagedEventDetail,
   PostConversationMessageRequest,
   Source,
@@ -62,10 +64,11 @@ async function resourceActionResult<R extends { ok: boolean; status: number; jso
   return { kind: "error", message: await responseErrorMessage(res) };
 }
 
-export type CreateUserResult = { kind: "ok"; user: User } | SendFailure;
+export type CreateUserResult = { kind: "ok"; user: CreateUserResponse } | SendFailure;
 
-// Creates a user with a password (password mode only). Admins only. Errors, including email_taken (409) and
-// the 404 of OIDC mode, are shown with the server's message. Never rejects.
+// Creates a user. In password mode, with a password, or without one to get an invitation link (user.invitation, shown
+// only once). In OIDC mode, without a password: the registered email can then sign in. Admins only. Errors, including
+// email_taken (409), are shown with the server's message. Never rejects.
 export async function createUser(client: ApiClient, input: CreateUserRequest): Promise<CreateUserResult> {
   const sent = await send(() => client.api.v1.users.$post({ json: input }));
   if (sent.kind !== "response") return sent;
@@ -85,7 +88,7 @@ export async function createUser(client: ApiClient, input: CreateUserRequest): P
 export type UserActionResult = ResourceActionResult;
 
 // hc() puts params into the URL without encoding them, so an invalid ID is not sent.
-const INVALID_USER_ID: UserActionResult = { kind: "error", message: "ユーザーが見つかりません" };
+const INVALID_USER_ID = { kind: "error", message: "ユーザーが見つかりません" } as const;
 
 // Changes the role of a user. Admins only. Never rejects.
 export async function changeUserRole(client: ApiClient, userId: string, role: User["role"]): Promise<UserActionResult> {
@@ -103,6 +106,42 @@ export async function resetUserPassword(client: ApiClient, userId: string, passw
   if (!isValidId(userId)) return INVALID_USER_ID;
   return resourceActionResult(
     await send(() => client.api.v1.users[":id"].password.$post({ param: { id: userId }, json: { password } })),
+  );
+}
+
+export type InvitationResult =
+  | { kind: "ok"; invitation: Invitation }
+  // The user is gone (or the mode is not password any more).
+  | { kind: "notFound" }
+  | SendFailure;
+
+// Issues a new invitation link for a user who has no password yet, replacing the previous one (password mode only).
+// The link is returned only here. Admins only. Errors, including already_active (409, the user has set a password
+// meanwhile), are shown with the server's message. Never rejects.
+export async function reissueInvitation(client: ApiClient, userId: string): Promise<InvitationResult> {
+  if (!isValidId(userId)) return INVALID_USER_ID;
+  const sent = await send(() => client.api.v1.users[":id"].invitation.$post({ param: { id: userId } }));
+  if (sent.kind !== "response") return sent;
+  const { res } = sent;
+  if (res.ok) {
+    try {
+      return { kind: "ok", invitation: await res.json() };
+    } catch {
+      return { kind: "error", message: unexpectedResponseMessage(res.status) };
+    }
+  }
+  if (res.status === 404) return { kind: "notFound" };
+  return { kind: "error", message: await responseErrorMessage(res) };
+}
+
+// Deletes the MFA factors of a user (passkeys, authenticator app and recovery codes) and ends their sessions, MCP
+// connections, webhook destinations, email destinations and polling queues; the password stays (password mode only).
+// Admins only. Errors, including cannot_reset_own_mfa (400) and mfa_not_enrolled (409), are shown with the server's
+// message. Never rejects.
+export async function resetUserMfa(client: ApiClient, userId: string): Promise<UserActionResult> {
+  if (!isValidId(userId)) return INVALID_USER_ID;
+  return resourceActionResult(
+    await send(() => client.api.v1.users[":id"]["reset-mfa"].$post({ param: { id: userId } })),
   );
 }
 

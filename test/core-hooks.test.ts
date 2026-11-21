@@ -5,7 +5,7 @@ import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { base64UrlEncode } from "@i2bskn/workers-app-core";
 import { core } from "../src/core";
-import { users, type UserRow } from "../src/db/schema";
+import { mfaAccounts, users, type UserRow } from "../src/db/schema";
 import { newMcpConnectionId } from "../src/ids";
 import { NO_EXPIRY } from "../src/subscriptions/queries";
 import {
@@ -233,5 +233,67 @@ describe("credentialsRevokedStatements", () => {
     expect(active?.count).toBe(0);
     expect((await send("/api/v1/me", { cookies: userCookies })).status).toBe(401);
     expect(await mcpRevokedAt(user.id)).not.toBeNull();
+  });
+
+  it("ends the subscriptions (webhooks too), revokes the connections and the sessions on an admin's MFA reset", async () => {
+    const admin = await createUser({ email: "admin@example.com", role: "admin" });
+    const user = await createUser({ email: "alice@example.com" });
+    const subscription = await createSubscription({ user });
+    const webhook = await createSubscription({
+      user,
+      kind: "webhook",
+      name: "bot",
+      secret: new TextEncoder().encode("crsr_key"),
+      expiresAt: NO_EXPIRY,
+    });
+    const connectionId = await insertConnection(user);
+    const userCookies = await login(user.email);
+    const adminCookies = await login(admin.email);
+    // After the logins: the password login of an enrolled user (revision > 0) goes on to /auth/mfa.
+    await db.insert(mfaAccounts).values({ userId: user.id, revision: 1 });
+
+    const res = await send(`/api/v1/users/${user.id}/reset-mfa`, { method: "POST", cookies: adminCookies });
+    expect(res.status).toBe(204);
+
+    expect(await db.select().from(mfaAccounts).where(eq(mfaAccounts.userId, user.id)).all()).toHaveLength(0);
+    for (const id of [subscription.id, webhook.id]) {
+      const row = await env.DB.prepare("SELECT unsubscribed_at FROM subscriptions WHERE id = ?")
+        .bind(id)
+        .first<{ unsubscribed_at: number | null }>();
+      expect(row?.unsubscribed_at).not.toBeNull();
+    }
+    const connection = await env.DB.prepare("SELECT revoked_at, revoke_reason FROM mcp_connections WHERE id = ?")
+      .bind(connectionId)
+      .first<{ revoked_at: number | null; revoke_reason: string | null }>();
+    expect(connection).toMatchObject({ revoked_at: expect.any(Number), revoke_reason: "sessions_revoked" });
+    expect((await send("/api/v1/me", { cookies: userCookies })).status).toBe(401);
+    expect(await mcpRevokedAt(user.id)).not.toBeNull();
+  });
+
+  it("answers 409 mfa_not_enrolled and changes nothing for a user without MFA", async () => {
+    const admin = await createUser({ email: "admin@example.com", role: "admin" });
+    const user = await createUser({ email: "alice@example.com" });
+    const webhook = await createSubscription({
+      user,
+      kind: "webhook",
+      name: "bot",
+      secret: new TextEncoder().encode("crsr_key"),
+      expiresAt: NO_EXPIRY,
+    });
+    const userCookies = await login(user.email);
+
+    const res = await send(`/api/v1/users/${user.id}/reset-mfa`, {
+      method: "POST",
+      cookies: await login(admin.email),
+    });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe("mfa_not_enrolled");
+
+    const row = await env.DB.prepare("SELECT unsubscribed_at FROM subscriptions WHERE id = ?")
+      .bind(webhook.id)
+      .first<{ unsubscribed_at: number | null }>();
+    expect(row?.unsubscribed_at).toBeNull();
+    expect((await send("/api/v1/me", { cookies: userCookies })).status).toBe(200);
+    expect(await mcpRevokedAt(user.id)).toBeNull();
   });
 });

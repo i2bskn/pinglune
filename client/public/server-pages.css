@@ -1,5 +1,7 @@
 /*
-  The screens served by the Worker: login, setup, logout, MCP consent and errors (src/views).
+  The screens served by the Worker: login, setup, invitation, multi-factor authentication, logout, MCP consent and
+  errors (src/views, and the pages of @i2bskn/workers-app-core). The package's markup has no classes of its own, so
+  its parts are styled by element.
   The tokens are the same as in client/src/styles.css; keep them in sync.
 */
 
@@ -10,6 +12,7 @@
     "Meiryo", sans-serif;
   /* The admin screens no longer use a serif; headings use the sans-serif family. */
   --font-serif: var(--font-sans);
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
 
   --bg: #f3f5f9;
   --surface: #ffffff;
@@ -239,6 +242,71 @@ button.primary:hover {
 form > button:only-of-type {
   width: 100%;
   margin-top: 0.5rem;
+}
+
+/* Several buttons of a form (the choices of the MFA settings, the recovery code): stacked, each as wide as the form. */
+form > button:not(:only-of-type) {
+  width: 100%;
+  margin-top: 0.5rem;
+}
+
+/* A link as the only way on from a page (after the recovery codes): shown as a button. */
+.card > a:not([class]) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.875rem;
+  padding: 0 1.25rem;
+  font-weight: 600;
+  color: var(--ink);
+  text-decoration: none;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+}
+
+.card > a:not([class]):hover {
+  background: var(--surface-2);
+}
+
+/* A form that is opened when needed (the recovery code). */
+details {
+  margin-top: 1rem;
+}
+
+summary {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+details > form {
+  margin-top: 0.75rem;
+}
+
+/* The QR code of an authenticator app: 232px wide, narrower when the card is. */
+.card img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto 1rem;
+}
+
+code {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+}
+
+/* The recovery codes, one per line: a code (29 characters) fits the card on a phone, two columns would break it. */
+.card ul:not([role]) {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0 0 1rem;
+  padding: 0.75rem 1rem;
+  list-style: none;
+  background: var(--surface-2);
+  border-radius: var(--radius);
 }
 
 .buttons {
