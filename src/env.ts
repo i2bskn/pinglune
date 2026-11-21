@@ -16,6 +16,9 @@ export type Bindings = CoreBindings & {
   // The domain of the email intake (the apex of a Cloudflare zone). Optional; read by parseEmailDomain, not by
   // loadConfig.
   EMAIL_DOMAIN?: string;
+  // "true" requires Google's hd claim when a non-Gmail address is first associated with an OIDC identity. Optional
+  // (off); read by parseGoogleHdSetting (src/oidc-hd.ts), not by loadConfig.
+  OIDC_REQUIRE_GOOGLE_HD?: string;
   // Email deliveries of bots (src/deliveries/email.ts): the send_email binding (wrangler.jsonc) and the sender address.
   // Both are needed; read by emailDeliveryConfig, not by loadConfig.
   SEND_EMAIL?: SendEmail;

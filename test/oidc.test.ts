@@ -5,6 +5,7 @@ import { users } from "../src/db/schema";
 import type { Bindings } from "../src/env";
 import {
   countPersonalWorkspaces,
+  countTable,
   countWorkspaces,
   createUser,
   db,
@@ -211,6 +212,86 @@ describe("OIDC flow with a mocked IdP", () => {
     expect(all).toHaveLength(1);
     expect(all[0]).toMatchObject({ id: existing.id, oidcIssuer: ISSUER, oidcSubject: "sub-1" });
     expect(await countWorkspaces()).toBe(1);
+  });
+
+  // OIDC_REQUIRE_GOOGLE_HD: the beforeOidcUserLinkOrCreate hook of src/core.ts.
+  const hdEnv: Partial<Bindings> = { ...oidcEnv, OIDC_REQUIRE_GOOGLE_HD: "true" };
+
+  // A rejected login leaves no session: no row and no session cookie. The callback always clears the OIDC cookie.
+  async function expectNoSession(res: Response) {
+    expect(await countTable("sessions")).toBe(0);
+    const cookies = setCookies(res);
+    expect(cookies["__Host-pinglune_at"]).toBeUndefined();
+    expect(cookies["__Host-pinglune_rt"]).toBeUndefined();
+  }
+
+  it("with OIDC_REQUIRE_GOOGLE_HD, rejects the first admin without hd and creates nothing", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const res = await loginWith(hdEnv);
+    expect(res.status).toBe(403);
+    expect(await res.text()).toContain("このアカウントではログインできません");
+    expect(await db.query.users.findMany()).toHaveLength(0);
+    expect(await countWorkspaces()).toBe(0);
+    await expectNoSession(res);
+    expect(warn).toHaveBeenCalledWith("oidc login rejected", { reason: "hd_missing" });
+    expect(warn).toHaveBeenCalledWith("oidc login rejected", { reason: "not_allowed" });
+  });
+
+  it("with OIDC_REQUIRE_GOOGLE_HD, creates the first admin with hd", async () => {
+    idTokenClaims = { ...idTokenClaims, hd: "example.com" };
+    expect((await loginWith(hdEnv)).status).toBe(303);
+    const all = await db.query.users.findMany();
+    expect(all).toHaveLength(1);
+    expect(all[0]).toMatchObject({ email: "alice@example.com", oidcSubject: "sub-1" });
+  });
+
+  it("with OIDC_REQUIRE_GOOGLE_HD, creates the first admin with a gmail.com address without hd", async () => {
+    idTokenClaims = { ...idTokenClaims, email: "alice@gmail.com" };
+    expect((await loginWith({ ...hdEnv, INITIAL_ADMIN_EMAIL: "alice@gmail.com" })).status).toBe(303);
+    expect((await db.query.users.findMany()).map((user) => user.email)).toEqual(["alice@gmail.com"]);
+  });
+
+  it("with OIDC_REQUIRE_GOOGLE_HD, does not link a registered user without hd", async () => {
+    const existing = await createUser({ email: "alice@example.com", role: "admin" });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const res = await loginWith(hdEnv);
+    expect(res.status).toBe(403);
+    expect(await res.text()).toContain("このアカウントではログインできません");
+    const user = await db.query.users.findFirst({ where: eq(users.id, existing.id) });
+    expect(user).toMatchObject({ oidcIssuer: null, oidcSubject: null });
+    await expectNoSession(res);
+    expect(warn).toHaveBeenCalledWith("oidc login rejected", { reason: "hd_missing" });
+    expect(warn).toHaveBeenCalledWith("oidc login rejected", { reason: "not_allowed" });
+  });
+
+  it("with OIDC_REQUIRE_GOOGLE_HD, links a registered user with hd", async () => {
+    const existing = await createUser({ email: "alice@example.com", role: "admin" });
+    idTokenClaims = { ...idTokenClaims, hd: "example.com" };
+    expect((await loginWith(hdEnv)).status).toBe(303);
+    const user = await db.query.users.findFirst({ where: eq(users.id, existing.id) });
+    expect(user).toMatchObject({ oidcIssuer: ISSUER, oidcSubject: "sub-1" });
+  });
+
+  it("with OIDC_REQUIRE_GOOGLE_HD, does not check hd when a linked user signs in again", async () => {
+    idTokenClaims = { ...idTokenClaims, hd: "example.com" };
+    expect((await loginWith(hdEnv)).status).toBe(303);
+    idTokenClaims = { email: "alice@example.com", email_verified: true, name: "Alice" };
+    expect((await loginWith(hdEnv)).status).toBe(303);
+    expect(await db.query.users.findMany()).toHaveLength(1);
+  });
+
+  it("rejects every first sign-in when OIDC_REQUIRE_GOOGLE_HD is invalid", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    idTokenClaims = { ...idTokenClaims, hd: "example.com" };
+    const res = await loginWith({ ...oidcEnv, OIDC_REQUIRE_GOOGLE_HD: "1" });
+    expect(res.status).toBe(403);
+    expect(await res.text()).toContain("このアカウントではログインできません");
+    expect(await db.query.users.findMany()).toHaveLength(0);
+    expect(await countWorkspaces()).toBe(0);
+    await expectNoSession(res);
+    expect(error).toHaveBeenCalledWith("invalid configuration", { invalid: ["OIDC_REQUIRE_GOOGLE_HD"] });
+    expect(warn).toHaveBeenCalledWith("oidc login rejected", { reason: "not_allowed" });
   });
 
   it("unifies the host for GET and returns 404 for other methods", async () => {

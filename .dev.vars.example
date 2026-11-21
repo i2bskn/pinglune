@@ -31,6 +31,15 @@ JWT_SECRET=
 # When the claim is present it must still be true. Review this setting whenever OIDC_ISSUER changes.
 # OIDC_REQUIRE_EMAIL_VERIFIED=false
 
+# Optional for AUTH_MODE=oidc. Set to "true" only when the IdP is Google. The first login of an address other than
+# @gmail.com then requires the hd claim (the Google Workspace domain) in the ID token: without it, Google does not
+# vouch that the address still belongs to the account. Later logins of the same user are not checked.
+# With Cloudflare Access as the OIDC provider, first make Access put a claim named hd into the ID token it issues:
+# add hd to the OIDC claims of the Google identity provider, and add it as a custom claim of the SaaS application.
+# With "true" and no such claim, nobody but @gmail.com addresses can log in for the first time.
+# A value other than "true" or "false" is a mistake and rejects every first login.
+# OIDC_REQUIRE_GOOGLE_HD=true
+
 # Optional for AUTH_MODE=password. Who must use multi-factor authentication: "optional" (default), "admins" or
 # "all". "admins" and "all" need APP_ORIGIN or PASSWORD_MFA_KEY.
 # PASSWORD_MFA_POLICY=optional
