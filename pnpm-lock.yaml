@@ -15,8 +15,8 @@ importers:
         specifier: 1.2.3
         version: 1.2.3
       '@i2bskn/workers-app-core':
-        specifier: 0.4.1
-        version: 0.4.1(@cfworker/json-schema@4.1.1)(@cloudflare/workers-oauth-provider@1.2.3)(@modelcontextprotocol/sdk@1.32.1(@cfworker/json-schema@4.1.1)(zod@4.6.7))(drizzle-orm@0.45.4(@cloudflare/workers-types@5.20261028.1))(hono@4.13.16)(openid-client@6.8.8)
+        specifier: 0.6.0
+        version: 0.6.0(@cfworker/json-schema@4.1.1)(@cloudflare/workers-oauth-provider@1.2.3)(@modelcontextprotocol/sdk@1.32.1(@cfworker/json-schema@4.1.1)(zod@4.6.7))(drizzle-orm@0.45.4(@cloudflare/workers-types@5.20261028.1))(hono@4.13.16)(openid-client@6.8.8)
       '@modelcontextprotocol/sdk':
         specifier: 1.32.1
         version: 1.32.1(@cfworker/json-schema@4.1.1)(zod@4.6.7)
@@ -48,6 +48,9 @@ importers:
       '@cloudflare/workers-types':
         specifier: 5.20261028.1
         version: 5.20261028.1
+      '@i2bskn/workers-deploy':
+        specifier: 0.1.0
+        version: 0.1.0(wrangler@4.154.0(@cloudflare/workers-types@5.20261028.1))
       '@types/react':
         specifier: 19.3.0
         version: 19.3.0
@@ -603,8 +606,8 @@ packages:
     peerDependencies:
       hono: ^4 || ^5.0.0-0
 
-  '@i2bskn/workers-app-core@0.4.1':
-    resolution: {integrity: sha512-1Nog8spjZytu+n1o2liq2CBDEQQeJhnG6FC7thzm9H2FUDmR7m2dmcsNVYQ4Pg6H7eOHfYx3uiBHtA2jl9uv7Q==}
+  '@i2bskn/workers-app-core@0.6.0':
+    resolution: {integrity: sha512-zFFlgzpwBpIyUPg0uXy7Un/JSym0jPAoNoBAC4WuENeyFfGAarnGhAWKNfBv8Wsf1wSUSQLj4+FQ7LtS9mSJtQ==}
     peerDependencies:
       '@cfworker/json-schema': ^4.1.1
       '@cloudflare/workers-oauth-provider': ^1.2.3
@@ -612,6 +615,13 @@ packages:
       drizzle-orm: ^0.45.4
       hono: ^4.13.16
       openid-client: ^6.8.8
+
+  '@i2bskn/workers-deploy@0.1.0':
+    resolution: {integrity: sha512-/zSmOrjaj0a088rxFg3nfM1pbny7Crjz9C7htOhfGFj4MVafQDp3S2W7r0HfESrGZ1fT9s0ThMsE5VYhx1ueXA==}
+    engines: {node: '>=22'}
+    hasBin: true
+    peerDependencies:
+      wrangler: '>=4.154.0 <5'
 
   '@img/colour@1.1.0':
     resolution: {integrity: sha512-Td76q7j57o/tLVdgS746cYARfSyxk8iEfRxewL9h4OMzYhbW4TAcppl0mT4eyqXddh6L/jwoM75mo7ixa/pCeQ==}
@@ -2324,7 +2334,7 @@ snapshots:
     dependencies:
       hono: 4.13.16
 
-  '@i2bskn/workers-app-core@0.4.1(@cfworker/json-schema@4.1.1)(@cloudflare/workers-oauth-provider@1.2.3)(@modelcontextprotocol/sdk@1.32.1(@cfworker/json-schema@4.1.1)(zod@4.6.7))(drizzle-orm@0.45.4(@cloudflare/workers-types@5.20261028.1))(hono@4.13.16)(openid-client@6.8.8)':
+  '@i2bskn/workers-app-core@0.6.0(@cfworker/json-schema@4.1.1)(@cloudflare/workers-oauth-provider@1.2.3)(@modelcontextprotocol/sdk@1.32.1(@cfworker/json-schema@4.1.1)(zod@4.6.7))(drizzle-orm@0.45.4(@cloudflare/workers-types@5.20261028.1))(hono@4.13.16)(openid-client@6.8.8)':
     dependencies:
       '@cfworker/json-schema': 4.1.1
       '@cloudflare/workers-oauth-provider': 1.2.3
@@ -2334,6 +2344,10 @@ snapshots:
       hono: 4.13.16
       openid-client: 6.8.8
       uqr: 0.1.3
+
+  '@i2bskn/workers-deploy@0.1.0(wrangler@4.154.0(@cloudflare/workers-types@5.20261028.1))':
+    dependencies:
+      wrangler: 4.154.0(@cloudflare/workers-types@5.20261028.1)
 
   '@img/colour@1.1.0': {}
 

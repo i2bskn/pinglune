@@ -15,7 +15,7 @@
   "preview_urls": false,
   "observability": { "enabled": true },
   // No "placement": the Worker runs near the request, and the D1 database is created near the users (the location
-  // selectors of the Deploy to Cloudflare button, or the LOCATION_HINT build variable read by scripts/deploy.mjs).
+  // selectors of the Deploy to Cloudflare button, or the LOCATION_HINT build variable read by workers-deploy).
   // Smart Placement ("mode": "smart") is not used: on an instance whose D1 database is in APAC, it ran the requests
   // from Japan in IAD (cf-placement: remote-IAD), so that every D1 query of an API request crossed the Pacific.
   // Builds the React client into dist/client before `wrangler deploy` and `wrangler dev`, so that
@@ -62,7 +62,7 @@
     {
       // The bodies and attachments of received events (src/intake). Like the D1 database, `wrangler deploy`
       // provisions the bucket automatically, or connects to an existing R2 bucket with this name in the account.
-      // The name is fixed so that scripts/deploy.mjs can create the bucket in the location given by LOCATION_HINT.
+      // The name is fixed so that workers-deploy can create the bucket in the location given by LOCATION_HINT.
       // R2 must be enabled in the Cloudflare dashboard first.
       "binding": "EVENT_DATA",
       "bucket_name": "pinglune-events"
