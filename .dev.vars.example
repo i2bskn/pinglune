@@ -51,12 +51,14 @@ JWT_SECRET=
 # PASSWORD_MFA_KEY=
 
 # Optional. The hash of new passwords: "scrypt" (default) or "pbkdf2". Any other value is a
-# configuration error, whatever AUTH_MODE is, and stops the whole app. scrypt takes about 150ms of CPU per hash, more
-# than the Workers Free plan allows (10ms): on the Free plan set "pbkdf2". Existing hashes are not rehashed; going
-# back from scrypt to pbkdf2 keeps the existing scrypt hashes, which stay slow to verify.
+# configuration error, whatever AUTH_MODE is, and stops the whole app. scrypt takes about 150-200ms of CPU per hash
+# and pbkdf2 at 100000 iterations about 17-56ms, both over the 10ms of the Workers Free plan. In a measurement in
+# 2026-11 neither was cut off on the Free plan, but that is not guaranteed: if sign-ins fail on the CPU limit, set
+# "pbkdf2" with fewer iterations, or use Workers Paid. Existing hashes are not rehashed; going back from scrypt to
+# pbkdf2 keeps the existing scrypt hashes, which stay slow to verify.
 # PASSWORD_PBKDF2_ITERATIONS is the number of iterations of pbkdf2: a whole number from 10000 to 100000 (default
-# 100000), as a string. It is validated even with scrypt, and a value out of range is a configuration error. On the
-# Free plan even 100000 iterations may take more than 10ms, so consider fewer.
+# 100000), as a string. It is validated even with scrypt, and a value out of range is a configuration error. Fewer
+# iterations take less CPU time.
 # Keep them commented out here, so that the Deploy to Cloudflare button does not ask for them as secrets.
 # PASSWORD_HASH_ALGORITHM=pbkdf2
 # PASSWORD_PBKDF2_ITERATIONS=50000
