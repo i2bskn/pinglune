@@ -27,6 +27,11 @@ export default defineConfig(async () => {
                   TEST_MIGRATIONS: migrations,
                   AUTH_MODE: "password",
                   JWT_SECRET: "test-secret-test-secret-test-secret-0123",
+                  // PBKDF2 with few iterations instead of the default scrypt (about 150ms of CPU per hash), so that
+                  // the setup, users, password changes and the dummy check at login stay fast. Same as
+                  // TEST_HASH_CONFIG of test/helpers.ts; test/setup-login.test.ts checks the default scrypt once.
+                  PASSWORD_HASH_ALGORITHM: "pbkdf2",
+                  PASSWORD_PBKDF2_ITERATIONS: "10000",
                 },
                 // The producer sends to a queue that has no consumer, so that the consumer of wrangler.jsonc never
                 // runs in the background during tests. Consumer tests call the queue handler directly.

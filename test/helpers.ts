@@ -2,7 +2,7 @@ import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test"
 import { env } from "cloudflare:workers";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
-import { createDb } from "@i2bskn/workers-app-core";
+import { createDb, type PasswordHashConfig } from "@i2bskn/workers-app-core";
 import {
   createTestHelpers,
   TEST_JWT_SECRET,
@@ -128,14 +128,22 @@ export const oidcEnv: Partial<Bindings> = {
   INITIAL_ADMIN_EMAIL: "alice@example.com",
 };
 
-// A user with their personal workspace, created in one batch like the userCreatedStatements hook of src/core.ts.
+// The password hash of the tests, the same as PASSWORD_HASH_ALGORITHM and PASSWORD_PBKDF2_ITERATIONS of
+// vitest.config.ts. The default scrypt takes about 150ms of CPU per hash, which makes the tests several times slower;
+// the tests do not depend on the hash. test/setup-login.test.ts signs in with scrypt once.
+export const TEST_HASH_CONFIG: PasswordHashConfig = { algorithm: "pbkdf2", iterations: 10000 };
+
+// A user with their personal workspace, created in one batch like the userCreatedStatements hook of src/core.ts. The
+// password is hashed with TEST_HASH_CONFIG unless hashConfig is given.
 export function createUser(params: {
   email: string;
   role?: "admin" | "member";
   password?: string | null;
+  hashConfig?: PasswordHashConfig;
   createdAt?: number;
 }): Promise<UserRow> {
   return helpers.createUser({
+    hashConfig: TEST_HASH_CONFIG,
     ...params,
     userCreatedStatements: (d1, id, now) => [insertPersonalWorkspaceStatement(d1, id, now)],
   });

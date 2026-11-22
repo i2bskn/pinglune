@@ -23,8 +23,10 @@ import type {
 import { type EventFilterValues, eventsQuery } from "./events";
 import { isValidId } from "./router";
 import {
+  type ApiFetch,
   LoginRequiredError,
   type createApiClient,
+  listUsers,
   responseErrorMessage,
   unexpectedResponseMessage,
 } from "./api";
@@ -103,13 +105,20 @@ export async function loadMe(client: ApiClient): Promise<Loaded<User>> {
 
 export type UsersData = { users: User[]; authMode: UserList["auth_mode"] };
 
-// Admins only. A 403 (a member opened the URL) is shown with the server's message.
-export async function loadUsersView(client: ApiClient): Promise<Loaded<UsersData>> {
-  const list = await request(() => client.api.v1.users.$get());
-  if (list.kind === "redirecting") return list;
-  // The list itself is never missing; a 404 here is an unexpected response.
-  if (list.kind === "notFound" || list.kind === "error") return { kind: "error", message: list.message };
-  return { kind: "ready", data: { users: list.value.users, authMode: list.value.auth_mode } };
+// Admins only. A 403 (a member opened the URL) is shown with the server's message. apiFetch must be the one given to
+// createApiClient, so that the session is refreshed in the same way.
+export async function loadUsersView(apiFetch: ApiFetch): Promise<Loaded<UsersData>> {
+  const list = await listUsers(apiFetch);
+  switch (list.kind) {
+    case "ok":
+      return { kind: "ready", data: { users: list.users, authMode: list.authMode } };
+    case "redirecting":
+      return list;
+    case "error":
+      return { kind: "error", message: list.message };
+    case "unknown":
+      return { kind: "error", message: CONNECTION_ERROR };
+  }
 }
 
 const NO_FILTER: EventFilterValues = { type: "", sourceId: "" };

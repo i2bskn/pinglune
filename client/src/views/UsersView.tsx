@@ -1,19 +1,20 @@
 import { type FormEvent, useState } from "react";
-import type { CreateUserResponse, Invitation, User } from "../../../src/api/types";
+import type { Invitation, User } from "../../../src/api/types";
 import {
+  type ApiFetch,
   type InvitationResult,
   type UserActionResult,
   changeUserRole,
   createUser,
   deleteUser,
-  reissueInvitation,
+  reissueUserInvitation,
   resetUserMfa,
   resetUserPassword,
   revokeUserSessions,
-} from "../actions";
+} from "../api";
 import { formatDateTime } from "../format";
 import { PlusIcon } from "../icons";
-import { type ApiClient, type UsersData, loadUsersView, useView } from "../load";
+import { type UsersData, loadUsersView, useView } from "../load";
 import { ViewStatus, useDocumentTitle, viewTitle } from "./common";
 import { CopyableId } from "./DeliveriesView";
 
@@ -31,8 +32,8 @@ const UNKNOWN_RESULT_MESSAGE = "サーバーに接続できませんでした。
 
 // The screen for admins to manage users. The server checks the role again; a member who opens the URL
 // sees its 403 message. currentUserId is the signed-in user, who cannot delete or sign out themselves here.
-export function UsersView({ client, currentUserId }: { client: ApiClient; currentUserId: string }) {
-  const [state, reload] = useView(() => loadUsersView(client), "users");
+export function UsersView({ apiFetch, currentUserId }: { apiFetch: ApiFetch; currentUserId: string }) {
+  const [state, reload] = useView(() => loadUsersView(apiFetch), "users");
   // The result of the last operation, shown above the list until the next one. It stays across the reload
   // that follows, which may remove the row the operation was opened from.
   const [notice, setNotice] = useState<string | null>(null);
@@ -68,12 +69,12 @@ export function UsersView({ client, currentUserId }: { client: ApiClient; curren
       )}
       {invitationPanel}
       <CreateUserForm
-        client={client}
+        apiFetch={apiFetch}
         authMode={authMode}
-        onCreated={(user) => {
+        onCreated={(user, invitation) => {
           setNotice(null);
-          if (user.invitation !== null) {
-            setIssued({ userId: user.id, email: user.email, invitation: user.invitation });
+          if (invitation !== null) {
+            setIssued({ userId: user.id, email: user.email, invitation });
           }
           reload();
         }}
@@ -82,7 +83,7 @@ export function UsersView({ client, currentUserId }: { client: ApiClient; curren
         {users.map((user) => (
           <UserRow
             key={user.id}
-            client={client}
+            apiFetch={apiFetch}
             user={user}
             authMode={authMode}
             isCurrentUser={user.id === currentUserId}
@@ -125,13 +126,14 @@ function InvitationPanel({ issued, onClose }: { issued: IssuedInvitation; onClos
 // Adds a user. In OIDC mode the user is registered by email and can then sign in with the IdP. In password mode the
 // admin chooses between an invitation link (the user sets their own password) and a password set here.
 function CreateUserForm({
-  client,
+  apiFetch,
   authMode,
   onCreated,
 }: {
-  client: ApiClient;
+  apiFetch: ApiFetch;
   authMode: AuthMode;
-  onCreated: (user: CreateUserResponse) => void;
+  // invitation is the link to show, null when the user was added with a password or in OIDC mode.
+  onCreated: (user: User, invitation: Invitation | null) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [sending, setSending] = useState(false);
@@ -159,7 +161,7 @@ function CreateUserForm({
     setSending(true);
     setFailure(null);
     // A blank name is sent as null; the server also treats it as no name.
-    const result = await createUser(client, {
+    const result = await createUser(apiFetch, {
       email,
       name: name.trim() === "" ? null : name,
       ...(withPassword ? { password } : {}),
@@ -171,7 +173,7 @@ function CreateUserForm({
         setOpen(false);
         // The password is not needed any more.
         setPassword("");
-        onCreated(result.user);
+        onCreated(result.user, result.invitation);
         return;
       case "error":
         setSending(false);
@@ -267,7 +269,7 @@ function CreateUserForm({
 
 // One user with the operations on them. One operation is open at a time.
 function UserRow({
-  client,
+  apiFetch,
   user,
   authMode,
   isCurrentUser,
@@ -277,7 +279,7 @@ function UserRow({
   onInvitationInvalidated,
   onReload,
 }: {
-  client: ApiClient;
+  apiFetch: ApiFetch;
   user: User;
   authMode: AuthMode;
   isCurrentUser: boolean;
@@ -359,23 +361,23 @@ function UserRow({
     event.preventDefault();
     switch (open) {
       case "role":
-        void run("role", () => changeUserRole(client, user.id, newRole));
+        void run("role", () => changeUserRole(apiFetch, user.id, newRole));
         return;
       case "invitation":
-        void run("invitation", () => reissueInvitation(client, user.id));
+        void run("invitation", () => reissueUserInvitation(apiFetch, user.id));
         return;
       case "password":
-        void run("password", () => resetUserPassword(client, user.id, password));
+        void run("password", () => resetUserPassword(apiFetch, user.id, password));
         return;
       case "mfa":
-        void run("mfa", () => resetUserMfa(client, user.id));
+        void run("mfa", () => resetUserMfa(apiFetch, user.id));
         return;
       case "logout":
-        void run("logout", () => revokeUserSessions(client, user.id));
+        void run("logout", () => revokeUserSessions(apiFetch, user.id));
         return;
       case "delete":
         if (confirmation !== user.email) return;
-        void run("delete", () => deleteUser(client, user.id));
+        void run("delete", () => deleteUser(apiFetch, user.id));
         return;
       case null:
         return;

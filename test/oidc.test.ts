@@ -214,7 +214,7 @@ describe("OIDC flow with a mocked IdP", () => {
     expect(await countWorkspaces()).toBe(1);
   });
 
-  // OIDC_REQUIRE_GOOGLE_HD: the beforeOidcUserLinkOrCreate hook of src/core.ts.
+  // OIDC_REQUIRE_GOOGLE_HD: checked by @i2bskn/workers-app-core.
   const hdEnv: Partial<Bindings> = { ...oidcEnv, OIDC_REQUIRE_GOOGLE_HD: "true" };
 
   // A rejected login leaves no session: no row and no session cookie. The callback always clears the OIDC cookie.
@@ -233,7 +233,7 @@ describe("OIDC flow with a mocked IdP", () => {
     expect(await db.query.users.findMany()).toHaveLength(0);
     expect(await countWorkspaces()).toBe(0);
     await expectNoSession(res);
-    expect(warn).toHaveBeenCalledWith("oidc login rejected", { reason: "hd_missing" });
+    expect(warn).toHaveBeenCalledWith("oidc login rejected", { reason: "google_hd_missing", hd: "undefined" });
     expect(warn).toHaveBeenCalledWith("oidc login rejected", { reason: "not_allowed" });
   });
 
@@ -260,7 +260,7 @@ describe("OIDC flow with a mocked IdP", () => {
     const user = await db.query.users.findFirst({ where: eq(users.id, existing.id) });
     expect(user).toMatchObject({ oidcIssuer: null, oidcSubject: null });
     await expectNoSession(res);
-    expect(warn).toHaveBeenCalledWith("oidc login rejected", { reason: "hd_missing" });
+    expect(warn).toHaveBeenCalledWith("oidc login rejected", { reason: "google_hd_missing", hd: "undefined" });
     expect(warn).toHaveBeenCalledWith("oidc login rejected", { reason: "not_allowed" });
   });
 

@@ -52,6 +52,7 @@ CookieにSecure属性と`__Host-`接頭辞を使っているので、`http://loc
 
 - 配信に使うQueuesのキュー（`pinglune-deliveries` と dead letter queueの `pinglune-deliveries-dlq`）は、存在しなければ `wrangler deploy` が自動で作ります。`wrangler deploy` が自動で作るのはproducerのバインディングがあるキューだけなので、コードでは使わない `DELIVERY_DLQ` をdead letter queueのproducerとして宣言しています。日次Cron（毎日18:00 UTC）も `wrangler.jsonc` の設定で登録されます。
 - Workers FreeプランでもQueuesを使えますが、1日1万オペレーションまでです。1件の配信でおよそ3オペレーション（書き込み・読み取り・削除）を使い、再送するとその分増えるので、1日あたりの配信はおよそ3,000件までが目安です。
+- パスワード方式（`AUTH_MODE=password`）をWorkers Freeプランで使う場合は、`PASSWORD_HASH_ALGORITHM`を`pbkdf2`にします。既定のscryptは1回のハッシュにCPUを約150ms使うので、FreeプランのCPU時間（10ms）に収まりません。回数（`PASSWORD_PBKDF2_ITERATIONS`）を下げることも検討してください（`.dev.vars.example`のコメントを参照）。OIDC方式ではパスワードのハッシュを使いません。
 
 ## メールでの配信
 

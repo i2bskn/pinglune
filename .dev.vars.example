@@ -16,7 +16,8 @@ JWT_SECRET=
 # and security keys (WebAuthn) and is used as the origin of invitation links.
 # APP_ORIGIN=https://pinglune.example.com
 
-# Required only when AUTH_MODE=oidc.
+# Required only when AUTH_MODE=oidc. OIDC_ISSUER is the issuer itself; a URL with /.well-known/ (the discovery URL)
+# is a configuration error.
 # OIDC_ISSUER=https://idp.example.com
 # OIDC_CLIENT_ID=pinglune
 # OIDC_CLIENT_SECRET=dummy-secret
@@ -48,6 +49,17 @@ JWT_SECRET=
 # `openssl rand -base64 32`. Changing it makes existing TOTP secrets unreadable. In production, set it as a secret.
 # Keep it commented out here, so that the Deploy to Cloudflare button does not ask for it.
 # PASSWORD_MFA_KEY=
+
+# Optional. The hash of new passwords: "scrypt" (default) or "pbkdf2". Any other value is a
+# configuration error, whatever AUTH_MODE is, and stops the whole app. scrypt takes about 150ms of CPU per hash, more
+# than the Workers Free plan allows (10ms): on the Free plan set "pbkdf2". Existing hashes are not rehashed; going
+# back from scrypt to pbkdf2 keeps the existing scrypt hashes, which stay slow to verify.
+# PASSWORD_PBKDF2_ITERATIONS is the number of iterations of pbkdf2: a whole number from 10000 to 100000 (default
+# 100000), as a string. It is validated even with scrypt, and a value out of range is a configuration error. On the
+# Free plan even 100000 iterations may take more than 10ms, so consider fewer.
+# Keep them commented out here, so that the Deploy to Cloudflare button does not ask for them as secrets.
+# PASSWORD_HASH_ALGORITHM=pbkdf2
+# PASSWORD_PBKDF2_ITERATIONS=50000
 
 # Optional. The lifetime of web sessions in hours, whole numbers from 1 to 9600. SESSION_MAX_AGE_HOURS counts from
 # the login (default 720 for password, 24 for oidc). SESSION_IDLE_TIMEOUT_HOURS counts from the last refresh

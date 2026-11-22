@@ -7,7 +7,6 @@ import type { AppEnv, Bindings } from "./env";
 import { deleteWorkspaceObjects } from "./intake/storage";
 import { revokeUserConnectionsQuery } from "./mcp/connections";
 import { checkRequest, parseProps, register, type McpExtra, type PingluneMcpProps } from "./mcp/handler";
-import { parseGoogleHdSetting, passesGoogleHd } from "./oidc-hd";
 import { endUserSubscriptionsQuery } from "./subscriptions/queries";
 import { Layout } from "./views/layout";
 import { findPersonalWorkspaceByUserId, insertPersonalWorkspaceStatement } from "./workspaces/queries";
@@ -16,26 +15,6 @@ import { findPersonalWorkspaceByUserId, insertPersonalWorkspaceStatement } from 
 type DeleteData = { workspaceId: string | null };
 
 const hooks: CoreHooks<Bindings, DeleteData> = {
-  // With OIDC_REQUIRE_GOOGLE_HD=true, the first association of a user with an OIDC identity (the first sign-in of a
-  // registered user, and the creation of the first admin by INITIAL_ADMIN_EMAIL) requires Google's hd claim unless
-  // the address is a gmail.com one: without hd, Google does not vouch that a non-Gmail address still belongs to the
-  // account, even with email_verified true. hd is specific to Google, so the check is off by default. An invalid
-  // value rejects, so that a mistake does not turn the check off silently. The package calls this only before that
-  // first association: a linked user signs in again by iss and sub without the check, even when their email changed
-  // at the IdP, and the error of an invalid value is logged only when this hook runs.
-  async beforeOidcUserLinkOrCreate({ env, email, claims }) {
-    const setting = parseGoogleHdSetting(env.OIDC_REQUIRE_GOOGLE_HD);
-    if (setting === "off") return true;
-    if (setting === "invalid") {
-      console.error("invalid configuration", { invalid: ["OIDC_REQUIRE_GOOGLE_HD"] });
-      return false;
-    }
-    if (passesGoogleHd(email, claims)) return true;
-    // Like the package's rejections: the reason only, never the email or the claims.
-    console.warn("oidc login rejected", { reason: "hd_missing" });
-    return false;
-  },
-
   // Every new user gets a personal workspace, in the same batch as the INSERT of the user, so that email_taken leaves
   // no workspace behind. The statement inserts nothing unless the user exists, so it also holds when the INSERT of
   // the setup inserts nothing.

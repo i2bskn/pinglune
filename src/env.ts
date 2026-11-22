@@ -7,7 +7,7 @@ export { loadConfig, type AuthMode, type Config } from "@i2bskn/workers-app-core
 
 // Login, sessions, user management and MCP OAuth come from @i2bskn/workers-app-core (src/core.ts), with their bindings
 // (DB, OAUTH_KV, OAUTH_PROVIDER, AUTH_MODE, JWT_SECRET, APP_ORIGIN, OIDC_*, INITIAL_ADMIN_EMAIL, PASSWORD_MFA_*,
-// SESSION_*).
+// PASSWORD_HASH_ALGORITHM, PASSWORD_PBKDF2_ITERATIONS, SESSION_*).
 export type Bindings = CoreBindings & {
   // The bodies and attachments of received events.
   EVENT_DATA: R2Bucket;
@@ -16,9 +16,6 @@ export type Bindings = CoreBindings & {
   // The domain of the email intake (the apex of a Cloudflare zone). Optional; read by parseEmailDomain, not by
   // loadConfig.
   EMAIL_DOMAIN?: string;
-  // "true" requires Google's hd claim when a non-Gmail address is first associated with an OIDC identity. Optional
-  // (off); read by parseGoogleHdSetting (src/oidc-hd.ts), not by loadConfig.
-  OIDC_REQUIRE_GOOGLE_HD?: string;
   // Email deliveries of bots (src/deliveries/email.ts): the send_email binding (wrangler.jsonc) and the sender address.
   // Both are needed; read by emailDeliveryConfig, not by loadConfig.
   SEND_EMAIL?: SendEmail;
