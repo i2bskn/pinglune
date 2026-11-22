@@ -53,6 +53,7 @@ CookieにSecure属性と`__Host-`接頭辞を使っているので、`http://loc
 - 配信に使うQueuesのキュー（`pinglune-deliveries` と dead letter queueの `pinglune-deliveries-dlq`）は、存在しなければ `wrangler deploy` が自動で作ります。`wrangler deploy` が自動で作るのはproducerのバインディングがあるキューだけなので、コードでは使わない `DELIVERY_DLQ` をdead letter queueのproducerとして宣言しています。日次Cron（毎日18:00 UTC）も `wrangler.jsonc` の設定で登録されます。
 - Workers FreeプランでもQueuesを使えますが、1日1万オペレーションまでです。1件の配信でおよそ3オペレーション（書き込み・読み取り・削除）を使い、再送するとその分増えるので、1日あたりの配信はおよそ3,000件までが目安です。
 - パスワード方式（`AUTH_MODE=password`）のハッシュは、1回でWorkers FreeプランのCPU時間（10ms）を超えます（既定のscryptで約150〜200ms、`pbkdf2`の100000回で17〜56ms）。2026年11月の計測では打ち切られませんでしたが、保証はありません。ログインがCPU時間の上限で失敗する場合は`PASSWORD_HASH_ALGORITHM`を`pbkdf2`にして回数（`PASSWORD_PBKDF2_ITERATIONS`）を下げるか、Workers Paidプランを使ってください（`.dev.vars.example`のコメントを参照）。OIDC方式ではパスワードのハッシュを使いません。
+- パスワードのハッシュがscryptになる版へ更新しても、既存のユーザーのパスワードはPBKDF2のまま使えます。更新後に新しく設定したパスワードと、登録されていないメールアドレスでのログインの確認はscryptになります。既存のユーザーがいる間は、ログインの応答時間から登録済みのメールアドレスが分かることがあります。避けたい場合は、更新の前に`PASSWORD_HASH_ALGORITHM`を`pbkdf2`にしてください。このとき`PASSWORD_PBKDF2_ITERATIONS`は設定せず、既定の100000のままにしてください。既存のハッシュは100000回で作られているので、回数を変えると応答時間の差がまた生じます。
 
 ## メールでの配信
 
