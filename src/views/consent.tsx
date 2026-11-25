@@ -38,7 +38,8 @@ export function ConsentPage(props: {
       <p>
         許可すると、このアプリはあなたとして、Pingluneに保存されたイベント・データ・会話を読み取り、ポーリング用のキューからイベントを取り出して処理済みにできます。
       </p>
-      <form method="post" action="/authorize">
+      <script src="/consent.js" defer />
+      <form method="post" action="/authorize" id="consent-form">
         <input type="hidden" name="handle" value={props.handle} />
         {props.bots.length === 0 ? (
           <input type="hidden" name="bot_id" value="" />
